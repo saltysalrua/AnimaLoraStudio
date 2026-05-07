@@ -2,7 +2,7 @@ name: Build Docker Image
 
 on:
   push:
-    branches: [feat/cnb-adaptation]
+    branches: [master]
     paths:
       - '.ide/Dockerfile'
       - 'requirements.txt'
