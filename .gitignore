@@ -67,6 +67,7 @@ models/wd14/
 !models/**/*.pt
 !models/**/*.pth
 !models/**/*.npz
+!models/**/*.onnx
 
 # Dataset (training images) - 每次手动上传，不持久化
 dataset/
