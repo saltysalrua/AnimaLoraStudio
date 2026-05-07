@@ -9,4 +9,4 @@ $:
         - docker
       stages:
         - name: setup
-          script: bash setup.sh
+          script: bash .ide/setup.sh

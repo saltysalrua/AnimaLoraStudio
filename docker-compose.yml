@@ -14,5 +14,5 @@ services:
     ports:
       - "8765:8765"
     working_dir: /workspace
-    command: bash -c "bash setup.sh && bash studio.sh"
+    command: bash -c "bash .ide/setup.sh && bash studio.sh"
     restart: unless-stopped
