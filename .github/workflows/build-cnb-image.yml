@@ -1,0 +1,29 @@
+name: Build CNB Docker Image
+
+on:
+  push:
+    branches: [feat/cnb-adaptation]
+    paths:
+      - '.ide/Dockerfile'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: .ide/Dockerfile
+          push: true
+          tags: saltycocoa/animalorastudio-cnb:latest
