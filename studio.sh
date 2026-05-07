@@ -46,10 +46,9 @@ else
 fi
 
 echo "studio.sh: using $PYTHON"
-"$PYTHON" -m studio "$@"
-EXIT_CODE=$?
-if [ $EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "[studio] 退出码 $EXIT_CODE，请检查上方错误信息。"
+if [ "$PYTHON" = "/opt/venv/bin/python" ] && [ $# -eq 0 ]; then
+    # CNB 环境：监听全部接口，无需自动开浏览器
+exec "$PYTHON" -m studio run --host 0.0.0.0 --no-browser
+else
+    exec "$PYTHON" -m studio "$@"
 fi
-exit $EXIT_CODE
