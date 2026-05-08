@@ -396,12 +396,30 @@ def cmd_run(args: argparse.Namespace) -> int:
                 return rc
     _bootstrap_onnxruntime()
     url = f"http://{args.host}:{args.port}/studio/"
+
+    log_dir = REPO_ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / f"studio_{time.strftime('%Y%m%d')}.log"
+    print(f"[studio] 后端日志: {log_file}")
     print(f"[studio] 启动后端 → {url}")
+
     if not args.no_browser:
         _spawn_browser_opener(url)
-    return subprocess.call(
-        [find_python(), "-m", "studio.server", "--host", args.host, "--port", str(args.port)]
-    )
+
+    cmd = [find_python(), "-u", "-m", "studio.server",
+           "--host", args.host, "--port", str(args.port)]
+    with open(log_file, "ab") as lf:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                sys.stdout.buffer.write(raw)
+                sys.stdout.buffer.flush()
+                lf.write(raw)
+                lf.flush()
+        except KeyboardInterrupt:
+            pass
+        proc.wait()
+    return proc.returncode
 
 
 def cmd_dev(args: argparse.Namespace) -> int:
@@ -423,9 +441,8 @@ def cmd_dev(args: argparse.Namespace) -> int:
         pg.spawn(
             "backend",
             [
-                find_python(),
-                "-m",
-                "studio.server",
+                find_python(), "-u",
+                "-m", "studio.server",
                 "--host", args.host,
                 "--port", str(args.port),
                 "--reload",
