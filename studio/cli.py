@@ -410,13 +410,17 @@ def cmd_run(args: argparse.Namespace) -> int:
            "--host", args.host, "--port", str(args.port)]
     with open(log_file, "ab") as lf:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        fd = proc.stdout.fileno()
         try:
-            for raw in iter(proc.stdout.readline, b""):
-                sys.stdout.buffer.write(raw)
+            while True:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                sys.stdout.buffer.write(chunk)
                 sys.stdout.buffer.flush()
-                lf.write(raw)
+                lf.write(chunk)
                 lf.flush()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, OSError):
             pass
         proc.wait()
     return proc.returncode

@@ -509,6 +509,7 @@ def start_download_async(
             ds.log.append(line)
             if len(ds.log) > 200:
                 del ds.log[:-200]
+        print(line, flush=True)
         bus.publish({"type": "model_download_changed", "key": key, "status": "running"})
 
     def _run() -> None:
