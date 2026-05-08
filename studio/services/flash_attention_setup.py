@@ -122,6 +122,11 @@ def find_candidates(
     except Exception as exc:
         return [], str(exc)
 
+    # 频率限制时 GitHub 返回 {"message": "API rate limit exceeded..."} dict
+    if not isinstance(data, list):
+        msg = data.get("message", str(data)) if isinstance(data, dict) else str(data)
+        return [], f"GitHub API 错误: {msg}"
+
     candidates: list[dict[str, Any]] = []
     for release in data:
         for asset in release.get("assets", []):
