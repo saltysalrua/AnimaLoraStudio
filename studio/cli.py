@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -451,20 +452,34 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     cmd = [find_python(), "-u", "-m", "studio.server",
            "--host", args.host, "--port", str(args.port)]
+    # uvicorn access log 行：INFO:     IP:PORT - "METHOD /path HTTP/1.x" STATUS
+    _access_log_re = re.compile(rb'INFO:\s+[\d.]+:\d+ - "(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) ')
+
     with open(log_file, "ab") as lf:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         fd = proc.stdout.fileno()
+        line_buf = b""
         try:
             while True:
                 chunk = os.read(fd, 4096)
                 if not chunk:
                     break
+                # 终端：原样输出
                 sys.stdout.buffer.write(chunk)
                 sys.stdout.buffer.flush()
-                lf.write(chunk)
-                lf.flush()
+                # 日志文件：按行过滤掉 access log
+                line_buf += chunk
+                while b"\n" in line_buf:
+                    line, line_buf = line_buf.split(b"\n", 1)
+                    if not _access_log_re.search(line):
+                        lf.write(line + b"\n")
+                        lf.flush()
         except (KeyboardInterrupt, OSError):
             pass
+        # 剩余不完整行
+        if line_buf and not _access_log_re.search(line_buf):
+            lf.write(line_buf)
+            lf.flush()
         proc.wait()
     return proc.returncode
 
