@@ -19,6 +19,9 @@ export interface SchemaProperty {
   control?: string
   cli_alias?: string
   show_when?: string
+  /** 后端打了 hidden=True 的字段：值仍随 ConfigData 透传 / 保存，但 SchemaForm
+   * 不渲染。用于「该字段对当前用户群无意义但 schema 必须保留」的兜底场景。 */
+  hidden?: boolean
   anyOf?: Array<{ type?: string }>
   items?: SchemaProperty
 }
@@ -89,6 +92,19 @@ export interface WD14Config {
   threshold_character: number
   blacklist_tags: string[]
   /** PP8 — batch 推理大小；CPU EP 时强制 1。 */
+  batch_size: number
+}
+
+export interface CLTaggerConfig {
+  model_id: string
+  model_path: string
+  tag_mapping_path: string
+  local_dir: string | null
+  threshold_general: number
+  threshold_character: number
+  add_rating_tag: boolean
+  add_model_tag: boolean
+  blacklist_tags: string[]
   batch_size: number
 }
 
@@ -163,6 +179,7 @@ export interface Secrets {
   huggingface: HuggingFaceConfig
   joycaption: JoyCaptionConfig
   wd14: WD14Config
+  cltagger: CLTaggerConfig
   models: ModelsConfig
   queue: QueueConfig
 }
@@ -212,6 +229,45 @@ export interface ModelDirCatalog {
   files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
 }
 
+export interface WD14VariantInfo {
+  model_id: string
+  is_current: boolean
+  target_path: string
+  exists: boolean
+  size: number
+  files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
+}
+
+export interface WD14Catalog {
+  id: 'wd14'
+  name: string
+  description: string
+  repo: string
+  current_model_id: string
+  variants: WD14VariantInfo[]
+}
+
+export interface CLTaggerVariantInfo {
+  label: string
+  model_path: string
+  tag_mapping_path: string
+  is_current: boolean
+  exists: boolean
+  size: number
+  files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
+}
+
+export interface CLTaggerCatalog {
+  id: 'cltagger'
+  name: string
+  description: string
+  repo: string
+  target_dir: string
+  current_model_path: string
+  current_tag_mapping_path: string
+  variants: CLTaggerVariantInfo[]
+}
+
 export interface ModelDownloadStatus {
   key: string
   status: 'pending' | 'running' | 'done' | 'failed'
@@ -227,6 +283,8 @@ export interface ModelsCatalog {
   anima_vae: AnimaVaeCatalog
   qwen3: ModelDirCatalog
   t5_tokenizer: ModelDirCatalog
+  wd14: WD14Catalog
+  cltagger: CLTaggerCatalog
   downloads: Record<string, ModelDownloadStatus>
 }
 
@@ -347,7 +405,7 @@ export interface CopyResult {
 
 // ---- tagging (PP4) --------------------------------------------------------
 
-export type TaggerName = 'wd14' | 'joycaption'
+export type TaggerName = 'wd14' | 'cltagger' | 'joycaption'
 
 export interface TaggerStatus {
   name: TaggerName
@@ -862,6 +920,17 @@ export const api = {
         threshold_character?: number | null
         model_id?: string | null
         local_dir?: string | null
+        blacklist_tags?: string[] | null
+      }
+      cltagger_overrides?: {
+        threshold_general?: number | null
+        threshold_character?: number | null
+        model_id?: string | null
+        model_path?: string | null
+        tag_mapping_path?: string | null
+        local_dir?: string | null
+        add_rating_tag?: boolean | null
+        add_model_tag?: boolean | null
         blacklist_tags?: string[] | null
       }
     }

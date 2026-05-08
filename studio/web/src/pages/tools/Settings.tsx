@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   api,
   DEFAULT_WD14_MODELS,
+  type CLTaggerVariantInfo,
   type ModelDownloadStatus,
   type ModelsCatalog,
   type Secrets,
@@ -22,8 +23,30 @@ type Section =
   | 'huggingface'
   | 'joycaption'
   | 'wd14'
+  | 'cltagger'
   | 'models'
   | 'queue'
+
+type Tab = 'dataset' | 'tagging' | 'training' | 'appearance'
+
+const TAB_LIST: { id: Tab; label: string }[] = [
+  { id: 'dataset', label: '数据集' },
+  { id: 'tagging', label: '打标' },
+  { id: 'training', label: '训练' },
+  { id: 'appearance', label: '页面' },
+]
+
+const TAB_STORAGE_KEY = 'studio.settings.activeTab'
+
+function getStoredTab(): Tab {
+  try {
+    const v = localStorage.getItem(TAB_STORAGE_KEY)
+    if (v === 'dataset' || v === 'tagging' || v === 'training' || v === 'appearance') return v
+  } catch {
+    /* ignore localStorage errors */
+  }
+  return 'dataset'
+}
 
 const EMPTY: Secrets = {
   gelbooru: {
@@ -55,6 +78,18 @@ const EMPTY: Secrets = {
     blacklist_tags: [],
     batch_size: 8,
   },
+  cltagger: {
+    model_id: 'cella110n/cl_tagger',
+    model_path: 'cl_tagger_1_02/model.onnx',
+    tag_mapping_path: 'cl_tagger_1_02/tag_mapping.json',
+    local_dir: null,
+    threshold_general: 0.35,
+    threshold_character: 0.6,
+    add_rating_tag: false,
+    add_model_tag: false,
+    blacklist_tags: [],
+    batch_size: 8,
+  },
   models: { root: null, selected_anima: 'preview3-base' },
   queue: { allow_gpu_during_train: false },
 }
@@ -66,7 +101,52 @@ export default function SettingsPage() {
   const [draft, setDraft] = useState<Secrets>(EMPTY)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [tab, setTab] = useState<Tab>(getStoredTab)
+  // Models catalog hoisted here so 打标 tab 的 WD14/CLTagger 卡片和 训练 tab
+  // 的 ModelsSection 共用一份数据 + 一个 SSE 订阅。
+  const [catalog, setCatalog] = useState<ModelsCatalog | null>(null)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [downloadBusy, setDownloadBusy] = useState<Set<string>>(new Set())
   const { toast } = useToast()
+
+  const switchTab = (next: Tab) => {
+    setTab(next)
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, next)
+    } catch {
+      /* ignore localStorage errors */
+    }
+  }
+
+  const reloadCatalog = useCallback(async () => {
+    try {
+      const c = await api.getModelsCatalog()
+      setCatalog(c)
+      setCatalogError(null)
+    } catch (e) {
+      setCatalogError(String(e))
+    }
+  }, [])
+
+  useEffect(() => { void reloadCatalog() }, [reloadCatalog])
+
+  useEventStream((evt) => {
+    if (evt.type === 'model_download_changed') { void reloadCatalog() }
+  })
+
+  const startDownload = useCallback(async (model_id: string, variant?: string) => {
+    const key = variant ? `${model_id}:${variant}` : model_id
+    setDownloadBusy((s) => new Set(s).add(key))
+    try {
+      await api.startModelDownload({ model_id, variant })
+      toast(`开始下载 ${key}`, 'success')
+      await reloadCatalog()
+    } catch (e) {
+      toast(String(e), 'error')
+    } finally {
+      setDownloadBusy((s) => { const n = new Set(s); n.delete(key); return n })
+    }
+  }, [reloadCatalog, toast])
 
   useEffect(() => {
     api
@@ -103,6 +183,8 @@ export default function SettingsPage() {
       const next = await api.updateSecrets(patch)
       setServer(next)
       setDraft(next)
+      // 候选 model_ids 改了之后，catalog 里的 wd14 variants 需要刷新
+      void reloadCatalog()
       toast('已保存', 'success')
     } catch (e) {
       setError(String(e))
@@ -139,7 +221,7 @@ export default function SettingsPage() {
       />
 
       <div className="p-6 pb-12 flex-1 overflow-y-auto">
-      <div className="flex flex-col gap-8 max-w-[900px]">
+      <div className="flex flex-col gap-8 max-w-[1200px]">
 
       {error && (
         <div className="p-3 rounded-md bg-err-soft border border-err text-err text-sm font-mono">
@@ -147,6 +229,23 @@ export default function SettingsPage() {
         </div>
       )}
 
+      <nav className="flex gap-1 border-b border-subtle">
+        {TAB_LIST.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => switchTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === t.id
+                ? 'border-accent text-fg-primary'
+                : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'dataset' && (<>
       <SettingsSection title="Gelbooru">
         <SettingsField label="user_id">
           <input
@@ -202,7 +301,10 @@ export default function SettingsPage() {
       </SettingsSection>
 
       <SettingsSection title="下载（全局）">
-        <SettingsField label="exclude_tags (逗号分隔)">
+        <SettingsField
+          label="exclude_tags"
+          desc="逗号分隔；搜索时自动追加 -tag，Gelbooru / Danbooru 同样生效"
+        >
           <input
             type="text"
             value={draft.download.exclude_tags.join(', ')}
@@ -214,45 +316,37 @@ export default function SettingsPage() {
             placeholder="例：comic, monochrome, lowres"
             className={textInputClass}                                  />
         </SettingsField>
-        <p className="text-xs text-fg-tertiary px-1">
-          搜索时自动追加 <code>-tag</code>，对 Gelbooru 与 Danbooru 同样生效。
-        </p>
 
-        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-subtle">
-          <SettingsField label="parallel_workers">
+        <div className="grid grid-cols-3 gap-3 pt-2 border-t border-subtle">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-fg-secondary font-mono">parallel_workers</label>
             <input
               type="number" min={1} max={16}
               value={draft.download.parallel_workers}
               onChange={(e) => update('download', 'parallel_workers', Math.max(1, Number(e.target.value) || 1))}
-              className={textInputClass}                                        />
-          </SettingsField>
-          <SettingsField label="api_rate_per_sec">
+              className={`${textInputClass} max-w-24`}                              />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-fg-secondary font-mono">api_rate_per_sec</label>
             <input
               type="number" step="0.5" min={0.5} max={10}
               value={draft.download.api_rate_per_sec}
               onChange={(e) => update('download', 'api_rate_per_sec', Math.max(0.5, Number(e.target.value) || 0.5))}
-              className={textInputClass}                                        />
-          </SettingsField>
-          <SettingsField label="cdn_rate_per_sec">
+              className={`${textInputClass} max-w-24`}                              />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-fg-secondary font-mono">cdn_rate_per_sec</label>
             <input
               type="number" step="1" min={1} max={20}
               value={draft.download.cdn_rate_per_sec}
               onChange={(e) => update('download', 'cdn_rate_per_sec', Math.max(1, Number(e.target.value) || 1))}
-              className={textInputClass}                                        />
-          </SettingsField>
+              className={`${textInputClass} max-w-24`}                              />
+          </div>
         </div>
       </SettingsSection>
+      </>)}
 
-      <SettingsSection title="HuggingFace">
-        <SettingsField label="token">
-          <SensitiveInput
-            value={draft.huggingface.token}
-            serverValue={server?.huggingface.token ?? ''}
-            onChange={(v) => update('huggingface', 'token', v)}
-          />
-        </SettingsField>
-      </SettingsSection>
-
+      {tab === 'tagging' && (<>
       <SettingsSection title="JoyCaption (vLLM)">
         <SettingsField label="base_url">
           <input
@@ -278,59 +372,130 @@ export default function SettingsPage() {
       </SettingsSection>
 
       <SettingsSection title="WD14">
-        <SettingsField label="model_id (当前选用)">
-          <select
-            value={draft.wd14.model_id}
-            onChange={(e) => update('wd14', 'model_id', e.target.value)}
-            className={textInputClass}          >
-            {(draft.wd14.model_ids.length > 0 ? draft.wd14.model_ids : [...DEFAULT_WD14_MODELS]).map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </SettingsField>
-        <SettingsField label="候选模型 (model_ids)">
-          <ModelIdsEditor
-            ids={draft.wd14.model_ids}
-            currentId={draft.wd14.model_id}
-            onChange={(next) => update('wd14', 'model_ids', next)}
-          />
-        </SettingsField>
-        <SettingsField label="local_dir (留空 = 自动 HF 下载)">
+        <WD14ModelCard
+          catalog={catalog}
+          busy={downloadBusy}
+          start={startDownload}
+          currentModelId={draft.wd14.model_id}
+          onSelectModelId={(id) => update('wd14', 'model_id', id)}
+          candidates={draft.wd14.model_ids}
+          onCandidatesChange={(next) => update('wd14', 'model_ids', next)}
+        />
+        <SettingsField label="local_dir" desc="留空 = 自动 HF 下载">
           <input
             type="text"
             value={draft.wd14.local_dir ?? ''}
             onChange={(e) => update('wd14', 'local_dir', e.target.value || null)}
             className={textInputClass}                                  />
         </SettingsField>
-        <SettingsField label="threshold_general">
-          <input
-            type="number" step="0.01" min={0} max={1}
-            value={draft.wd14.threshold_general}
-            onChange={(e) => update('wd14', 'threshold_general', Number(e.target.value))}
-            className={textInputClass}                                  />
-        </SettingsField>
-        <SettingsField label="threshold_character">
-          <input
-            type="number" step="0.01" min={0} max={1}
-            value={draft.wd14.threshold_character}
-            onChange={(e) => update('wd14', 'threshold_character', Number(e.target.value))}
-            className={textInputClass}                                  />
-        </SettingsField>
-        <SettingsField label="blacklist_tags (逗号分隔)">
+        <div className="grid grid-cols-2 gap-3">
+          <SettingsField label="threshold_general">
+            <input
+              type="number" step="0.01" min={0} max={1}
+              value={draft.wd14.threshold_general}
+              onChange={(e) => update('wd14', 'threshold_general', Number(e.target.value))}
+              className={`${textInputClass} max-w-32`}                              />
+          </SettingsField>
+          <SettingsField label="threshold_character">
+            <input
+              type="number" step="0.01" min={0} max={1}
+              value={draft.wd14.threshold_character}
+              onChange={(e) => update('wd14', 'threshold_character', Number(e.target.value))}
+              className={`${textInputClass} max-w-32`}                              />
+          </SettingsField>
+        </div>
+        <SettingsField label="blacklist_tags" desc="逗号分隔">
           <input
             type="text"
             value={draft.wd14.blacklist_tags.join(', ')}
             onChange={(e) => update('wd14', 'blacklist_tags', e.target.value.split(',').map((t) => t.trim()).filter(Boolean))}
             className={textInputClass}                                  />
         </SettingsField>
-        <SettingsField label="batch_size (GPU 推理一批塞几张；CPU 自动降到 1)">
+        <SettingsField label="batch_size" desc="GPU 推理一批塞几张；CPU 自动降到 1">
           <input
             type="number" min={1} max={64}
             value={draft.wd14.batch_size}
             onChange={(e) => update('wd14', 'batch_size', Math.max(1, Number(e.target.value) || 1))}
+            className={`${textInputClass} max-w-24`}                              />
+        </SettingsField>
+      </SettingsSection>
+
+      <SettingsSection title="CLTagger">
+        <CLTaggerModelCard
+          catalog={catalog}
+          busy={downloadBusy}
+          start={startDownload}
+          currentModelPath={draft.cltagger.model_path}
+          currentTagMappingPath={draft.cltagger.tag_mapping_path}
+          onSelectVariant={(v: CLTaggerVariantInfo) => {
+            update('cltagger', 'model_path', v.model_path)
+            update('cltagger', 'tag_mapping_path', v.tag_mapping_path)
+          }}
+          modelId={draft.cltagger.model_id}
+          onModelIdChange={(id) => update('cltagger', 'model_id', id)}
+        />
+        <SettingsField label="local_dir" desc="留空 = 自动 HF 下载">
+          <input
+            type="text"
+            value={draft.cltagger.local_dir ?? ''}
+            onChange={(e) => update('cltagger', 'local_dir', e.target.value || null)}
             className={textInputClass}                                  />
         </SettingsField>
-        <WD14RuntimePanel />
+        <div className="grid grid-cols-2 gap-3">
+          <SettingsField label="threshold_general">
+            <input
+              type="number" step="0.01" min={0} max={1}
+              value={draft.cltagger.threshold_general}
+              onChange={(e) => update('cltagger', 'threshold_general', Number(e.target.value))}
+              className={`${textInputClass} max-w-32`}                                      />
+          </SettingsField>
+          <SettingsField label="threshold_character">
+            <input
+              type="number" step="0.01" min={0} max={1}
+              value={draft.cltagger.threshold_character}
+              onChange={(e) => update('cltagger', 'threshold_character', Number(e.target.value))}
+              className={`${textInputClass} max-w-32`}                                      />
+          </SettingsField>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <SettingsField label="add_rating_tag">
+            <Bool value={draft.cltagger.add_rating_tag} onChange={(v) => update('cltagger', 'add_rating_tag', v)} />
+          </SettingsField>
+          <SettingsField label="add_model_tag">
+            <Bool value={draft.cltagger.add_model_tag} onChange={(v) => update('cltagger', 'add_model_tag', v)} />
+          </SettingsField>
+        </div>
+        <SettingsField label="blacklist_tags" desc="逗号分隔">
+          <input
+            type="text"
+            value={draft.cltagger.blacklist_tags.join(', ')}
+            onChange={(e) => update('cltagger', 'blacklist_tags', e.target.value.split(',').map((t) => t.trim()).filter(Boolean))}
+            className={textInputClass}                                  />
+        </SettingsField>
+        <SettingsField label="batch_size" desc="GPU 推理一批塞几张；CPU 自动降到 1">
+          <input
+            type="number" min={1} max={64}
+            value={draft.cltagger.batch_size}
+            onChange={(e) => update('cltagger', 'batch_size', Math.max(1, Number(e.target.value) || 1))}
+            className={`${textInputClass} max-w-24`}                              />
+        </SettingsField>
+      </SettingsSection>
+
+      <ONNXRuntimeSection />
+      </>)}
+
+      {tab === 'training' && (<>
+      <SettingsSection title="HuggingFace">
+        <SettingsField label="token">
+          <SensitiveInput
+            value={draft.huggingface.token}
+            serverValue={server?.huggingface.token ?? ''}
+            onChange={(v) => update('huggingface', 'token', v)}
+          />
+        </SettingsField>
+        <p className="text-xs text-fg-tertiary px-1">
+          用于 HF 私有 repo 鉴权；公开仓库（含 SmilingWolf WD14 / cella110n CLTagger）不用填。
+        </p>
       </SettingsSection>
 
       <SettingsSection title="队列调度">
@@ -344,8 +509,18 @@ export default function SettingsPage() {
         </SettingsField>
       </SettingsSection>
 
-      <DisplaySection />
-      <ModelsSection />
+      <ModelsSection
+        catalog={catalog}
+        busy={downloadBusy}
+        start={startDownload}
+        reloadCatalog={reloadCatalog}
+        catalogError={catalogError}
+      />
+      </>)}
+
+      {tab === 'appearance' && (
+        <DisplaySection />
+      )}
     </div>
     </div>
     </div>
@@ -363,11 +538,18 @@ function SettingsSection({ title, children }: { title: string; children: React.R
   )
 }
 
-function SettingsField({ label, children }: { label: string; children: React.ReactNode }) {
+function SettingsField({ label, desc, children }: {
+  label: string
+  desc?: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="grid grid-cols-[200px_1fr] gap-3 items-center">
-      <label className="text-xs text-fg-secondary font-mono">{label}</label>
-      {children}
+    <div className="grid grid-cols-[240px_1fr] gap-3 items-start">
+      <div className="flex flex-col gap-0.5 pt-1.5">
+        <label className="text-xs text-fg-secondary font-mono leading-none">{label}</label>
+        {desc && <p className="text-[10px] text-fg-tertiary m-0 leading-snug">{desc}</p>}
+      </div>
+      <div className="min-w-0">{children}</div>
     </div>
   )
 }
@@ -451,6 +633,148 @@ function ModelIdsEditor({ ids, currentId, onChange }: {
   )
 }
 
+// ── WD14 / CLTagger Model Cards（打标 tab 内嵌的模型管理器） ─────────────────
+
+function WD14ModelCard({
+  catalog, busy, start,
+  currentModelId, onSelectModelId,
+  candidates, onCandidatesChange,
+}: {
+  catalog: ModelsCatalog | null
+  busy: Set<string>
+  start: (model_id: string, variant?: string) => Promise<void>
+  currentModelId: string
+  onSelectModelId: (id: string) => void
+  candidates: string[]
+  onCandidatesChange: (next: string[]) => void
+}) {
+  const [advOpen, setAdvOpen] = useState(false)
+  const wd14 = catalog?.wd14
+  if (!wd14) {
+    return <p className="text-fg-tertiary text-xs">加载模型清单...</p>
+  }
+  return (
+    <ModelGroupCard title={wd14.name + '（候选模型）'}>
+      <p className="text-xs text-fg-tertiary m-0">
+        {wd14.description} · 选中作为当前 model_id；下载缺的版本。
+      </p>
+      <ul className="list-none m-0 p-0 flex flex-col gap-1">
+        {wd14.variants.map((v) => {
+          const key = `wd14:${v.model_id}`
+          const dl = catalog.downloads[key]
+          const isSel = v.model_id === currentModelId
+          return (
+            <li key={v.model_id} className={`flex items-center gap-2 text-xs px-1.5 py-1 rounded-sm ${
+              isSel ? 'bg-accent-soft border border-accent' : 'bg-transparent border border-transparent'
+            }`}>
+              <input type="radio" name="wd14_variant" checked={isSel}
+                onChange={() => onSelectModelId(v.model_id)}
+                className="shrink-0"
+                style={{ accentColor: 'var(--accent)' }}
+                title="选作 WD14 当前 model_id"
+              />
+              <code className="font-mono text-fg-primary flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{v.model_id}</code>
+              <ModelStatusBadge
+                exists={v.exists} size={v.size} status={dl?.status}
+                fileCount={v.files.length}
+                existsCount={v.files.filter((f) => f.exists).length}
+              />
+              <DownloadButton
+                exists={v.exists} status={dl?.status} busy={busy.has(key)}
+                onClick={() => void start('wd14', v.model_id)}
+              />
+            </li>
+          )
+        })}
+      </ul>
+      <button type="button" onClick={() => setAdvOpen(!advOpen)}
+        className="btn btn-ghost btn-sm text-xs text-fg-tertiary self-start">
+        {advOpen ? '▾' : '▸'} 候选编辑（添加/删除自定义 model_id）
+      </button>
+      {advOpen && (
+        <ModelIdsEditor
+          ids={candidates} currentId={currentModelId}
+          onChange={onCandidatesChange}
+        />
+      )}
+    </ModelGroupCard>
+  )
+}
+
+function CLTaggerModelCard({
+  catalog, busy, start,
+  currentModelPath, currentTagMappingPath, onSelectVariant,
+  modelId, onModelIdChange,
+}: {
+  catalog: ModelsCatalog | null
+  busy: Set<string>
+  start: (model_id: string, variant?: string) => Promise<void>
+  currentModelPath: string
+  currentTagMappingPath: string
+  onSelectVariant: (v: CLTaggerVariantInfo) => void
+  modelId: string
+  onModelIdChange: (id: string) => void
+}) {
+  const [advOpen, setAdvOpen] = useState(false)
+  const cl = catalog?.cltagger
+  if (!cl) {
+    return <p className="text-fg-tertiary text-xs">加载模型清单...</p>
+  }
+  return (
+    <ModelGroupCard title={cl.name + '（版本）'}>
+      <p className="text-xs text-fg-tertiary m-0">
+        {cl.description} · <code>{cl.repo}</code>
+      </p>
+      <ul className="list-none m-0 p-0 flex flex-col gap-1">
+        {cl.variants.map((v) => {
+          const key = `cltagger:${v.label}`
+          const dl = catalog.downloads[key]
+          const isSel =
+            v.model_path === currentModelPath &&
+            v.tag_mapping_path === currentTagMappingPath
+          return (
+            <li key={v.label} className={`flex items-center gap-2 text-xs px-1.5 py-1 rounded-sm ${
+              isSel ? 'bg-accent-soft border border-accent' : 'bg-transparent border border-transparent'
+            }`}>
+              <input type="radio" name="cltagger_variant" checked={isSel}
+                onChange={() => onSelectVariant(v)}
+                className="shrink-0"
+                style={{ accentColor: 'var(--accent)' }}
+                title="选作 CLTagger 当前版本"
+              />
+              <code className="font-mono text-fg-primary flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{v.label}</code>
+              <ModelStatusBadge
+                exists={v.exists} size={v.size} status={dl?.status}
+                fileCount={v.files.length}
+                existsCount={v.files.filter((f) => f.exists).length}
+              />
+              <DownloadButton
+                exists={v.exists} status={dl?.status} busy={busy.has(key)}
+                onClick={() => void start('cltagger', v.label)}
+              />
+            </li>
+          )
+        })}
+      </ul>
+      <button type="button" onClick={() => setAdvOpen(!advOpen)}
+        className="btn btn-ghost btn-sm text-xs text-fg-tertiary self-start">
+        {advOpen ? '▾' : '▸'} 自定义 repo（高级）
+      </button>
+      {advOpen && (
+        <SettingsField label="model_id">
+          <input
+            type="text"
+            value={modelId}
+            onChange={(e) => onModelIdChange(e.target.value)}
+            className={textInputClass}
+            placeholder="cella110n/cl_tagger"
+          />
+        </SettingsField>
+      )}
+    </ModelGroupCard>
+  )
+}
+
 function buildPatch(draft: Secrets, server: Secrets): SecretsPatch {
   const out: Record<string, Record<string, unknown>> = {}
   for (const key of Object.keys(draft) as Section[]) {
@@ -477,29 +801,27 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function ModelsSection() {
+function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
+  catalog: ModelsCatalog | null
+  busy: Set<string>
+  start: (model_id: string, variant?: string) => Promise<void>
+  reloadCatalog: () => Promise<void>
+  catalogError: string | null
+}) {
   const { toast } = useToast()
-  const [catalog, setCatalog] = useState<ModelsCatalog | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<Set<string>>(new Set())
   const [rootDraft, setRootDraft] = useState<string>('')
   const [serverRoot, setServerRoot] = useState<string | null>(null)
   const [savingRoot, setSavingRoot] = useState(false)
   const [selectedAnima, setSelectedAnima] = useState<string>('preview3-base')
 
-  const reload = useCallback(async () => {
-    try {
-      const [c, sec] = await Promise.all([api.getModelsCatalog(), api.getSecrets()])
-      setCatalog(c)
-      const root = sec.models?.root ?? null
-      setServerRoot(root)
-      setRootDraft((prev) => (prev === '' || prev === (serverRoot ?? '') ? root ?? '' : prev))
+  // 一次性拉一份 secrets 取 models.root + selected_anima（这两项走独立 PUT，
+  // 不进 SettingsPage 的全局 dirty 流程）。catalog 由父级注入。
+  useEffect(() => {
+    void api.getSecrets().then((sec) => {
+      setServerRoot(sec.models?.root ?? null)
+      setRootDraft(sec.models?.root ?? '')
       setSelectedAnima(sec.models?.selected_anima ?? 'preview3-base')
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }).catch(() => {})
   }, [])
 
   const pickAnima = async (variant: string) => {
@@ -508,14 +830,12 @@ function ModelsSection() {
     try {
       await api.updateSecrets({ models: { selected_anima: variant } })
       toast(`默认主模型已切到 ${variant}`, 'success')
-      await reload()
+      await reloadCatalog()
     } catch (e) {
       toast(String(e), 'error')
-      void reload()
+      void reloadCatalog()
     }
   }
-
-  useEffect(() => { void reload() }, [reload])
 
   const saveRoot = async () => {
     const v = rootDraft.trim()
@@ -523,7 +843,8 @@ function ModelsSection() {
     try {
       await api.updateSecrets({ models: { root: v ? v : null } })
       toast(v ? `已保存模型根目录: ${v}` : '已恢复默认模型根目录', 'success')
-      await reload()
+      setServerRoot(v ? v : null)
+      await reloadCatalog()
     } catch (e) {
       toast(String(e), 'error')
     } finally {
@@ -532,27 +853,10 @@ function ModelsSection() {
   }
 
   const rootDirty = rootDraft.trim() !== (serverRoot ?? '')
-
-  useEventStream((evt) => {
-    if (evt.type === 'model_download_changed') { void reload() }
-  })
-
-  const start = async (model_id: string, variant?: string) => {
-    const key = variant ? `${model_id}:${variant}` : model_id
-    setBusy((s) => new Set(s).add(key))
-    try {
-      await api.startModelDownload({ model_id, variant })
-      toast(`开始下载 ${key}`, 'success')
-      await reload()
-    } catch (e) {
-      toast(String(e), 'error')
-    } finally {
-      setBusy((s) => { const n = new Set(s); n.delete(key); return n })
-    }
-  }
+  const error = catalogError
 
   return (
-    <SettingsSection title="Models（一键下载训练所需模型）">
+    <SettingsSection title="训练模型（一键下载）">
       <SettingsField label="模型根目录 (models_root)">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input
@@ -619,7 +923,7 @@ function ModelsSection() {
             </div>
           </ModelGroupCard>
 
-          {/* Qwen3 + T5 */}
+          {/* Qwen3 + T5（CLTagger 已挪到「打标」tab） */}
           {(['qwen3', 't5_tokenizer'] as const).map((id) => {
             const m = catalog[id]
             const dl = catalog.downloads[id]
@@ -715,12 +1019,13 @@ function DownloadButton({ exists, status, busy, onClick }: {
   )
 }
 
-// ── WD14 Runtime Panel ──────────────────────────────────────────────────────
+// ── ONNX Runtime Section（WD14 + CLTagger 共用 onnxruntime 包管理） ─────────
 
-function WD14RuntimePanel() {
+function ONNXRuntimeSection() {
   const [rt, setRt] = useState<WD14Runtime | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<null | 'auto' | 'gpu' | 'cpu'>(null)
+  const [reinstallOpen, setReinstallOpen] = useState(false)
   const { toast } = useToast()
 
   const refresh = useCallback(async () => {
@@ -758,52 +1063,94 @@ function WD14RuntimePanel() {
     }
   }
 
-  if (error) return <div className="text-err text-xs font-mono">{error}</div>
-  if (!rt) return <div className="text-xs text-fg-tertiary">加载 runtime 状态...</div>
+  const cuda = rt?.cuda_detect ?? { available: false, driver_version: null, gpu_name: null }
+  const mismatched = !!rt && cuda.available && !rt.cuda_available
+  // 默认状态正常时整体折叠；有错 / mismatch / 需重启时自动展开
+  const hasIssue = !!error || (rt && (
+    !!rt.cuda_load_error || rt.restart_required || mismatched
+  ))
 
-  const epLabel = (rt.providers ?? []).map((p) => p.replace('ExecutionProvider', '')).join(' / ') || '(none)'
-  const cuda = rt.cuda_detect ?? { available: false, driver_version: null, gpu_name: null }
-  const cudaInfo = cuda.available ? `${cuda.gpu_name ?? '?'} (driver ${cuda.driver_version ?? '?'})` : '未检测到 NVIDIA GPU'
-  const mismatched = cuda.available && !rt.cuda_available
-
-  const runtimeBoxClass = 'rounded-sm border border-subtle bg-sunken p-2 flex flex-col gap-1 text-xs'
+  // summary 里显示一行简短状态，用户不展开就能扫到
+  const statusLabel = error
+    ? '⚠ 加载状态失败'
+    : !rt
+      ? '加载中...'
+      : rt.cuda_load_error
+        ? '⚠ CUDA 加载失败'
+        : rt.restart_required
+          ? '⚠ 需重启 Studio'
+          : mismatched
+            ? '⚠ GPU 但跑 CPU EP'
+            : rt.cuda_available
+              ? `CUDA · ${rt.installed ?? '?'}`
+              : `CPU · ${rt.installed ?? '?'}`
+  const statusOk = rt && !hasIssue
 
   return (
-    <div className={runtimeBoxClass}>
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-fg-tertiary shrink-0">runtime:</span>
-        <code className="font-mono text-fg-primary">{rt.installed ?? '(未安装)'}{rt.version ? `==${rt.version}` : ''}</code>
-        <StatusLabel bg={rt.cuda_available ? 'bg-ok-soft' : 'bg-warn-soft'} fg={rt.cuda_available ? 'text-ok' : 'text-warn'} text={rt.cuda_available ? 'CUDA' : 'CPU only'} />
-      </div>
-      <div className="text-fg-tertiary">EP: <code className="text-fg-secondary font-mono">{epLabel}</code></div>
-      <div className="text-fg-tertiary">GPU 检测: <span className="text-fg-secondary">{cudaInfo}</span></div>
+    <details open={!!hasIssue} className="rounded-md border border-subtle bg-surface group">
+      <summary className="cursor-pointer p-4 list-none flex items-center gap-2">
+        <span className="text-fg-tertiary text-xs transition-transform group-open:rotate-90 inline-block w-3">▸</span>
+        <h2 className="text-sm font-semibold text-fg-primary m-0">ONNX Runtime</h2>
+        <span className="text-xs text-fg-tertiary">WD14 / CLTagger 共用</span>
+        <span className={`ml-auto text-xs font-mono ${statusOk ? 'text-ok' : 'text-warn'}`}>{statusLabel}</span>
+      </summary>
 
-      {rt.restart_required && (
-        <div className="rounded-sm border border-err bg-err-soft px-2 py-1.5 text-err text-xs">
-          已装新 onnxruntime 包，但当前进程仍在用旧的。<strong>请重启 Studio</strong> 让 EP 切换生效。
-        </div>
-      )}
-      {!rt.restart_required && mismatched && (
-        <div className="rounded-sm border border-info bg-info-soft px-2 py-1.5 text-info text-xs">
-          检测到 NVIDIA GPU 但 onnxruntime 只有 CPU EP — WD14 会跑得很慢。点下方「重装为 GPU 版」修复。
-        </div>
-      )}
-      {rt.cuda_load_error && (
-        <div className="rounded-sm border border-err bg-err-soft px-2 py-1.5 text-xs text-err">
-          <div>CUDA EP 加载失败，已降级到 CPU。</div>
-          <code className="block font-mono text-xs text-err break-all whitespace-pre-wrap mt-1">
-            {rt.cuda_load_error}
-          </code>
-        </div>
-      )}
+      <div className="px-4 pb-4 flex flex-col gap-3">
+        {error && <div className="text-err text-xs font-mono">{error}</div>}
+        {!error && !rt && <div className="text-xs text-fg-tertiary">加载 runtime 状态...</div>}
+        {rt && (
+          <>
+            <div className="rounded-sm border border-subtle bg-sunken p-2 flex flex-col gap-1 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-fg-tertiary shrink-0">runtime:</span>
+                <code className="font-mono text-fg-primary">{rt.installed ?? '(未安装)'}{rt.version ? `==${rt.version}` : ''}</code>
+                <StatusLabel bg={rt.cuda_available ? 'bg-ok-soft' : 'bg-warn-soft'} fg={rt.cuda_available ? 'text-ok' : 'text-warn'} text={rt.cuda_available ? 'CUDA' : 'CPU only'} />
+              </div>
+              <div className="text-fg-tertiary">EP: <code className="text-fg-secondary font-mono">{(rt.providers ?? []).map((p) => p.replace('ExecutionProvider', '')).join(' / ') || '(none)'}</code></div>
+              <div className="text-fg-tertiary">GPU 检测: <span className="text-fg-secondary">{cuda.available ? `${cuda.gpu_name ?? '?'} (driver ${cuda.driver_version ?? '?'})` : '未检测到 NVIDIA GPU'}</span></div>
+            </div>
 
-      <div className="flex gap-1.5 flex-wrap pt-1">
-        <button onClick={() => install('auto')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'auto' ? '装包中...' : '自动检测'}</button>
-        <button onClick={() => install('gpu')} disabled={busy !== null} className="btn btn-primary btn-sm">{busy === 'gpu' ? '装包中...' : '重装为 GPU'}</button>
-        <button onClick={() => install('cpu')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'cpu' ? '装包中...' : '重装为 CPU'}</button>
-        <button onClick={() => void refresh()} disabled={busy !== null} className="px-2 py-0.5 text-fg-tertiary bg-transparent border-none cursor-pointer rounded-sm">↻</button>
+            {rt.restart_required && (
+              <div className="rounded-sm border border-err bg-err-soft px-2 py-1.5 text-err text-xs">
+                已装新 onnxruntime 包，但当前进程仍在用旧的。<strong>请重启 Studio</strong> 让 EP 切换生效。
+              </div>
+            )}
+            {!rt.restart_required && mismatched && (
+              <div className="rounded-sm border border-info bg-info-soft px-2 py-1.5 text-info text-xs">
+                检测到 NVIDIA GPU 但 onnxruntime 只有 CPU EP — WD14 / CLTagger 会跑得很慢。展开「强制重装」装 GPU 版本。
+              </div>
+            )}
+            {rt.cuda_load_error && (
+              <div className="rounded-sm border border-err bg-err-soft px-2 py-1.5 text-xs text-err">
+                <div>CUDA EP 加载失败，已降级到 CPU。</div>
+                <code className="block font-mono text-xs text-err break-all whitespace-pre-wrap mt-1">
+                  {rt.cuda_load_error}
+                </code>
+              </div>
+            )}
+
+            <div className="flex gap-1.5 items-center flex-wrap">
+              <button onClick={() => install('auto')} disabled={busy !== null} className="btn btn-primary btn-sm">
+                {busy === 'auto' ? '装包中...' : '自动检测 + 装合适的包'}
+              </button>
+              <button onClick={() => void refresh()} disabled={busy !== null} title="刷新状态"
+                className="px-2 py-0.5 text-fg-tertiary bg-transparent border-none cursor-pointer rounded-sm">↻</button>
+              <button type="button" onClick={() => setReinstallOpen(!reinstallOpen)}
+                className="btn btn-ghost btn-sm text-xs text-fg-tertiary ml-auto">
+                {reinstallOpen ? '▾' : '▸'} 强制重装（高级）
+              </button>
+            </div>
+            {reinstallOpen && (
+              <div className="flex gap-1.5 items-center flex-wrap pt-2 border-t border-subtle">
+                <button onClick={() => install('gpu')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'gpu' ? '装包中...' : '重装为 GPU'}</button>
+                <button onClick={() => install('cpu')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'cpu' ? '装包中...' : '重装为 CPU'}</button>
+                <span className="text-[10px] text-fg-tertiary">不知道选哪个就用上面"自动检测"。</span>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </details>
   )
 }
 
