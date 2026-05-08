@@ -282,10 +282,14 @@ def enable_xformers(model):
 
 def find_diffusion_pipe_root():
     """查找 diffusion-pipe 模型代码路径"""
+    _here = Path(__file__).resolve().parent  # scripts/
+    _repo = _here.parent                     # repo root
     candidates = [
-        Path(__file__).parent / "diffusion_models",
-        Path(__file__).parent / "models",
         Path(os.environ.get("DIFFUSION_PIPE_ROOT", "")) if os.environ.get("DIFFUSION_PIPE_ROOT") else None,
+        _repo / "models",
+        _here / "models",
+        _repo / "diffusion_models",
+        _here / "diffusion_models",
     ]
     for candidate in candidates:
         if candidate and (candidate / "anima_modeling.py").exists():
