@@ -56,6 +56,7 @@ from .event_bus import bus
 from .services import (
     caption_snapshot,
     downloader,
+    flash_attention_setup,
     presets as preset_flow,
     model_downloader,
     onnxruntime_setup,
@@ -289,8 +290,9 @@ def put_secrets(body: dict[str, Any]) -> dict[str, Any]:
 
 
 class ModelDownloadRequest(BaseModel):
-    model_id: str           # "anima_main" | "anima_vae" | "qwen3" | "t5_tokenizer"
-    variant: Optional[str] = None  # 仅 anima_main 用，其他忽略
+    model_id: str
+    variant: Optional[str] = None
+    source: str = "huggingface"  # "huggingface" | "modelscope"
 
 
 @app.get("/api/models/catalog")
@@ -304,7 +306,7 @@ def start_model_download(body: ModelDownloadRequest) -> dict[str, Any]:
     """启动后台下载，立即返回 status key；前端通过 SSE
     (`model_download_changed`) 或轮询 catalog 看进度。"""
     try:
-        key = model_downloader.trigger(body.model_id, body.variant)
+        key = model_downloader.trigger(body.model_id, body.variant, body.source)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     snap = model_downloader.get_status_snapshot()
@@ -1185,6 +1187,36 @@ def wd14_install(body: WD14InstallRequest) -> dict[str, Any]:
         "cuda_detect": onnxruntime_setup.detect_cuda(),
         "stdout_tail": tail,
     }
+
+
+# ---------------------------------------------------------------------------
+# /api/flash-attention
+# ---------------------------------------------------------------------------
+
+
+class FlashAttnInstallRequest(BaseModel):
+    url: Optional[str] = None
+
+
+@app.get("/api/flash-attention/status")
+def flash_attn_status() -> dict[str, Any]:
+    """返回 flash_attn 安装状态 + 当前环境检测（Python / CUDA / PyTorch / 平台）。"""
+    status = flash_attention_setup.current_status()
+    env = flash_attention_setup.detect_env()
+    return {**status, "env": env}
+
+
+@app.post("/api/flash-attention/install")
+def flash_attn_install(body: FlashAttnInstallRequest) -> dict[str, Any]:
+    """安装 flash_attn wheel。url=null 则自动从 GitHub Releases 查匹配 wheel。
+
+    同步 pip install，几分钟级；前端按钮必须带 loading 状态。
+    安装完成后必须重启 Studio（C extension 不能热替换）。
+    """
+    try:
+        return flash_attention_setup.install(body.url)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/tagger/{name}/check")

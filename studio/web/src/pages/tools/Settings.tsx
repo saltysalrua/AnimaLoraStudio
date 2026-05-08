@@ -3,12 +3,20 @@ import {
   api,
   DEFAULT_WD14_MODELS,
   type CLTaggerVariantInfo,
+  type FlashAttnStatus,
   type ModelDownloadStatus,
   type ModelsCatalog,
   type Secrets,
   type SecretsPatch,
   type WD14Runtime,
 } from '../../api/client'
+
+const WD14_MS_SUPPORT = new Set([
+  'SmilingWolf/wd-eva02-large-tagger-v3',
+  'SmilingWolf/wd-vit-large-tagger-v3',
+  'SmilingWolf/wd-vit-tagger-v3',
+  'SmilingWolf/wd-v1-4-convnext-tagger-v2',
+])
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../components/Toast'
 import { useEventStream } from '../../lib/useEventStream'
@@ -134,12 +142,12 @@ export default function SettingsPage() {
     if (evt.type === 'model_download_changed') { void reloadCatalog() }
   })
 
-  const startDownload = useCallback(async (model_id: string, variant?: string) => {
+  const startDownload = useCallback(async (model_id: string, variant?: string, source?: string) => {
     const key = variant ? `${model_id}:${variant}` : model_id
     setDownloadBusy((s) => new Set(s).add(key))
     try {
-      await api.startModelDownload({ model_id, variant })
-      toast(`开始下载 ${key}`, 'success')
+      await api.startModelDownload({ model_id, variant, source })
+      toast(`开始下载 ${key}${source === 'modelscope' ? '（ModelScope）' : ''}`, 'success')
       await reloadCatalog()
     } catch (e) {
       toast(String(e), 'error')
@@ -147,6 +155,11 @@ export default function SettingsPage() {
       setDownloadBusy((s) => { const n = new Set(s); n.delete(key); return n })
     }
   }, [reloadCatalog, toast])
+
+  const startMs = useCallback(
+    (model_id: string, variant?: string) => startDownload(model_id, variant, 'modelscope'),
+    [startDownload]
+  )
 
   useEffect(() => {
     api
@@ -376,6 +389,7 @@ export default function SettingsPage() {
           catalog={catalog}
           busy={downloadBusy}
           start={startDownload}
+          startMs={startMs}
           currentModelId={draft.wd14.model_id}
           onSelectModelId={(id) => update('wd14', 'model_id', id)}
           candidates={draft.wd14.model_ids}
@@ -509,10 +523,13 @@ export default function SettingsPage() {
         </SettingsField>
       </SettingsSection>
 
+      <FlashAttentionSection />
+
       <ModelsSection
         catalog={catalog}
         busy={downloadBusy}
         start={startDownload}
+        startMs={startMs}
         reloadCatalog={reloadCatalog}
         catalogError={catalogError}
       />
@@ -636,13 +653,14 @@ function ModelIdsEditor({ ids, currentId, onChange }: {
 // ── WD14 / CLTagger Model Cards（打标 tab 内嵌的模型管理器） ─────────────────
 
 function WD14ModelCard({
-  catalog, busy, start,
+  catalog, busy, start, startMs,
   currentModelId, onSelectModelId,
   candidates, onCandidatesChange,
 }: {
   catalog: ModelsCatalog | null
   busy: Set<string>
   start: (model_id: string, variant?: string) => Promise<void>
+  startMs: (model_id: string, variant?: string) => Promise<void>
   currentModelId: string
   onSelectModelId: (id: string) => void
   candidates: string[]
@@ -663,6 +681,7 @@ function WD14ModelCard({
           const key = `wd14:${v.model_id}`
           const dl = catalog.downloads[key]
           const isSel = v.model_id === currentModelId
+          const hasMs = WD14_MS_SUPPORT.has(v.model_id)
           return (
             <li key={v.model_id} className={`flex items-center gap-2 text-xs px-1.5 py-1 rounded-sm ${
               isSel ? 'bg-accent-soft border border-accent' : 'bg-transparent border border-transparent'
@@ -683,6 +702,12 @@ function WD14ModelCard({
                 exists={v.exists} status={dl?.status} busy={busy.has(key)}
                 onClick={() => void start('wd14', v.model_id)}
               />
+              {hasMs && (
+                <MsDownloadButton
+                  busy={busy.has(key)}
+                  onClick={() => void startMs('wd14', v.model_id)}
+                />
+              )}
             </li>
           )
         })}
@@ -801,10 +826,11 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
+function ModelsSection({ catalog, busy, start, startMs, reloadCatalog, catalogError }: {
   catalog: ModelsCatalog | null
   busy: Set<string>
   start: (model_id: string, variant?: string) => Promise<void>
+  startMs: (model_id: string, variant?: string) => Promise<void>
   reloadCatalog: () => Promise<void>
   catalogError: string | null
 }) {
@@ -907,6 +933,7 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
                     <ModelStatusBadge exists={v.exists} size={v.size} status={dl?.status} />
                     <span style={{ flex: 1 }} />
                     <DownloadButton exists={v.exists} status={dl?.status} busy={busy.has(key)} onClick={() => void start('anima_main', v.variant)} />
+                    <MsDownloadButton busy={busy.has(key)} onClick={() => void startMs('anima_main', v.variant)} />
                   </li>
                 )
               })}
@@ -920,6 +947,7 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
               <span style={{ flex: 1 }} />
               <ModelStatusBadge exists={catalog.anima_vae.exists} size={catalog.anima_vae.size} status={catalog.downloads.anima_vae?.status} />
               <DownloadButton exists={catalog.anima_vae.exists} status={catalog.downloads.anima_vae?.status} busy={busy.has('anima_vae')} onClick={() => void start('anima_vae')} />
+              <MsDownloadButton busy={busy.has('anima_vae')} onClick={() => void startMs('anima_vae')} />
             </div>
           </ModelGroupCard>
 
@@ -1015,6 +1043,20 @@ function DownloadButton({ exists, status, busy, onClick }: {
     <button onClick={onClick} className={exists ? 'btn btn-secondary btn-sm' : 'btn btn-primary btn-sm'}
       title={exists ? '已下载，点击重新下载' : '下载'}>
       {exists ? '↻ 重下' : '⤓ 下载'}
+    </button>
+  )
+}
+
+function MsDownloadButton({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="btn btn-secondary btn-sm"
+      style={busy ? { opacity: 0.5 } : undefined}
+      title="从 ModelScope 下载（国内加速）"
+    >
+      {busy ? '...' : '🌐 MS'}
     </button>
   )
 }
@@ -1145,6 +1187,151 @@ function ONNXRuntimeSection() {
                 <button onClick={() => install('gpu')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'gpu' ? '装包中...' : '重装为 GPU'}</button>
                 <button onClick={() => install('cpu')} disabled={busy !== null} className="btn btn-secondary btn-sm">{busy === 'cpu' ? '装包中...' : '重装为 CPU'}</button>
                 <span className="text-[10px] text-fg-tertiary">不知道选哪个就用上面"自动检测"。</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </details>
+  )
+}
+
+// ── Flash Attention Section（训练 tab）─────────────────────────────────────
+
+function FlashAttentionSection() {
+  const [status, setStatus] = useState<FlashAttnStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualUrl, setManualUrl] = useState('')
+  const { toast } = useToast()
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await api.getFlashAttnStatus()
+      setStatus(s)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    }
+  }, [])
+
+  useEffect(() => { void refresh() }, [refresh])
+
+  const install = async (url?: string | null) => {
+    if (!confirm(
+      url
+        ? `将 pip install 指定 URL 的 flash_attn wheel。装包需要几分钟。\n\n装完后必须重启 Studio 才能生效。继续？`
+        : `将自动从 GitHub Releases 查找匹配的 flash_attn wheel 并安装。\n需要网络连接 GitHub，装包需要几分钟。\n\n装完后必须重启 Studio 才能生效。继续？`
+    )) return
+    setBusy(true)
+    try {
+      const result = await api.installFlashAttn(url ?? null)
+      toast(`flash_attn==${result.version ?? '?'} 安装成功，请重启 Studio`, 'success')
+      await refresh()
+    } catch (e) {
+      toast(`安装失败: ${e}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const env = status?.env
+  const hasIssue = !!error || (status && !status.installed)
+
+  const statusLabel = error
+    ? '⚠ 加载失败'
+    : !status
+      ? '加载中...'
+      : status.installed
+        ? `已安装 v${status.version ?? '?'}`
+        : '未安装'
+
+  const statusOk = status?.installed && !error
+
+  return (
+    <details open={!!hasIssue} className="rounded-md border border-subtle bg-surface group">
+      <summary className="cursor-pointer p-4 list-none flex items-center gap-2">
+        <span className="text-fg-tertiary text-xs transition-transform group-open:rotate-90 inline-block w-3">▸</span>
+        <h2 className="text-sm font-semibold text-fg-primary m-0">Flash Attention</h2>
+        <span className="text-xs text-fg-tertiary">训练加速（可选）</span>
+        <span className={`ml-auto text-xs font-mono ${statusOk ? 'text-ok' : 'text-warn'}`}>{statusLabel}</span>
+      </summary>
+
+      <div className="px-4 pb-4 flex flex-col gap-3">
+        {error && <div className="text-err text-xs font-mono">{error}</div>}
+        {!error && !status && <div className="text-xs text-fg-tertiary">加载状态...</div>}
+
+        {status && (
+          <>
+            {env && (
+              <div className="rounded-sm border border-subtle bg-sunken p-2 flex flex-col gap-1 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-fg-tertiary shrink-0">flash_attn:</span>
+                  <code className="font-mono text-fg-primary">
+                    {status.installed ? `v${status.version ?? '?'}` : '（未安装）'}
+                  </code>
+                  {status.installed && (
+                    <StatusLabel bg="bg-ok-soft" fg="text-ok" text="已安装" />
+                  )}
+                </div>
+                <div className="flex gap-4 flex-wrap">
+                  <span className="text-fg-tertiary">Python: <code className="text-fg-secondary font-mono">{env.python_tag}</code></span>
+                  <span className="text-fg-tertiary">CUDA: <code className="text-fg-secondary font-mono">{env.cuda_tag ?? '未检测到'}</code></span>
+                  <span className="text-fg-tertiary">PyTorch: <code className="text-fg-secondary font-mono">{env.torch_tag ?? '未检测到'}</code></span>
+                  <span className="text-fg-tertiary">平台: <code className="text-fg-secondary font-mono">{env.platform ?? '不支持'}</code></span>
+                </div>
+                {env.pattern && (
+                  <div className="text-fg-tertiary">
+                    wheel pattern: <code className="text-fg-secondary font-mono break-all">{env.pattern}</code>
+                  </div>
+                )}
+                {!env.pattern && (
+                  <div className="text-warn text-xs">
+                    无法生成 wheel pattern（需要 CUDA + PyTorch + 支持的平台）
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-1.5 items-center flex-wrap">
+              <button
+                onClick={() => void install(null)}
+                disabled={busy || !env?.pattern}
+                className="btn btn-primary btn-sm"
+                title={env?.pattern ? `自动查找 ${env.pattern}` : '需要 CUDA + PyTorch 才能自动匹配'}
+              >
+                {busy ? '安装中...' : status.installed ? '↻ 重新安装（自动匹配）' : '⤓ 自动查找 + 安装'}
+              </button>
+              <button onClick={() => void refresh()} disabled={busy}
+                className="px-2 py-0.5 text-fg-tertiary bg-transparent border-none cursor-pointer rounded-sm">↻</button>
+              <button type="button" onClick={() => setManualOpen(!manualOpen)}
+                className="btn btn-ghost btn-sm text-xs text-fg-tertiary ml-auto">
+                {manualOpen ? '▾' : '▸'} 手动指定 URL
+              </button>
+            </div>
+
+            {manualOpen && (
+              <div className="flex flex-col gap-2 pt-2 border-t border-subtle">
+                <p className="text-xs text-fg-tertiary m-0">
+                  从 <code className="font-mono">github.com/mjun0812/flash-attention-prebuild-wheels/releases</code> 复制对应 .whl 链接粘贴到此处。
+                </p>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={manualUrl}
+                    onChange={(e) => setManualUrl(e.target.value)}
+                    placeholder="https://github.com/.../flash_attn-...-linux_x86_64.whl"
+                    className={`${textInputClass} flex-1`}
+                  />
+                  <button
+                    onClick={() => { if (manualUrl.trim()) void install(manualUrl.trim()) }}
+                    disabled={busy || !manualUrl.trim()}
+                    className="btn btn-secondary btn-sm"
+                  >
+                    安装
+                  </button>
+                </div>
               </div>
             )}
           </>

@@ -108,6 +108,32 @@ export interface CLTaggerConfig {
   batch_size: number
 }
 
+// ---- flash attention -------------------------------------------------------
+
+export interface FlashAttnEnv {
+  python_tag: string
+  cuda_tag: string | null
+  cuda_ver: string | null
+  torch_tag: string | null
+  torch_ver: string | null
+  platform: string | null
+  pattern: string | null
+}
+
+export interface FlashAttnStatus {
+  installed: boolean
+  version: string | null
+  env: FlashAttnEnv
+}
+
+export interface FlashAttnInstallResult {
+  installed: boolean
+  version: string | null
+  url: string | null
+  stdout_tail: string
+  restart_required: boolean
+}
+
 /** PP8 — onnxruntime 装包状态 + nvidia-smi 检测结果。 */
 export interface WD14Runtime {
   installed: 'onnxruntime' | 'onnxruntime-gpu' | null
@@ -727,13 +753,6 @@ export const api = {
   // Secrets ------------------------------------------------------------
   getSecrets: () => req<Secrets>('/api/secrets'),
 
-  // Models management (PP7) ------------------------------------------------
-  getModelsCatalog: () => req<ModelsCatalog>('/api/models/catalog'),
-  startModelDownload: (body: { model_id: string; variant?: string }) =>
-    req<{ key: string; status: string }>('/api/models/download', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
   updateSecrets: (patch: SecretsPatch) =>
     req<Secrets>('/api/secrets', {
       method: 'PUT',
@@ -1117,6 +1136,24 @@ export const api = {
   /** 把 output 目录全部文件打包成 zip 下载的直链。
    * 推荐用 downloadBlob() 调它，能显示 loading（后端打 zip 要时间）。 */
   taskOutputsZipUrl: (id: number) => `/api/queue/${id}/outputs.zip`,
+
+  // Models management (PP7) ------------------------------------------------
+  getModelsCatalog: () => req<ModelsCatalog>('/api/models/catalog'),
+  startModelDownload: (body: { model_id: string; variant?: string; source?: string }) =>
+    req<{ key: string; status: string }>('/api/models/download', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // Flash Attention --------------------------------------------------------
+  /** 当前 flash_attn 安装状态 + Python / CUDA / PyTorch 环境检测。 */
+  getFlashAttnStatus: () => req<FlashAttnStatus>('/api/flash-attention/status'),
+  /** 安装 flash_attn；url=null 则自动查 GitHub Releases（同步 pip，几分钟级）。 */
+  installFlashAttn: (url?: string | null) =>
+    req<FlashAttnInstallResult>('/api/flash-attention/install', {
+      method: 'POST',
+      body: JSON.stringify({ url: url ?? null }),
+    }),
 
   // PP8 — WD14 运行时 / GPU 装包 ------------------------------------------
   /** 当前 onnxruntime 状态：包名 / 版本 / providers / nvidia-smi 检测结果。 */
