@@ -117,13 +117,21 @@ export interface FlashAttnEnv {
   torch_tag: string | null
   torch_ver: string | null
   platform: string | null
-  pattern: string | null
+}
+
+export interface FlashAttnCandidate {
+  url: string
+  name: string
+  notes: string[]
+  usable: boolean
 }
 
 export interface FlashAttnStatus {
   installed: boolean
   version: string | null
   env: FlashAttnEnv
+  candidates: FlashAttnCandidate[]
+  fetch_error: string | null
 }
 
 export interface FlashAttnInstallResult {

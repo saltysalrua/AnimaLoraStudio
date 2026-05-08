@@ -29,6 +29,7 @@ wandb/
 
 # Studio runtime data (SQLite, user configs, task logs)
 studio_data/
+logs/
 
 # Studio frontend (Node deps and build artifacts)
 studio/web/node_modules/
