@@ -205,8 +205,9 @@ def cmd_build(_args: argparse.Namespace) -> int:
         if os.name == "nt":
             print("  Windows：前往 https://nodejs.org 下载安装包，或用 winget install OpenJS.NodeJS.LTS", file=sys.stderr)
         else:
-            print("  Ubuntu/Debian：curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs", file=sys.stderr)
-            print("  或使用 nvm：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && nvm install --lts", file=sys.stderr)
+            _sudo = "" if (hasattr(os, "getuid") and os.getuid() == 0) else "sudo "
+            print(f"  Ubuntu/Debian：curl -fsSL https://deb.nodesource.com/setup_22.x | {_sudo}bash - && {_sudo}apt-get install -y nodejs", file=sys.stderr)
+            print("  或使用 nvm（无需 sudo）：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && nvm install --lts", file=sys.stderr)
         print("  安装后重新运行本命令。", file=sys.stderr)
         return 2
     rc = npm_install_if_missing(npm)
@@ -500,8 +501,9 @@ def cmd_dev(args: argparse.Namespace) -> int:
         if os.name == "nt":
             print("  Windows：前往 https://nodejs.org 下载安装包，或用 winget install OpenJS.NodeJS.LTS", file=sys.stderr)
         else:
-            print("  Ubuntu/Debian：curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs", file=sys.stderr)
-            print("  或使用 nvm：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && nvm install --lts", file=sys.stderr)
+            _sudo = "" if (hasattr(os, "getuid") and os.getuid() == 0) else "sudo "
+            print(f"  Ubuntu/Debian：curl -fsSL https://deb.nodesource.com/setup_22.x | {_sudo}bash - && {_sudo}apt-get install -y nodejs", file=sys.stderr)
+            print("  或使用 nvm（无需 sudo）：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && nvm install --lts", file=sys.stderr)
         print("  安装后重新运行本命令。", file=sys.stderr)
         return 2
     rc = npm_install_if_missing(npm)
