@@ -140,6 +140,7 @@ AnimaLoraStudio/
 ├── scripts/
 │   └── anima_train.py        # 训练核心（被 Studio worker 通过 subprocess 拉起）
 ├── tools/
+│   ├── anima_generate.py     # 独立图片生成脚本（复用训练推理链路）
 │   ├── anima_reg_ai.py       # AI 正则图生成脚本
 │   ├── anima_reg.py          # 传统正则图处理脚本
 │   ├── train_monitor.py      # 训练状态写入器（被 anima_train 调）

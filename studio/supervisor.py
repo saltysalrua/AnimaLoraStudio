@@ -84,7 +84,7 @@ def _default_cmd_builder(task: dict[str, Any], config_path: Path) -> list[str]:
     """根据 task_type 路由到对应脚本。"""
     task_type = task.get("task_type", "train")
     if task_type == "generate":
-        script = "anima_generate.py"
+        script = "tools/anima_generate.py"
     elif task_type == "reg_ai":
         script = "tools/anima_reg_ai.py"
     else:

@@ -17,9 +17,10 @@ from pathlib import Path
 
 import torch
 
-# anima_train 已移动到 scripts/；train_monitor 已移动到 tools/
+# 本文件在 tools/；anima_train 在 scripts/，train_monitor 在同一 tools/ 目录
 _THIS_DIR = Path(__file__).resolve().parent
-for _p in (_THIS_DIR / "scripts", _THIS_DIR / "tools"):
+_REPO_ROOT = _THIS_DIR.parent
+for _p in (_THIS_DIR, _REPO_ROOT / "scripts"):
     _ps = str(_p)
     if _ps not in sys.path:
         sys.path.insert(0, _ps)
