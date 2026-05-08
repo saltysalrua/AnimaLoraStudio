@@ -5,9 +5,13 @@ on:
     branches: [master]
     paths:
       - '.ide/Dockerfile'
-      - 'requirements.txt'
       - 'studio/web/package*.json'
   workflow_dispatch:
+
+# 同一时刻只保留一个构建；新推送自动取消进行中的旧构建
+concurrency:
+  group: docker-build
+  cancel-in-progress: true
 
 jobs:
   build:
