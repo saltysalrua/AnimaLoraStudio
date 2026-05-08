@@ -103,18 +103,11 @@ function VersionPanel({ collapsed }: { collapsed: boolean }) {
   if (!ctx) return null
   const { project, activeVersion, onSelectVersion, onCreateVersion, onExportTrain, onDeleteVersion, exporting } = ctx
 
-  if (collapsed) {
-    return (
-      <button
-        onClick={onExportTrain}
-        disabled={!activeVersion || exporting}
-        title={exporting ? '打包中...' : '导出训练集'}
-        className={`flex items-center justify-center py-[7px] w-full rounded-md text-fg-tertiary bg-transparent border-none cursor-pointer hover:bg-overlay transition-colors ${!activeVersion ? 'opacity-40' : ''}`}
-      >
-        {I.export}
-      </button>
-    )
-  }
+  // 折叠态：整个 VersionPanel 不渲染。
+  // 导出按钮原本在折叠态独占一行，混在 stepper 步骤图标之间容易误触
+  // （stepper 是导航，导出是触发下载，行为不一致）。需要导出时展开侧栏，
+  // actions 行里有「导出」按钮带标签。
+  if (collapsed) return null
 
   return (
     <div className="rounded-md border border-subtle bg-overlay px-2 pt-2 pb-1.5 flex flex-col gap-1">

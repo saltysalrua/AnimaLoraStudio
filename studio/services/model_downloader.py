@@ -18,6 +18,9 @@ pending/running/done/failed 四态 + 完成后大小变化。
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +30,7 @@ from typing import Any, Callable, Optional
 from .. import secrets
 from ..event_bus import bus
 from ..paths import REPO_ROOT
+from .onnx_tagger_base import safe_dir_name
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +65,18 @@ T5_FILES = [
     "special_tokens_map.json",
 ]
 
+# CLTagger 子目录布局：仓库内 cl_tagger_1_02/model.onnx 等。新版本（1.03 等）
+# 出现时往这里加一行；UI 自动作为 radio 选项暴露。
+# label → (model_path, tag_mapping_path)
+CLTAGGER_VERSIONS: dict[str, tuple[str, str]] = {
+    "cl_tagger_1_02": (
+        "cl_tagger_1_02/model.onnx",
+        "cl_tagger_1_02/tag_mapping.json",
+    ),
+}
+
+# WD14 模型常驻文件名（HF SmilingWolf/* 仓库顶层都是这两个）。
+WD14_FILES = ("model.onnx", "selected_tags.csv")
 
 # ---------------------------------------------------------------------------
 # paths
@@ -104,6 +120,16 @@ def qwen_dir(root: Path) -> Path:
 
 def t5_tokenizer_dir(root: Path) -> Path:
     return root / "t5_tokenizer"
+
+
+def wd14_target_dir(root: Path, model_id: str) -> Path:
+    """WD14 单个 model_id 的本地目录。同 wd14_tagger 的 _resolve_model_dir 路径布局。"""
+    return root / "wd14" / safe_dir_name(model_id)
+
+
+def cltagger_target_root(root: Path, model_id: str) -> Path:
+    """CLTagger repo 的本地根目录。子目录布局来自 CLTAGGER_VERSIONS。"""
+    return root / "cltagger" / safe_dir_name(model_id)
 
 
 def find_anima_main(root: Optional[Path] = None) -> Optional[Path]:
@@ -257,6 +283,40 @@ def download_t5_tokenizer(
     return ok
 
 
+def download_cltagger(
+    target_root: Path,
+    cfg: Optional["secrets.CLTaggerConfig"] = None,
+    *,
+    on_log: Callable[[str], None] = print,
+) -> bool:
+    cfg = cfg or secrets.load().cltagger
+    on_log(f"\n📥 CLTagger → {target_root}")
+    target_root.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for f in (cfg.model_path, cfg.tag_mapping_path):
+        if not download_flat(cfg.model_id, f, target_root / f, on_log=on_log):
+            ok = False
+    return ok
+
+
+def download_wd14(
+    model_id: str,
+    root: Optional[Path] = None,
+    *,
+    on_log: Callable[[str], None] = print,
+) -> bool:
+    """下载 WD14 单个 model_id 的两个文件到 `{models_root}/wd14/{safe_id}/`。"""
+    r = root or models_root()
+    target = wd14_target_dir(r, model_id)
+    on_log(f"\n📥 WD14 {model_id} → {target}")
+    target.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for f in WD14_FILES:
+        if not download_flat(model_id, f, target / f, on_log=on_log):
+            ok = False
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # catalog
 # ---------------------------------------------------------------------------
@@ -293,6 +353,44 @@ def build_catalog(root: Optional[Path] = None) -> dict[str, Any]:
     vae_target = anima_vae_target(r)
     qwen_d = qwen_dir(r)
     t5_d = t5_tokenizer_dir(r)
+    cl_cfg = secrets.load().cltagger
+    wd14_cfg = secrets.load().wd14
+
+    # WD14 候选每个 model_id 一行：两文件全在才算"已下载"。
+    wd14_variants = []
+    for mid in wd14_cfg.model_ids:
+        target = wd14_target_dir(r, mid)
+        files = [{"name": f, **_file_status(target / f)} for f in WD14_FILES]
+        all_exist = all(f["exists"] for f in files)
+        total_size = sum(f["size"] for f in files)
+        wd14_variants.append({
+            "model_id": mid,
+            "is_current": mid == wd14_cfg.model_id,
+            "target_path": str(target),
+            "exists": all_exist,
+            "size": total_size,
+            "files": files,
+        })
+
+    # CLTagger 版本预设（CLTAGGER_VERSIONS 写死的子目录布局）。
+    cl_root = cltagger_target_root(r, cl_cfg.model_id)
+    cl_variants = []
+    for label, (mp, tmp) in CLTAGGER_VERSIONS.items():
+        files = [
+            {"name": mp, **_file_status(cl_root / mp)},
+            {"name": tmp, **_file_status(cl_root / tmp)},
+        ]
+        all_exist = all(f["exists"] for f in files)
+        total_size = sum(f["size"] for f in files)
+        cl_variants.append({
+            "label": label,
+            "model_path": mp,
+            "tag_mapping_path": tmp,
+            "is_current": cl_cfg.model_path == mp and cl_cfg.tag_mapping_path == tmp,
+            "exists": all_exist,
+            "size": total_size,
+            "files": files,
+        })
 
     return {
         "models_root": str(r),
@@ -331,6 +429,24 @@ def build_catalog(root: Optional[Path] = None) -> dict[str, Any]:
             "files": [
                 {"name": f, **_file_status(t5_d / f)} for f in T5_FILES
             ],
+        },
+        "wd14": {
+            "id": "wd14",
+            "name": "WD14",
+            "description": "SmilingWolf 系列 ONNX 打标",
+            "repo": "SmilingWolf/*",
+            "current_model_id": wd14_cfg.model_id,
+            "variants": wd14_variants,
+        },
+        "cltagger": {
+            "id": "cltagger",
+            "name": "CLTagger",
+            "description": "cella110n CLTagger ONNX",
+            "repo": cl_cfg.model_id,
+            "target_dir": str(cl_root),
+            "current_model_path": cl_cfg.model_path,
+            "current_tag_mapping_path": cl_cfg.tag_mapping_path,
+            "variants": cl_variants,
         },
         "downloads": get_status_snapshot(),
     }
@@ -430,12 +546,181 @@ def start_download_async(
     return ds
 
 
-def trigger(model_id: str, variant: Optional[str] = None) -> str:
-    """便于端点调用的入口：根据 model_id 选对应的 download_* 函数 + 启动异步。
+# ---------------------------------------------------------------------------
+# ModelScope 下载 helper
+# ---------------------------------------------------------------------------
+
+# WD14 ModelScope 映射：SmilingWolf/* → fireicewolf/*（install.sh 同源）
+WD14_MS_REPOS: dict[str, str] = {
+    "SmilingWolf/wd-eva02-large-tagger-v3": "fireicewolf/wd-eva02-large-tagger-v3",
+    "SmilingWolf/wd-vit-large-tagger-v3":   "fireicewolf/wd-vit-large-tagger-v3",
+    "SmilingWolf/wd-vit-tagger-v3":         "fireicewolf/wd-vit-tagger-v3",
+    "SmilingWolf/wd-v1-4-convnext-tagger-v2": "fireicewolf/wd-v1-4-convnext-tagger-v2",
+}
+
+
+def _ensure_modelscope(on_log: Callable[[str], None]) -> bool:
+    """若 modelscope 未安装则自动 pip install。"""
+    try:
+        import modelscope  # noqa: F401
+        return True
+    except ImportError:
+        on_log("   ℹ modelscope 未安装，正在安装...")
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "modelscope"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            on_log(f"   ✗ modelscope 安装失败: {(r.stdout + r.stderr)[-400:]}")
+            return False
+        on_log("   ✓ modelscope 已安装")
+        return True
+
+
+def _ms_download_file(
+    ms_repo: str,
+    repo_path: str,
+    local_dir: Path,
+    on_log: Callable[[str], None],
+) -> bool:
+    """用 modelscope CLI 下载 repo 内单个文件到 local_dir，并打平目录结构。"""
+    local_dir.mkdir(parents=True, exist_ok=True)
+    fname = Path(repo_path).name
+    target = local_dir / fname
+    if target.exists():
+        on_log(f"   ✓ {fname} 已存在，跳过")
+        return True
+
+    on_log(f"   ↓ ModelScope {ms_repo} / {repo_path} ...")
+    r = subprocess.run(
+        [sys.executable, "-m", "modelscope", "download",
+         "--model", ms_repo, repo_path, "--local_dir", str(local_dir)],
+        capture_output=True, text=True,
+    )
+    for line in (r.stdout + r.stderr).splitlines():
+        if line.strip():
+            on_log(f"   {line}")
+    if r.returncode != 0:
+        on_log("   ✗ 下载命令失败")
+        return False
+
+    # modelscope 保留 repo 内部目录结构 → 打平
+    if not target.exists():
+        matches = list(local_dir.rglob(fname))
+        if matches:
+            shutil.move(str(matches[0]), str(target))
+            for d in sorted(local_dir.rglob("*"), reverse=True):
+                if d.is_dir() and d != local_dir:
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+
+    if target.exists():
+        on_log(f"   ✓ {fname}")
+        return True
+    on_log(f"   ✗ 未找到 {fname}")
+    return False
+
+
+def _ms_download_repo(
+    ms_repo: str,
+    local_dir: Path,
+    on_log: Callable[[str], None],
+) -> bool:
+    """用 modelscope CLI 下载整个 repo 到 local_dir。"""
+    local_dir.mkdir(parents=True, exist_ok=True)
+    on_log(f"   ↓ ModelScope {ms_repo} → {local_dir} ...")
+    r = subprocess.run(
+        [sys.executable, "-m", "modelscope", "download",
+         "--model", ms_repo, "--local_dir", str(local_dir)],
+        capture_output=True, text=True,
+    )
+    for line in (r.stdout + r.stderr).splitlines():
+        if line.strip():
+            on_log(f"   {line}")
+    if r.returncode != 0:
+        on_log("   ✗ 下载命令失败")
+        return False
+    on_log("   ✓ 下载完成")
+    return True
+
+
+def download_anima_main_ms(
+    root: Path, variant: str, *, on_log: Callable[[str], None] = print
+) -> bool:
+    if variant == "latest":
+        variant = LATEST_ANIMA
+    if variant not in ANIMA_VARIANTS:
+        on_log(f"✗ 未知 variant {variant!r}")
+        return False
+    if not _ensure_modelscope(on_log):
+        return False
+    target = anima_main_target(root, variant)
+    on_log(f"\n📥 Anima 主模型 [{variant}] (ModelScope, ~4 GB)")
+    return _ms_download_file(ANIMA_REPO, ANIMA_VARIANTS[variant], target.parent, on_log)
+
+
+def download_anima_vae_ms(
+    root: Path, *, on_log: Callable[[str], None] = print
+) -> bool:
+    if not _ensure_modelscope(on_log):
+        return False
+    target = anima_vae_target(root)
+    on_log("\n📥 Anima VAE (ModelScope, ~250 MB)")
+    return _ms_download_file(ANIMA_REPO, ANIMA_VAE_PATH, target.parent, on_log)
+
+
+def download_wd14_ms(
+    model_id: str,
+    root: Optional[Path] = None,
+    *,
+    on_log: Callable[[str], None] = print,
+) -> bool:
+    ms_repo = WD14_MS_REPOS.get(model_id)
+    if not ms_repo:
+        on_log(f"✗ 无对应 ModelScope repo: {model_id!r}")
+        return False
+    if not _ensure_modelscope(on_log):
+        return False
+    r = root or models_root()
+    target = wd14_target_dir(r, model_id)
+    on_log(f"\n📥 WD14 {model_id} (ModelScope) → {target}")
+    return _ms_download_repo(ms_repo, target, on_log)
+
+
+def trigger(model_id: str, variant: Optional[str] = None, source: str = "huggingface") -> str:
+    """便于端点调用的入口：根据 model_id + source 选对应的 download_* 函数 + 启动异步。
 
     返回 status key（前端用来拼 SSE 关心的 key）。
+    source: 'huggingface'（默认）或 'modelscope'
     """
     root = models_root()
+
+    if source == "modelscope":
+        if model_id == "anima_main":
+            v = variant or LATEST_ANIMA
+            if v == "latest":
+                v = LATEST_ANIMA
+            if v not in ANIMA_VARIANTS:
+                raise ValueError(f"unknown anima variant {variant!r}")
+            key = f"anima_main:{v}"
+            start_download_async(key, lambda log: download_anima_main_ms(root, v, on_log=log))
+            return key
+        if model_id == "anima_vae":
+            key = "anima_vae"
+            start_download_async(key, lambda log: download_anima_vae_ms(root, on_log=log))
+            return key
+        if model_id == "wd14":
+            if not variant:
+                raise ValueError("wd14 需要 variant=model_id")
+            if variant not in WD14_MS_REPOS:
+                raise ValueError(f"ModelScope 不支持该 WD14 模型: {variant!r}")
+            key = f"wd14:{variant}"
+            start_download_async(key, lambda log: download_wd14_ms(variant, root, on_log=log))
+            return key
+        raise ValueError(f"ModelScope 不支持 model_id={model_id!r}")
+
     if model_id == "anima_main":
         v = variant or "latest"
         if v == "latest":
@@ -464,6 +749,33 @@ def trigger(model_id: str, variant: Optional[str] = None) -> str:
         key = "t5_tokenizer"
         start_download_async(
             key, lambda log: download_t5_tokenizer(root, on_log=log)
+        )
+        return key
+    if model_id == "cltagger":
+        cfg = secrets.load().cltagger
+        target = cltagger_target_root(root, cfg.model_id)
+        # variant 可指定预设 label（覆盖 cfg 当前的 model_path），便于 UI 一键
+        # 下载非"当前选中"的版本。未指定时用 cfg 当前路径。
+        if variant:
+            preset = CLTAGGER_VERSIONS.get(variant)
+            if preset is None:
+                raise ValueError(f"unknown cltagger variant {variant!r}")
+            cfg = secrets.CLTaggerConfig(
+                **{**cfg.model_dump(), "model_path": preset[0], "tag_mapping_path": preset[1]}
+            )
+            key = f"cltagger:{variant}"
+        else:
+            key = "cltagger"
+        start_download_async(
+            key, lambda log: download_cltagger(target, cfg, on_log=log)
+        )
+        return key
+    if model_id == "wd14":
+        if not variant:
+            raise ValueError("wd14 需要 variant=model_id")
+        key = f"wd14:{variant}"
+        start_download_async(
+            key, lambda log: download_wd14(variant, root, on_log=log)
         )
         return key
     raise ValueError(f"unknown model_id {model_id!r}")

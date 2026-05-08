@@ -332,30 +332,35 @@ WEB_SRC = WEB_DIR / "src"
 
 
 def _web_dist_is_stale() -> bool:
-    """dist 是否落后于 src（云上 git pull 新代码后旧 dist 还在的常见坑）。
+    """dist 是否落后于 src。两道检查并联，任一说 stale 就重建。
 
-    优先比 git HEAD：build 时把 HEAD 写到 dist/.built-from，启动时对比当前
-    HEAD。云上 git pull 之后 HEAD 一定变，能可靠触发重建——而 mtime 比较在
-    某些 git 版本下不可靠（git 不更新文件 mtime）。
+    1) git HEAD 比对：build 时把 HEAD 写到 dist/.built-from，启动时对比当前
+       HEAD。云上 git pull 之后 HEAD 一定变，触发重建——这条是为了兜底
+       "git pull 不更新文件 mtime" 在某些 git 版本下不可靠的坑。
+    2) mtime 比对：dist/index.html 旧于 src/ 树或 package.json 等关键文件。
+       这条是为了兜底本地未 commit 的修改——HEAD 不变但磁盘上的文件确实
+       新过 dist，应当重建。
 
-    fallback：没有 git 或 .built-from 时退回 mtime 比对（dist/index.html 旧
-    于 src/ 树或 package.json 等关键文件）。
+    曾经把 mtime 降级成 fallback（HEAD 一致就跳过），导致本地编辑后
+    `studio run` 看不到变化。改并联后云上 git pull 行为不受影响，本地 dev
+    iteration 也不需要每改完都 commit。
     """
     dist_index = WEB_DIST / "index.html"
     if not dist_index.exists():
         return True
 
-    # 优先：git HEAD 比对
+    # 第一道：git HEAD 比对
     marker = WEB_DIST / ".built-from"
     head = _current_git_head()
     if head and marker.exists():
         try:
             built_from = marker.read_text(encoding="utf-8").strip()
-            return built_from != head
+            if built_from != head:
+                return True
         except OSError:
             pass
 
-    # fallback：mtime 比对
+    # 第二道：mtime 比对
     try:
         dist_mtime = dist_index.stat().st_mtime
         src_latest = max(
@@ -366,9 +371,12 @@ def _web_dist_is_stale() -> bool:
         for f in (WEB_DIR / "package.json", WEB_DIR / "vite.config.ts", WEB_DIR / "tsconfig.json"):
             if f.exists():
                 src_latest = max(src_latest, f.stat().st_mtime)
-        return src_latest > dist_mtime
+        if src_latest > dist_mtime:
+            return True
     except OSError:
-        return False
+        pass
+
+    return False
 
 
 def cmd_run(args: argparse.Namespace) -> int:

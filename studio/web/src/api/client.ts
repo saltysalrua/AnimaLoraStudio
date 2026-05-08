@@ -19,6 +19,9 @@ export interface SchemaProperty {
   control?: string
   cli_alias?: string
   show_when?: string
+  /** 后端打了 hidden=True 的字段：值仍随 ConfigData 透传 / 保存，但 SchemaForm
+   * 不渲染。用于「该字段对当前用户群无意义但 schema 必须保留」的兜底场景。 */
+  hidden?: boolean
   anyOf?: Array<{ type?: string }>
   items?: SchemaProperty
 }
@@ -92,6 +95,45 @@ export interface WD14Config {
   batch_size: number
 }
 
+export interface CLTaggerConfig {
+  model_id: string
+  model_path: string
+  tag_mapping_path: string
+  local_dir: string | null
+  threshold_general: number
+  threshold_character: number
+  add_rating_tag: boolean
+  add_model_tag: boolean
+  blacklist_tags: string[]
+  batch_size: number
+}
+
+// ---- flash attention -------------------------------------------------------
+
+export interface FlashAttnEnv {
+  python_tag: string
+  cuda_tag: string | null
+  cuda_ver: string | null
+  torch_tag: string | null
+  torch_ver: string | null
+  platform: string | null
+  pattern: string | null
+}
+
+export interface FlashAttnStatus {
+  installed: boolean
+  version: string | null
+  env: FlashAttnEnv
+}
+
+export interface FlashAttnInstallResult {
+  installed: boolean
+  version: string | null
+  url: string | null
+  stdout_tail: string
+  restart_required: boolean
+}
+
 /** PP8 — onnxruntime 装包状态 + nvidia-smi 检测结果。 */
 export interface WD14Runtime {
   installed: 'onnxruntime' | 'onnxruntime-gpu' | null
@@ -163,6 +205,7 @@ export interface Secrets {
   huggingface: HuggingFaceConfig
   joycaption: JoyCaptionConfig
   wd14: WD14Config
+  cltagger: CLTaggerConfig
   models: ModelsConfig
   queue: QueueConfig
 }
@@ -212,6 +255,45 @@ export interface ModelDirCatalog {
   files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
 }
 
+export interface WD14VariantInfo {
+  model_id: string
+  is_current: boolean
+  target_path: string
+  exists: boolean
+  size: number
+  files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
+}
+
+export interface WD14Catalog {
+  id: 'wd14'
+  name: string
+  description: string
+  repo: string
+  current_model_id: string
+  variants: WD14VariantInfo[]
+}
+
+export interface CLTaggerVariantInfo {
+  label: string
+  model_path: string
+  tag_mapping_path: string
+  is_current: boolean
+  exists: boolean
+  size: number
+  files: Array<{ name: string; exists: boolean; size: number; mtime: number }>
+}
+
+export interface CLTaggerCatalog {
+  id: 'cltagger'
+  name: string
+  description: string
+  repo: string
+  target_dir: string
+  current_model_path: string
+  current_tag_mapping_path: string
+  variants: CLTaggerVariantInfo[]
+}
+
 export interface ModelDownloadStatus {
   key: string
   status: 'pending' | 'running' | 'done' | 'failed'
@@ -227,6 +309,8 @@ export interface ModelsCatalog {
   anima_vae: AnimaVaeCatalog
   qwen3: ModelDirCatalog
   t5_tokenizer: ModelDirCatalog
+  wd14: WD14Catalog
+  cltagger: CLTaggerCatalog
   downloads: Record<string, ModelDownloadStatus>
 }
 
@@ -347,7 +431,7 @@ export interface CopyResult {
 
 // ---- tagging (PP4) --------------------------------------------------------
 
-export type TaggerName = 'wd14' | 'joycaption'
+export type TaggerName = 'wd14' | 'cltagger' | 'joycaption'
 
 export interface TaggerStatus {
   name: TaggerName
@@ -669,13 +753,6 @@ export const api = {
   // Secrets ------------------------------------------------------------
   getSecrets: () => req<Secrets>('/api/secrets'),
 
-  // Models management (PP7) ------------------------------------------------
-  getModelsCatalog: () => req<ModelsCatalog>('/api/models/catalog'),
-  startModelDownload: (body: { model_id: string; variant?: string }) =>
-    req<{ key: string; status: string }>('/api/models/download', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
   updateSecrets: (patch: SecretsPatch) =>
     req<Secrets>('/api/secrets', {
       method: 'PUT',
@@ -864,6 +941,17 @@ export const api = {
         local_dir?: string | null
         blacklist_tags?: string[] | null
       }
+      cltagger_overrides?: {
+        threshold_general?: number | null
+        threshold_character?: number | null
+        model_id?: string | null
+        model_path?: string | null
+        tag_mapping_path?: string | null
+        local_dir?: string | null
+        add_rating_tag?: boolean | null
+        add_model_tag?: boolean | null
+        blacklist_tags?: string[] | null
+      }
     }
   ) =>
     req<Job>(`/api/projects/${pid}/versions/${vid}/tag`, {
@@ -1048,6 +1136,24 @@ export const api = {
   /** 把 output 目录全部文件打包成 zip 下载的直链。
    * 推荐用 downloadBlob() 调它，能显示 loading（后端打 zip 要时间）。 */
   taskOutputsZipUrl: (id: number) => `/api/queue/${id}/outputs.zip`,
+
+  // Models management (PP7) ------------------------------------------------
+  getModelsCatalog: () => req<ModelsCatalog>('/api/models/catalog'),
+  startModelDownload: (body: { model_id: string; variant?: string; source?: string }) =>
+    req<{ key: string; status: string }>('/api/models/download', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // Flash Attention --------------------------------------------------------
+  /** 当前 flash_attn 安装状态 + Python / CUDA / PyTorch 环境检测。 */
+  getFlashAttnStatus: () => req<FlashAttnStatus>('/api/flash-attention/status'),
+  /** 安装 flash_attn；url=null 则自动查 GitHub Releases（同步 pip，几分钟级）。 */
+  installFlashAttn: (url?: string | null) =>
+    req<FlashAttnInstallResult>('/api/flash-attention/install', {
+      method: 'POST',
+      body: JSON.stringify({ url: url ?? null }),
+    }),
 
   // PP8 — WD14 运行时 / GPU 装包 ------------------------------------------
   /** 当前 onnxruntime 状态：包名 / 版本 / providers / nvidia-smi 检测结果。 */

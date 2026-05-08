@@ -35,9 +35,6 @@ studio/web/node_modules/
 studio/web/dist/
 studio/web/.vite/
 
-# Studio 走 preset 池（studio_data/presets/，已被 studio_data/ 总规则覆盖），
-# 旧的 config/ 目录已删，不再需要 user yaml 排除规则。
-
 # OS / editor
 .DS_Store
 Thumbs.db
@@ -51,7 +48,7 @@ Thumbs.db
 **/.cache/
 
 
-# Model weights (keep code/config, ignore large weights)
+# Model weights - ignore everywhere by default
 *.safetensors
 *.ckpt
 *.bin
@@ -63,7 +60,16 @@ models/text_encoders/tokenizer.json
 models/text_encoders/vocab.json
 models/wd14/
 
-# Dataset (training images)
+# 底模在 models/ 目录下走 Git LFS，排除上面的忽略规则
+!models/**/*.safetensors
+!models/**/*.ckpt
+!models/**/*.bin
+!models/**/*.pt
+!models/**/*.pth
+!models/**/*.npz
+!models/**/*.onnx
+
+# Dataset (training images) - 每次手动上传，不持久化
 dataset/
 
 # Misc
