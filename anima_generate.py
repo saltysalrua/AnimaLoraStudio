@@ -17,6 +17,13 @@ from pathlib import Path
 
 import torch
 
+# anima_train 已移动到 scripts/；train_monitor 已移动到 tools/
+_THIS_DIR = Path(__file__).resolve().parent
+for _p in (_THIS_DIR / "scripts", _THIS_DIR / "tools"):
+    _ps = str(_p)
+    if _ps not in sys.path:
+        sys.path.insert(0, _ps)
+
 # 复用 anima_train 的模型加载/采样函数（无副作用，main() 在 __name__=='__main__' 里）
 import anima_train as _T
 

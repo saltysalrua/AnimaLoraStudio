@@ -86,9 +86,9 @@ def _default_cmd_builder(task: dict[str, Any], config_path: Path) -> list[str]:
     if task_type == "generate":
         script = "anima_generate.py"
     elif task_type == "reg_ai":
-        script = "anima_reg_ai.py"
+        script = "tools/anima_reg_ai.py"
     else:
-        script = "anima_train.py"
+        script = "scripts/anima_train.py"
     cmd = [
         sys.executable,
         str(REPO_ROOT / script),

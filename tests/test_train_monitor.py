@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
+
+_tools = Path(__file__).resolve().parent.parent / "tools"
+if str(_tools) not in sys.path:
+    sys.path.insert(0, str(_tools))
 
 import train_monitor
 

@@ -35,6 +35,11 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, OSError):
         pass
 
+# train_monitor 已移动到 tools/；懒导入前先确保路径可找到
+_TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
