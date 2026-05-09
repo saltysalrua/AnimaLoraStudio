@@ -557,6 +557,8 @@ export interface RegMeta {
   postprocess_clusters: number | null
   postprocess_method: string | null
   postprocess_max_crop_ratio: number | null
+  // "scrape" = booru 拉取，"ai_base" = base 模型先验生成；缺省按 "scrape" 处理（旧 meta 兼容）
+  generation_method?: 'scrape' | 'ai_base'
 }
 
 export interface RegStatus {
@@ -591,6 +593,46 @@ export interface RegBuildRequest {
   max_aspect_ratio?: number
   postprocess_method?: 'smart' | 'stretch' | 'crop'
   postprocess_max_crop_ratio?: number
+}
+
+/** PR-9 — 先验生成（base 模型反向出 reg 集，无 LoRA）。 */
+export interface RegAiRequest {
+  excluded_tags?: string[]
+  negative_prompt?: string
+  width?: number
+  height?: number
+  steps?: number
+  cfg_scale?: number
+  sampler_name?: string
+  scheduler?: string
+  seed?: number
+  incremental?: boolean
+  mixed_precision?: string
+  xformers?: boolean
+  flash_attn?: boolean
+}
+
+/** PR-9 — 测试出图（独立工具页，多 LoRA + multi-prompt）。 */
+export interface LoraEntry {
+  path: string
+  scale: number
+}
+
+export interface GenerateRequest {
+  prompts: string[]
+  negative_prompt?: string
+  width?: number
+  height?: number
+  steps?: number
+  cfg_scale?: number
+  sampler_name?: string
+  scheduler?: string
+  count?: number
+  seed?: number
+  lora_configs?: LoraEntry[]
+  mixed_precision?: string
+  xformers?: boolean
+  flash_attn?: boolean
 }
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'canceled'
@@ -1078,6 +1120,24 @@ export const api = {
     req<{ path: string; tags: string[] }>(
       `/api/projects/${pid}/versions/${vid}/reg/caption?path=${encodeURIComponent(path)}`
     ),
+  /** PR-9 — 启动先验生成 task（base 模型对每张 train 图反向出对照图）。 */
+  enqueueRegPrior: (pid: number, vid: number, body: RegAiRequest) =>
+    req<Task>(`/api/projects/${pid}/versions/${vid}/reg/generate-prior`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** 查询先验生成 task 状态。 */
+  getRegPriorTask: (pid: number, vid: number, taskId: number) =>
+    req<Task>(`/api/projects/${pid}/versions/${vid}/reg/generate-prior/${taskId}`),
+
+  /** PR-9 — 启动测试出图 task。图写到 tempdir，task 结束清掉（不保存）。 */
+  enqueueGenerate: (body: GenerateRequest) =>
+    req<Task>('/api/generate', { method: 'POST', body: JSON.stringify(body) }),
+  /** 查询测试 task 状态。 */
+  getGenerateTask: (id: number) => req<Task>(`/api/generate/${id}`),
+  /** 测试出图单张 URL（task 跑中或刚完成时拉；清理后 404）。 */
+  generateSampleUrl: (taskId: number, filename: string) =>
+    `/api/generate/${taskId}/sample/${encodeURIComponent(filename)}`,
 
   // Train config (PP6.2) -------------------------------------------------
   getVersionConfig: (pid: number, vid: number) =>
