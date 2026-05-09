@@ -411,6 +411,14 @@ class TrainingConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class LoraEntry(BaseModel):
+    """单个 LoRA 的加载参数。Generate / API 共享，避免 server.py 私有定义。"""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(..., description="LoRA safetensors 绝对路径")
+    scale: float = Field(1.0, description="贡献权重（multiplier），多 LoRA 各自独立")
+
+
 class GenerateConfig(BaseModel):
     """测试出图任务参数。对应 tools/anima_generate.py 的 JSON 配置。
 
@@ -442,9 +450,9 @@ class GenerateConfig(BaseModel):
     seed: int = Field(0, description="随机种子（0=随机）")
 
     # LoRA（多 LoRA 独立 inject + multiplier=scale 控贡献权重）
-    lora_configs: list[dict] = Field(
+    lora_configs: list[LoraEntry] = Field(
         default_factory=list,
-        description="LoRA 列表，每项 {path: str, scale: float}",
+        description="LoRA 列表（每份独立 inject，multiplier=scale）",
     )
 
     # 运行时

@@ -78,7 +78,7 @@ from .paths import (
     WEB_DIST,
     ensure_dirs,
 )
-from .schema import GROUP_ORDER, GenerateConfig, RegAiConfig, TrainingConfig
+from .schema import GROUP_ORDER, GenerateConfig, LoraEntry, RegAiConfig, TrainingConfig
 from .supervisor import Supervisor
 
 ensure_dirs()
@@ -1716,12 +1716,6 @@ def get_reg_prior_task(pid: int, vid: int, task_id: int) -> dict[str, Any]:
 #
 # 用户决策："测试" 出图不保存：图写到 tempfile.gettempdir() / anima_gen_{task_id}/，
 # task 结束 supervisor 自动清；启动时扫清遗留。前端没有 history 列表 —— 看完即丢。
-
-
-class LoraEntry(BaseModel):
-    """Generate 端点的 LoRA 项（path + scale）。"""
-    path: str
-    scale: float = 1.0
 
 
 class GenerateRequest(BaseModel):
