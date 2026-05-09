@@ -104,7 +104,10 @@ _check_venv_python_version() {
     fi
 }
 
-if [ -x "venv/bin/python" ]; then
+if [ -x "/opt/venv/bin/python" ]; then
+    # Docker / CNB 镜像内预建 venv，直接使用，跳过本地 venv 检测。
+    PYTHON="/opt/venv/bin/python"
+elif [ -x "venv/bin/python" ]; then
     PYTHON="venv/bin/python"
     _check_venv_python_version
 elif [ -x ".venv/bin/python" ]; then
@@ -181,6 +184,11 @@ fi
 
 echo "studio.sh: using $PYTHON"
 
+# Docker / CNB 容器环境：监听所有接口，不启动浏览器，直接 exec（无需重启循环）。
+if [ -f "/.dockerenv" ] && [ "${#_PASSTHROUGH[@]}" -eq 0 ]; then
+    exec "$PYTHON" -m studio run --host 0.0.0.0 --no-browser
+fi
+
 # Restart loop (PR-A): if cli.py exits but tmp/restart is still present, loop
 # back and re-run. cli.py's own inner loop handles the common case (server
 # requests restart from /api/system/restart); this outer loop is the safety net.
@@ -211,4 +219,3 @@ if [ $EXIT_CODE -ne 0 ]; then
     echo ""
     echo "[studio] Exit code $EXIT_CODE, see error messages above."
 fi
-exit $EXIT_CODE
