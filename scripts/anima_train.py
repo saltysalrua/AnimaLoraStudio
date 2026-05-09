@@ -285,10 +285,21 @@ def enable_xformers(model):
 # ============================================================================
 
 def find_diffusion_pipe_root():
-    """查找 diffusion-pipe 模型代码路径"""
+    """查找 diffusion-pipe 模型代码路径。
+
+    候选顺序（首个命中即返回）：
+      1. 脚本同目录 `diffusion_models/` / `models/`（CLI 直接 cd 进 scripts/ 跑）
+      2. 仓库根 `models/` / `diffusion_models/`（训练脚本搬到 scripts/ 后的 repo
+         layout：repo_root/scripts/anima_train.py → ../models/anima_modeling.py）
+      3. 环境变量 `DIFFUSION_PIPE_ROOT`（覆盖路径用）
+    """
+    script_dir = Path(__file__).parent
+    repo_root = script_dir.parent
     candidates = [
-        Path(__file__).parent / "diffusion_models",
-        Path(__file__).parent / "models",
+        script_dir / "diffusion_models",
+        script_dir / "models",
+        repo_root / "models",
+        repo_root / "diffusion_models",
         Path(os.environ.get("DIFFUSION_PIPE_ROOT", "")) if os.environ.get("DIFFUSION_PIPE_ROOT") else None,
     ]
     for candidate in candidates:
