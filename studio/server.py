@@ -67,6 +67,7 @@ from .services import (
     train_io,
     uploads as uploads_svc,
     version_config,
+    xformers_setup,
 )
 from .services.tagger import VALID_TAGGER_NAMES, get_tagger
 from .paths import (
@@ -1275,6 +1276,34 @@ def flash_attn_install(body: FlashAttnInstallRequest) -> dict[str, Any]:
     """
     try:
         return flash_attention_setup.install(body.url)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+# xformers runtime ------------------------------------------------------
+
+
+@app.get("/api/xformers/status")
+def xformers_status() -> dict[str, Any]:
+    """返回 xformers 安装状态。
+
+    比 flash_attention/status 简洁很多 —— xformers 走 PyPI 直装，不需要 GitHub
+    候选 wheel 列表 / 环境检测细节（status 里 installed/version 已经够用）。
+    """
+    return xformers_setup.current_status()
+
+
+@app.post("/api/xformers/install")
+def xformers_install() -> dict[str, Any]:
+    """pip install xformers --index-url <torch-cu-index>。
+
+    同步执行；远端 wheel 通常几十到几百 MB，几分钟级。装失败抛 500，message
+    含 stderr 末尾（多数失败 = 上游 wheel 没覆盖当前 torch+cu 组合）。
+
+    xformers 是 C extension，装完返回 restart_required=True 让 UI 提示重启。
+    """
+    try:
+        return xformers_setup.install()
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
 
