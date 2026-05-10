@@ -41,6 +41,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import (
+    __version__,
     browse,
     curation,
     datasets,
@@ -168,7 +169,7 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
         generate_cache.clear_all()
 
 
-app = FastAPI(title="AnimaStudio", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="AnimaStudio", version=__version__, lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------

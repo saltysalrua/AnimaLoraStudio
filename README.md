@@ -1,5 +1,7 @@
 # AnimaLoraStudio
 
+[![Version](https://img.shields.io/badge/version-0.5.0-blue)](CHANGELOG.md)
+
 Anima LoRA / LoKr 训练工具集，**附带完整 Web 工作台 (AnimaLoraStudio)**。
 
 从「准备数据 → 打标 → 正则集 → 训练 → 监控 → 下载 LoRA」一条流水线，在浏览器里点完。也支持纯 CLI 跑训练。
@@ -181,6 +183,7 @@ AnimaLoraStudio/
 
 ## 文档
 
+- [CHANGELOG.md](CHANGELOG.md) — 版本更新历史
 - [docs/json-caption-format.md](docs/json-caption-format.md) — JSON 标签格式 + 分类 shuffle
 - [docs/tagging-guide.md](docs/tagging-guide.md) — Anima 标签格式与最佳实践
 - [docs/training-tips.md](docs/training-tips.md) — 训练参数 / 断点续训 / 常见问题
@@ -188,6 +191,20 @@ AnimaLoraStudio/
 - [docs/trainer-optimization-analysis.md](docs/trainer-optimization-analysis.md) — 训练性能调优
 - [docs/studio-pipeline/](docs/studio-pipeline/) — Studio 七步改造的设计文档（开发者向）
 - [studio/README.md](studio/README.md) — Studio 内部架构
+
+---
+
+## 版本
+
+当前版本 **0.5.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
+
+版本号唯一来源是 `studio/__init__.py:__version__`：
+
+- 后端：FastAPI app `version=__version__`，`/api/health` 返回
+- 前端：Sidebar 通过 `/api/health` 拉取，不再硬编码
+- `studio/web/package.json` 的 `version` 字段需同步保持一致
+
+发布新版本时改这三处 + 在 `CHANGELOG.md` 加一段。
 
 ---
 
