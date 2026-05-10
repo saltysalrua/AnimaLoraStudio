@@ -30,13 +30,15 @@ type Section =
   | 'cltagger'
   | 'models'
   | 'queue'
+  | 'generate'
 
-type Tab = 'dataset' | 'tagging' | 'training' | 'appearance'
+type Tab = 'dataset' | 'tagging' | 'training' | 'testing' | 'appearance'
 
 const TAB_LIST: { id: Tab; label: string }[] = [
   { id: 'dataset', label: '数据集' },
   { id: 'tagging', label: '打标' },
   { id: 'training', label: '训练' },
+  { id: 'testing', label: '测试' },
   { id: 'appearance', label: '页面' },
 ]
 
@@ -45,7 +47,7 @@ const TAB_STORAGE_KEY = 'studio.settings.activeTab'
 function getStoredTab(): Tab {
   try {
     const v = localStorage.getItem(TAB_STORAGE_KEY)
-    if (v === 'dataset' || v === 'tagging' || v === 'training' || v === 'appearance') return v
+    if (v === 'dataset' || v === 'tagging' || v === 'training' || v === 'testing' || v === 'appearance') return v
   } catch {
     /* ignore localStorage errors */
   }
@@ -96,6 +98,7 @@ const EMPTY: Secrets = {
   },
   models: { root: null, selected_anima: 'preview3-base' },
   queue: { allow_gpu_during_train: false },
+  generate: { preview_every_n_steps: 3, attention_backend: 'auto' },
 }
 
 const textInputClass = 'w-full px-2 py-1 outline-none rounded-sm bg-sunken border border-subtle text-sm text-fg-primary focus:border-accent'
@@ -533,6 +536,13 @@ export default function SettingsPage() {
         reloadCatalog={reloadCatalog}
         catalogError={catalogError}
       />
+      </>)}
+
+      {tab === 'testing' && (<>
+        {/* attention 后端走全局 auto-detect，UI 不暴露切换；想强制覆盖
+            的高级用户改 secrets.json 的 generate.attention_backend
+            （flash_attn / xformers / none）。安装管理在『训练』tab。 */}
+        <TaeFluxSection draft={draft} update={update} />
       </>)}
 
       {tab === 'appearance' && (
@@ -1703,6 +1713,47 @@ function XformersSection() {
     </details>
   )
 }
+
+// ── 中间步预览（节流） ────────────────────────────────────────────────────
+//
+// TAEFlux 模型 server 启动时后台下载（lifespan startup）；UI 只暴露用户必须
+// 控制的「节流 N」一个输入，其他状态/下载/帮助文字全删（用户决策）。
+
+function TaeFluxSection({
+  draft, update,
+}: {
+  draft: Secrets
+  update: <S extends keyof Secrets, K extends keyof Secrets[S]>(
+    section: S, key: K, value: Secrets[S][K],
+  ) => void
+}) {
+  const n = draft.generate.preview_every_n_steps
+  const enabled = n > 0
+  return (
+    <SettingsSection title="中间步预览">
+      <SettingsField
+        label="节流（每 N 步推一次预览）"
+        desc="0 = 关闭中间步预览；推荐 3-5。模型 server 启动时已后台下载，UI 不需要操作。"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            max={50}
+            value={n}
+            onChange={(e) => update('generate', 'preview_every_n_steps', Number(e.target.value) || 0)}
+            className="input"
+            style={{ width: 80 }}
+          />
+          <span className="text-2xs text-fg-tertiary">
+            {enabled ? `每 ${n} 步推一张 256px JPEG（~10KB/步）` : '不推预览（0）'}
+          </span>
+        </div>
+      </SettingsField>
+    </SettingsSection>
+  )
+}
+
 
 // ── Display Section ────────────────────────────────────────────────────────
 
