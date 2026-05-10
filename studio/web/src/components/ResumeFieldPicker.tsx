@@ -75,8 +75,8 @@ export default function ResumeFieldPicker({
   return (
     <div
       ref={popRef}
-      className="absolute z-40 mt-1 w-[420px] max-h-[360px] overflow-y-auto rounded-md border border-dim bg-elevated shadow-xl text-xs"
-      style={{ top: '100%', left: 0 }}
+      className="absolute z-40 mt-1 max-h-[360px] overflow-y-auto rounded-md border border-dim bg-elevated shadow-xl text-xs"
+      style={{ top: '100%', left: 0, width: '100%', minWidth: 420 }}
     >
       {error ? (
         <div className="px-3 py-2 text-err">{error}</div>
@@ -88,13 +88,11 @@ export default function ResumeFieldPicker({
           {kind === 'state' ? '先按 save_every 跑一轮训练' : '先训出至少一个 ckpt'}
         </div>
       ) : (
-        groups!.map((g) => (
+        // 只渲染有 items 的 version；空 version 跳过减少噪音
+        groups!.filter((g) => g.items.length > 0).map((g) => (
           <div key={g.version_id} className="border-b border-subtle last:border-0">
-            <div className="px-3 py-1.5 bg-sunken text-fg-secondary font-mono font-semibold sticky top-0">
+            <div className="px-3 py-1 bg-canvas text-fg-tertiary font-mono uppercase tracking-wider text-[10px] sticky top-0 border-b border-subtle">
               {g.label}
-              {g.items.length === 0 && (
-                <span className="ml-2 text-fg-tertiary font-normal italic">(无)</span>
-              )}
             </div>
             {kind === 'state'
               ? (g.items as StateCkpt[]).map((it) => (
@@ -132,14 +130,14 @@ function PickRow({
       type="button"
       onClick={onPick}
       className={
-        'w-full text-left px-4 py-1.5 font-mono cursor-pointer transition-colors ' +
+        'w-full text-left px-4 py-1.5 font-mono cursor-pointer transition-colors flex items-center gap-2 ' +
         (selected
-          ? 'bg-accent-soft text-accent-fg'
+          ? 'bg-accent-soft text-accent font-semibold'
           : 'text-fg-primary hover:bg-overlay')
       }
     >
-      {selected && <span className="mr-1.5">✓</span>}
-      {label}
+      <span className={'w-3 inline-block ' + (selected ? '' : 'opacity-0')}>✓</span>
+      <span>{label}</span>
     </button>
   )
 }
