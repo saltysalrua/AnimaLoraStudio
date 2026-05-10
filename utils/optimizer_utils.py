@@ -84,10 +84,20 @@ def create_optimizer(
             **kwargs
         )
 
+    elif optimizer_type == "prodigy_plus":
+        return create_prodigy_plus(
+            params=params,
+            lr=learning_rate,
+            betas=betas,
+            weight_decay=weight_decay,
+            eps=eps,
+            **kwargs
+        )
+
     else:
         raise ValueError(
             f"Unknown optimizer type: {optimizer_type}. "
-            f"Choose from: adamw, adamw8bit, prodigy"
+            f"Choose from: adamw, adamw8bit, prodigy, prodigy_plus"
         )
 
 
@@ -280,6 +290,56 @@ def create_prodigy(
 
     print("  [OK] Prodigy optimizer created")
 
+    return optimizer
+
+
+def create_prodigy_plus(
+    params: Iterator[nn.Parameter],
+    lr: float,
+    betas: tuple = (0.9, 0.999),
+    weight_decay: float = 0.01,
+    eps: float = 1e-8,
+    d_coef: float = 1.0,
+    safeguard_warmup: bool = True,
+    **kwargs,
+) -> Optimizer:
+    """创建 Prodigy+ Schedule-Free 优化器。
+
+    自适应学习率 + Schedule-Free，无需 LR scheduler。
+    训练前须调用 optimizer.train()，推理/采样前须调用 optimizer.eval()。
+    lr 固定为 1.0（与 Prodigy 一致）。
+    """
+    try:
+        from prodigy_plus_schedule_free import ProdigyPlusScheduleFree
+    except ImportError as e:
+        raise ImportError(
+            "prodigy-plus-schedule-free is required. "
+            "Install with: pip install prodigy-plus-schedule-free"
+        ) from e
+
+    if abs(lr - 1.0) > 1e-9:
+        print(
+            f"[WARN] ProdigyPlusScheduleFree requires lr=1.0 (received {lr}); forcing lr=1.0."
+        )
+        lr = 1.0
+
+    print(
+        f"Creating ProdigyPlusScheduleFree optimizer (weight_decay={weight_decay}, "
+        f"d_coef={d_coef}, safeguard_warmup={safeguard_warmup})"
+    )
+
+    optimizer = ProdigyPlusScheduleFree(
+        list(params),
+        lr=lr,
+        betas=betas,
+        eps=eps,
+        weight_decay=weight_decay,
+        d_coef=d_coef,
+        safeguard_warmup=safeguard_warmup,
+        **kwargs,
+    )
+
+    print("  [OK] ProdigyPlusScheduleFree optimizer created")
     return optimizer
 
 

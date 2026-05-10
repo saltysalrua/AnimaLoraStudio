@@ -160,9 +160,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
         "lokr",
-        description="适配器算法（lora/lokr/loha）",
+        description="适配器算法（lora/lokr/loha/tlora）",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -179,6 +179,11 @@ class TrainingConfig(BaseModel):
         8, ge=2,
         description="LoKr 分解因子（仅 lora_type=lokr）",
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
+    )
+    tlora_min_rank: int = Field(
+        1, ge=1,
+        description="T-LoRA 最低有效秩（高噪阶段使用；仅 lora_type=tlora）",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora"),
     )
     lora_dora: bool = Field(
         False,
@@ -252,20 +257,20 @@ class TrainingConfig(BaseModel):
         description="最小学习率",
         json_schema_extra=_meta("training", show_when="lr_scheduler!=none"),
     )
-    optimizer_type: Literal["adamw", "prodigy"] = Field(
+    optimizer_type: Literal["adamw", "prodigy", "prodigy_plus"] = Field(
         "adamw",
-        description="优化器（prodigy 需 pip install prodigyopt）",
+        description="优化器（prodigy 需 prodigyopt；prodigy_plus 需 prodigy-plus-schedule-free）",
         json_schema_extra=_meta("training"),
     )
     prodigy_d_coef: float = Field(
         1.0, ge=0.1, le=10.0,
         description="Prodigy d 缩放系数（小数据集 0.5，过拟合 2.0）",
-        json_schema_extra=_meta("training", show_when="optimizer_type==prodigy"),
+        json_schema_extra=_meta("training", show_when="optimizer_type==prodigy||optimizer_type==prodigy_plus"),
     )
     prodigy_safeguard_warmup: bool = Field(
         True,
         description="Prodigy warmup 期间保护 d 增长",
-        json_schema_extra=_meta("training", show_when="optimizer_type==prodigy"),
+        json_schema_extra=_meta("training", show_when="optimizer_type==prodigy||optimizer_type==prodigy_plus"),
     )
     weight_decay: float = Field(
         0.0, ge=0.0,

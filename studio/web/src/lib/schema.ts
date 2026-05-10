@@ -42,14 +42,17 @@ export function controlKind(prop: SchemaProperty): ControlKind {
 }
 
 /**
- * show_when 简单解析器：支持 `key==value` / `key!=value`。
- * 复杂表达式以后再加。
+ * show_when 简单解析器：支持 `key==value` / `key!=value`，以及用 `||` 连接的 OR 表达式。
  */
 export function evalShowWhen(
   expr: string | undefined,
   values: Record<string, unknown>
 ): boolean {
   if (!expr) return true
+  // OR: 任意一个子句为真则显示
+  if (expr.includes('||')) {
+    return expr.split('||').some((clause) => evalShowWhen(clause.trim(), values))
+  }
   const eq = expr.split('==')
   if (eq.length === 2) {
     return String(values[eq[0].trim()]) === eq[1].trim()
