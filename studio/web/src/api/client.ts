@@ -680,6 +680,18 @@ export interface GenerateRequest {
   xy_matrix?: XYMatrixSpec | null
 }
 
+/** version output/ 下扫到的 training_state_step*.pt（断点续训用，GET .../state_ckpts）。 */
+export interface StateCkpt {
+  /** global_step 数 */
+  step: number
+  /** 显示用："step 2476" */
+  label: string
+  /** 绝对路径 */
+  path: string
+  /** 文件 mtime 时间戳 */
+  mtime: number
+}
+
 /** version output/ 下扫到的 LoRA ckpt 文件（GET .../lora_ckpts）。 */
 export interface LoraCkpt {
   /** 'final' / 'step' / 'epoch' / 'other' */
@@ -1225,6 +1237,11 @@ export const api = {
   /** 列出 version output/ 下所有 LoRA ckpt 文件（XY ckpt 轴 + 单图模式切 ckpt）。 */
   listVersionLoraCkpts: (pid: number, vid: number) =>
     req<{ items: LoraCkpt[] }>(`/api/projects/${pid}/versions/${vid}/lora_ckpts`)
+      .then((r) => r.items),
+
+  /** 列出 version output/ 下所有 training_state_step*.pt（Train 页断点续训 picker）。 */
+  listVersionStateCkpts: (pid: number, vid: number) =>
+    req<{ items: StateCkpt[] }>(`/api/projects/${pid}/versions/${vid}/state_ckpts`)
       .then((r) => r.items),
 
   /** PR-9 — 启动测试出图 task。Phase 2 起：图走 server 内存 cache，关页面即丢。 */

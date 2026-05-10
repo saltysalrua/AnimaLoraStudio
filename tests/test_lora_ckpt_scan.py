@@ -1,11 +1,11 @@
-"""commit: versions.list_lora_ckpts —— 扫 version output/ 列所有 ckpt 文件。"""
+"""commit: versions.list_lora_ckpts / list_state_ckpts —— 扫 version output/ 列 ckpt 文件。"""
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from studio.versions import list_lora_ckpts
+from studio.versions import list_lora_ckpts, list_state_ckpts
 
 
 @pytest.fixture
@@ -106,3 +106,47 @@ def test_mixed_kinds_other_after_step_epoch(vdir: Path) -> None:
     assert labels == [
         "final", "step 100", "step 20", "epoch 3", "custom_5", "custom_60",
     ]
+
+
+# ---------------------------------------------------------------------------
+# list_state_ckpts —— 断点续训 picker 用，只扫 training_state_step*.pt
+# ---------------------------------------------------------------------------
+
+
+def test_state_ckpts_empty_dir(tmp_path: Path) -> None:
+    """没 output/ 目录 → 空列表，不抛错。"""
+    assert list_state_ckpts(tmp_path) == []
+
+
+def test_state_ckpts_scans_step_desc(vdir: Path) -> None:
+    """按 step 降序，最新在前。"""
+    out = vdir / "output"
+    (out / "training_state_step500.pt").touch()
+    (out / "training_state_step1500.pt").touch()
+    (out / "training_state_step100.pt").touch()
+
+    items = list_state_ckpts(vdir)
+    steps = [it["step"] for it in items]
+    assert steps == [1500, 500, 100]
+    assert items[0]["label"] == "step 1500"
+
+
+def test_state_ckpts_ignores_lora_safetensors(vdir: Path) -> None:
+    """只看 training_state_step*.pt，不要混进 LoRA 权重或别的 .pt。"""
+    out = vdir / "output"
+    (out / "training_state_step100.pt").touch()
+    (out / "myproj_step100.safetensors").touch()  # LoRA 权重
+    (out / "ema_model.pt").touch()                # 其它 .pt
+    (out / "readme.txt").touch()
+
+    items = list_state_ckpts(vdir)
+    assert len(items) == 1
+    assert items[0]["step"] == 100
+
+
+def test_state_ckpts_path_is_string(vdir: Path) -> None:
+    out = vdir / "output"
+    (out / "training_state_step42.pt").touch()
+    items = list_state_ckpts(vdir)
+    assert items[0]["path"].endswith("training_state_step42.pt")
+    assert "mtime" in items[0]

@@ -541,6 +541,16 @@ def list_version_lora_ckpts(pid: int, vid: int) -> dict[str, Any]:
     return {"items": versions.list_lora_ckpts(vdir)}
 
 
+@app.get("/api/projects/{pid}/versions/{vid}/state_ckpts")
+def list_version_state_ckpts(pid: int, vid: int) -> dict[str, Any]:
+    """列出 version output/ 下所有 training_state_step*.pt（断点续训 picker 用）。
+
+    返回按 step 降序排列，方便前端默认选中最新断点。
+    """
+    p, v, vdir = _version_dir_or_404(pid, vid)
+    return {"items": versions.list_state_ckpts(vdir)}
+
+
 @app.post("/api/projects/{pid}/versions")
 def create_version_endpoint(pid: int, body: VersionCreate) -> dict[str, Any]:
     with db.connection_for() as conn:

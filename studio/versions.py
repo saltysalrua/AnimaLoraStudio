@@ -118,6 +118,40 @@ def list_lora_ckpts(vdir: Path) -> list[dict[str, Any]]:
     return items
 
 
+def list_state_ckpts(vdir: Path) -> list[dict[str, Any]]:
+    """扫 versions/{label}/output/training_state_step*.pt，列所有断点续训状态文件。
+
+    anima_train 输出命名约定（runtime/anima_train.py:2218, 2441）：
+      - training_state_step{N}.pt   （optimizer / RNG / loss 历史的完整 state）
+
+    返回 [{step, label, path, mtime}]，按 step 降序（最新在前）。
+    给 Train 页的「从断点续训」picker 用。
+    """
+    output_dir = vdir / "output"
+    if not output_dir.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for f in output_dir.glob("training_state_step*.pt"):
+        if not f.is_file():
+            continue
+        m = re.search(r"training_state_step(\d+)\.pt$", f.name)
+        if not m:
+            continue
+        step = int(m.group(1))
+        try:
+            mtime = f.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        items.append({
+            "step": step,
+            "label": f"step {step}",
+            "path": str(f),
+            "mtime": mtime,
+        })
+    items.sort(key=lambda x: -x["step"])
+    return items
+
+
 def _write_version_json(v: dict[str, Any], pdir_label_path: Path) -> None:
     pdir_label_path.mkdir(parents=True, exist_ok=True)
     (pdir_label_path / "version.json").write_text(

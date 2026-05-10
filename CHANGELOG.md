@@ -14,6 +14,11 @@
 
 ### 新增
 
+- **断点续训 picker**
+  - Train 页 SchemaForm 上方加「断点续训」下拉，自动列当前 version 的 `output/training_state_step*.pt`，选中后写 `config.resume_state`
+  - 后端 `versions.list_state_ckpts()` + `/api/projects/.../versions/.../state_ckpts` 端点
+  - 解决 UX：之前用户必须手填深路径（`studio_data/projects/.../output/training_state_step*.pt`）才能续训，现在直接下拉
+  - 高级场景（接别 version 的 state、或只接 LoRA 权重）仍可在 SchemaForm 的 PathPicker 里手填 `resume_state` / `resume_lora`
 - **测试出图（Generate）**
   - 侧栏「测试」入口；`/api/generate` + `runtime/anima_generate.py`（#19）
   - 推理 daemon（常驻 GPU，避免每次重载）+ XY 矩阵评测（参数扫）（#22）
