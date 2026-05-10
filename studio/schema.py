@@ -210,6 +210,16 @@ class TrainingConfig(BaseModel):
         description="层级 stochastic depth（整层级别随机跳过）",
         json_schema_extra=_meta("lora"),
     )
+    tlora_reg_dims: Optional[dict] = Field(
+        None,
+        description='T-LoRA 模块级 rank 覆盖，正则→rank，如 {".*blocks_0.*": 8}（仅 lora_type=tlora）',
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora"),
+    )
+    tlora_reg_lrs: Optional[dict] = Field(
+        None,
+        description='T-LoRA 模块级学习率覆盖，正则→lr，如 {".*blocks_0.*": 1e-4}（仅 lora_type=tlora）',
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora"),
+    )
 
     # ------------------------------------------------------------------ 训练
     epochs: int = Field(
@@ -272,10 +282,80 @@ class TrainingConfig(BaseModel):
         description="Prodigy warmup 期间保护 d 增长",
         json_schema_extra=_meta("training", show_when="optimizer_type==prodigy||optimizer_type==prodigy_plus"),
     )
+    prodigy_use_stableadamw: bool = Field(
+        True,
+        description="StableAdamW：缓解 bf16 梯度尖峰（仅 prodigy_plus）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==prodigy_plus"),
+    )
     weight_decay: float = Field(
         0.0, ge=0.0,
         description="权重衰减（0=禁用）",
         json_schema_extra=_meta("training"),
+    )
+    noise_offset: float = Field(
+        0.0, ge=0.0, le=0.2,
+        description="噪声低频偏移强度，缓解亮度均值偏差（0=禁用，推荐 0.05-0.1）",
+        json_schema_extra=_meta("training"),
+    )
+    pyramid_noise_iters: int = Field(
+        0, ge=0, le=6,
+        description="多尺度噪声叠加层数（0=禁用；2-3 帮助全局光照构图学习）",
+        json_schema_extra=_meta("training"),
+    )
+    pyramid_noise_discount: float = Field(
+        0.35, ge=0.1, le=0.9,
+        description="每层噪声衰减系数（仅 pyramid_noise_iters > 0）",
+        json_schema_extra=_meta("training", show_when="pyramid_noise_iters!=0"),
+    )
+    timestep_sampling: Literal["logit_normal", "uniform", "logit_normal_low", "mode"] = Field(
+        "logit_normal",
+        description="时间步采样分布（logit_normal 为 SD3/Anima 默认）",
+        json_schema_extra=_meta("training"),
+    )
+    timestep_shift: float = Field(
+        3.0, ge=0.1, le=10.0,
+        description="logit-normal / mode shift（>1 偏向高噪声端，<1 偏向细节端）",
+        json_schema_extra=_meta("training", show_when="timestep_sampling!=uniform"),
+    )
+    loss_weighting: Literal["none", "min_snr", "detail_inv_t", "cosmap"] = Field(
+        "none",
+        description="Loss 加权方案（min_snr 推荐；detail_inv_t 细节强化；cosmap SD3 风格）",
+        json_schema_extra=_meta("training"),
+    )
+    min_snr_gamma: float = Field(
+        5.0, ge=0.1, le=20.0,
+        description="Min-SNR gamma 值（仅 loss_weighting=min_snr）",
+        json_schema_extra=_meta("training", show_when="loss_weighting==min_snr"),
+    )
+    weight_cap_ratio: float = Field(
+        0.0, ge=0.0, le=50.0,
+        description="Batch 内 loss 权重 max/min 比上限（0=禁用；小 batch+Prodigy 建议 5）",
+        json_schema_extra=_meta("training", show_when="loss_weighting!=none"),
+    )
+    orthograd_mode: Literal["off", "manual"] = Field(
+        "off",
+        description="手动 OrthoGrad 模式（manual=在 optimizer.step() 前去掉梯度沿权重的径向分量；需同时关闭优化器内置 use_orthograd）",
+        json_schema_extra=_meta("training"),
+    )
+    orthograd_enable_after: int = Field(
+        0, ge=0,
+        description="前 N 步不应用 OrthoGrad（让模型先走全梯度建立结构）",
+        json_schema_extra=_meta("training", show_when="orthograd_mode==manual"),
+    )
+    orthograd_ramp_steps: int = Field(
+        0, ge=0,
+        description="OrthoGrad 强度线性 ramp 步数（0=立即全强度）",
+        json_schema_extra=_meta("training", show_when="orthograd_mode==manual"),
+    )
+    orthograd_strength: float = Field(
+        1.0, ge=0.0, le=1.0,
+        description="OrthoGrad 混合强度（1.0=纯正交梯度；<1.0=与原梯度插值）",
+        json_schema_extra=_meta("training", show_when="orthograd_mode==manual"),
+    )
+    orthograd_rescale: bool = Field(
+        True,
+        description="投影后按原梯度范数重新缩放（保持梯度幅度不变）",
+        json_schema_extra=_meta("training", show_when="orthograd_mode==manual"),
     )
     grad_clip_max_norm: float = Field(
         0.0, ge=0.0,
