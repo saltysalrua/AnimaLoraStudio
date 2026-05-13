@@ -3052,19 +3052,33 @@ if WEB_DIST.exists():
 _RESTART_FLAG = REPO_ROOT / "tmp" / "restart"
 
 
+_SHUTDOWN_FORCE_EXIT_TIMEOUT = 5.0
+
+
 def _raise_sigint_after_response() -> None:
     """在响应已经发完后给自己发 SIGINT，触发 uvicorn graceful shutdown。
 
     BackgroundTask 在 starlette 路径上是 response 完成后调度的；这里再 sleep
     一点点保险（防止某些代理 / keep-alive 情况下还有数据没冲走）。
+
+    Force-exit 兜底（PR-D fix）：`/api/events` 是长 SSE，generator 内的
+    `asyncio.wait_for(queue.get(), 15)` 不响应 uvicorn 关停信号，graceful
+    shutdown 会等 client 主动断开 → 表现为「后端卡在 waiting for
+    connection to close」，用户必须刷页让浏览器关 SSE 才能继续。给 graceful
+    5 秒窗口后强退（正常 in-flight 1-2s 收尾够用）。BackgroundTask 跑在
+    threadpool，graceful 成功路径主进程退出会带走此线程，os._exit 不会
+    触达；只有 graceful 卡住时才真正强退。
     """
     import signal
     time.sleep(0.3)
     try:
         signal.raise_signal(signal.SIGINT)
     except Exception:
-        # 兜底：硬退（不应该走到）
+        # 兜底：raise_signal 抛错（极少见）→ 直接强退
         os._exit(0)
+        return
+    time.sleep(_SHUTDOWN_FORCE_EXIT_TIMEOUT)
+    os._exit(0)
 
 
 def _check_no_running_tasks() -> None:
