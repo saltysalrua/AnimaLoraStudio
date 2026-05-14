@@ -746,10 +746,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
-    if not getattr(args, "cmd", None):
-        # 默认 run
-        args = parser.parse_args(["run", *(argv or [])])
+    args_list = list(argv) if argv is not None else sys.argv[1:]
+    # 没有子命令时默认 run（如 studio.sh --port 6006 → run --port 6006）。
+    # 找第一个不以 '-' 开头的参数，判断是否是已知子命令；不是则插入 run。
+    _subcmds = {'run', 'dev', 'build', 'test'}
+    _first_pos = next((a for a in args_list if not a.startswith('-')), None)
+    if _first_pos not in _subcmds:
+        args_list = ['run'] + args_list
+    args = parser.parse_args(args_list)
     return args.func(args)
 
 
