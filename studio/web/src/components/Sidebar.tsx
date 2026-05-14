@@ -91,7 +91,7 @@ function NavItem({ to, label, icon, active, collapsed }: {
       to={to}
       title={collapsed ? label : undefined}
       className={[
-        'flex items-center gap-2.5 rounded-md text-sm no-underline transition-colors relative',
+        'flex w-full items-center gap-2.5 rounded-md text-sm no-underline transition-colors relative',
         collapsed ? 'py-[9px] px-0 justify-center' : 'py-2 px-3 justify-start',
         active
           ? 'bg-surface text-fg-primary font-semibold shadow-sm'
@@ -229,7 +229,7 @@ function ProjectStepperNav({ pid, activeVid, currentStep, version, collapsed }: 
   }
 
   const linkCls = (active: boolean) => [
-    'flex items-center gap-2.5 rounded-md text-sm no-underline transition-colors',
+    'flex w-full items-center gap-2.5 rounded-md text-sm no-underline transition-colors',
     collapsed ? 'py-[7px] px-0 justify-center' : 'py-[7px] px-3 justify-start',
     active ? 'bg-surface text-fg-primary font-semibold shadow-sm' : 'text-fg-secondary font-normal hover:bg-overlay',
   ].join(' ')
