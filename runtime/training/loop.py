@@ -41,6 +41,8 @@ def run(ctx: TrainingContext) -> None:
 
     for epoch in range(ctx.start_epoch, args.epochs):
         ctx.current_epoch = epoch
+        epoch_loss_sum = 0.0
+        epoch_step_count = 0
         if ctx.use_cached and hasattr(ctx.dataloader, "batch_sampler") and hasattr(ctx.dataloader.batch_sampler, "set_epoch"):
             ctx.dataloader.batch_sampler.set_epoch(epoch)
         for batch_idx, batch in enumerate(ctx.dataloader):
@@ -187,6 +189,8 @@ def run(ctx: TrainingContext) -> None:
 
                 # 记录 loss 历史
                 loss_val = float(loss.item() * args.grad_accum)
+                epoch_loss_sum += loss_val
+                epoch_step_count += 1
                 if args.loss_curve_steps and len(ctx.loss_history) < args.loss_curve_steps:
                     ctx.loss_history.append(loss_val)
 
@@ -213,7 +217,6 @@ def run(ctx: TrainingContext) -> None:
                     {
                         "train/loss": loss_val,
                         "train/lr": float(lr),
-                        "train/epoch": epoch + 1,
                         "train/speed_it_s": float(ctx.speed_ema or 0),
                     },
                     step=ctx.global_step,
@@ -286,6 +289,14 @@ def run(ctx: TrainingContext) -> None:
 
         # epoch 结束后的操作
         ctx.current_epoch = epoch + 1
+        if epoch_step_count > 0:
+            ctx.wandb_monitor.log(
+                {
+                    "train/loss_epoch": epoch_loss_sum / epoch_step_count,
+                    "train/epoch": ctx.current_epoch,
+                },
+                step=ctx.global_step,
+            )
         if not args.max_steps or ctx.global_step < args.max_steps:
             # 保存 checkpoint
             if args.save_every > 0 and ctx.current_epoch % args.save_every == 0:
