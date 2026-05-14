@@ -613,7 +613,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 rc = cmd_build(args)
                 if rc != 0:
                     return rc
-        _apply_pending_install()
+        if not getattr(args, 'skip_pending', False):
+            _apply_pending_install()
         _check_torch_cuda()
         _try_enable_flash_attn()
         _bootstrap_onnxruntime()
@@ -657,7 +658,8 @@ def cmd_dev(args: argparse.Namespace) -> int:
     rc = npm_install_if_missing(npm)
     if rc != 0:
         return rc
-    _apply_pending_install()
+    if not getattr(args, 'skip_pending', False):
+        _apply_pending_install()
     _check_torch_cuda()
     _try_enable_flash_attn()
     _bootstrap_onnxruntime()
@@ -723,6 +725,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="即使 dist 不存在也不自动 build")
     p_run.add_argument("--no-browser", action="store_true",
                        help="启动后不自动打开浏览器")
+    p_run.add_argument("--skip-pending", action="store_true",
+                       help="跳过 pending pip 安装（torch 重装等），直接启动")
     p_run.set_defaults(func=cmd_run)
 
     p_dev = sub.add_parser("dev", help="前后端开发模式")
@@ -733,6 +737,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="前端 Vite 开发服务器端口（默认 5173）")
     p_dev.add_argument("--no-browser", action="store_true",
                        help="启动后不自动打开浏览器")
+    p_dev.add_argument("--skip-pending", action="store_true",
+                       help="跳过 pending pip 安装（torch 重装等），直接启动")
     p_dev.set_defaults(func=cmd_dev)
 
     p_build = sub.add_parser("build", help="仅构建前端")
