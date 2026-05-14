@@ -13,6 +13,18 @@
 #
 #   subcommand: run (default) | dev | build | test
 #
+#   run subcommand flags:
+#     --port <N>      backend uvicorn port (default 8765)
+#     --host <H>      bind host (default 127.0.0.1)
+#     --no-browser    do not auto-open browser
+#     --no-build      skip frontend rebuild check
+#
+#   dev subcommand flags:
+#     --port <N>      backend uvicorn port (default 8765)
+#     --fe-port <N>   frontend Vite dev server port (default 5173)
+#     --host <H>      bind host (default 127.0.0.1)
+#     --no-browser    do not auto-open browser
+#
 # Safe to run with either ./studio.sh or `bash studio.sh`.
 # Avoid `source studio.sh` -- not needed (we call venv python directly).
 #

@@ -664,7 +664,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
 
     pg = ProcGroup()
     try:
-        pg.spawn("frontend", [npm, "run", "dev"], cwd=WEB_DIR)
+        pg.spawn("frontend", [npm, "run", "dev", "--", "--port", str(args.fe_port)], cwd=WEB_DIR)
         pg.spawn(
             "backend",
             [
@@ -676,7 +676,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
                 "--reload",
             ],
         )
-        frontend_url = "http://127.0.0.1:5173/studio/"
+        frontend_url = f"http://127.0.0.1:{args.fe_port}/studio/"
         print(
             f"[studio] frontend → {frontend_url}  "
             f"backend → http://{args.host}:{args.port}/studio/"
@@ -727,7 +727,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_dev = sub.add_parser("dev", help="前后端开发模式")
     p_dev.add_argument("--host", default="127.0.0.1")
-    p_dev.add_argument("--port", type=int, default=8765)
+    p_dev.add_argument("--port", type=int, default=8765,
+                       help="后端 uvicorn 端口（默认 8765）")
+    p_dev.add_argument("--fe-port", type=int, default=5173,
+                       help="前端 Vite 开发服务器端口（默认 5173）")
     p_dev.add_argument("--no-browser", action="store_true",
                        help="启动后不自动打开浏览器")
     p_dev.set_defaults(func=cmd_dev)

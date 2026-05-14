@@ -4,9 +4,11 @@ REM AnimaStudio Windows shortcut -- forwards to: python -m studio
 REM Usage:
 REM   .\studio.bat                same as: python -m studio run
 REM   .\studio.bat --reinstall    DELETE venv\ and rebuild (studio_data\ kept)
-REM   .\studio.bat dev            frontend + backend dev mode
-REM   .\studio.bat build          build frontend only
-REM   .\studio.bat test           run pytest + vitest
+REM   .\studio.bat dev                      frontend + backend dev mode
+REM   .\studio.bat dev --fe-port 5174       Vite on port 5174
+REM   .\studio.bat dev --port 8766          backend on port 8766
+REM   .\studio.bat build                    build frontend only
+REM   .\studio.bat test                     run pytest + vitest
 REM
 REM Note: PowerShell needs the `.\` prefix; cmd.exe accepts either.
 REM
