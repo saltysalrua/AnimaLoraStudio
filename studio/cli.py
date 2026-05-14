@@ -571,6 +571,32 @@ def _apply_update_pending() -> None:
         )
 
 
+def _maybe_force_torch(args: argparse.Namespace) -> int:
+    """--torch <tag> 指定时，检查当前安装是否匹配；不匹配则立即重装（流式输出）。
+    仅在 launcher 启动期调一次，重装完由 restart 机制加载新 torch。"""
+    tag = getattr(args, 'torch', None)
+    if not tag:
+        return 0
+    from studio.services import torch_setup  # noqa: PLC0415
+    current = torch_setup.detect_torch()
+    current_build = current.get('cuda_build') or ('未安装' if not current.get('installed') else 'unknown')
+    if current.get('installed') and current.get('cuda_build') == tag:
+        print(f"[studio] torch 已是 {tag}，跳过重装")
+        return 0
+    print(f"[studio] --torch {tag} 指定（当前: {current_build}），开始重装...")
+    print("[studio] 提示：按 Ctrl+C 可跳过")
+    try:
+        res = torch_setup.reinstall(tag, stream=True)
+        print(f"[studio] torch 重装完成: {res.get('version')} ({res.get('tag')})")
+        return 0
+    except KeyboardInterrupt:
+        print("\n[studio] 用户中断，跳过 torch 重装", file=sys.stderr)
+        return 0
+    except RuntimeError as exc:
+        print(f"[studio] torch 重装失败: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """`run` 主循环。
 
@@ -588,6 +614,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     `/api/health` 自动 reconnect），不重复弹新窗口。
     """
     opened_browser = False
+    # --torch 强制重装（仅首次，不在 restart 循环里重复）
+    rc = _maybe_force_torch(args)
+    if rc != 0:
+        return rc
     # PR-D：快照启动期 installer 文件 sha256；server 退出后重算，变化则
     # 退出码 42 让 wrapper 整体 exec 自己。
     startup_installer = _installer_hashes()
@@ -648,6 +678,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_dev(args: argparse.Namespace) -> int:
+    rc = _maybe_force_torch(args)
+    if rc != 0:
+        return rc
     rc = _ensure_python_deps()
     if rc != 0:
         return rc
@@ -727,6 +760,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="启动后不自动打开浏览器")
     p_run.add_argument("--skip-pending", action="store_true",
                        help="跳过 pending pip 安装（torch 重装等），直接启动")
+    p_run.add_argument("--torch", metavar="TAG",
+                       help="强制指定 torch CUDA 版本（cu128/cu126/cu124/cu118/cpu），"
+                            "与当前不符时自动重装。CPU 租赁机预装 GPU torch 时使用。")
     p_run.set_defaults(func=cmd_run)
 
     p_dev = sub.add_parser("dev", help="前后端开发模式")
@@ -739,6 +775,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="启动后不自动打开浏览器")
     p_dev.add_argument("--skip-pending", action="store_true",
                        help="跳过 pending pip 安装（torch 重装等），直接启动")
+    p_dev.add_argument("--torch", metavar="TAG",
+                       help="强制指定 torch CUDA 版本（cu128/cu126/cu124/cu118/cpu）")
     p_dev.set_defaults(func=cmd_dev)
 
     p_build = sub.add_parser("build", help="仅构建前端")
