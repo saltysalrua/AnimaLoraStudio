@@ -66,12 +66,12 @@ export default function TrainPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerSearch, setPickerSearch] = useState('')
   const [advancedMode, setAdvancedMode] = useState(() =>
-    localStorage.getItem('train_advanced_mode') === 'true'
+    localStorage.getItem('advanced_mode') === 'true'
   )
   const toggleAdvancedMode = () => {
     setAdvancedMode(v => {
       const next = !v
-      localStorage.setItem('train_advanced_mode', String(next))
+      localStorage.setItem('advanced_mode', String(next))
       return next
     })
   }
