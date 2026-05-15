@@ -47,6 +47,7 @@ from . import (
     curation,
     datasets,
     db,
+    preprocess as preprocess_svc,
     presets_io,
     project_jobs,
     projects,
@@ -971,6 +972,152 @@ def download_status(pid: int) -> dict[str, Any]:
         except Exception:
             tail = ""
     return {"job": job, "log_tail": tail}
+
+
+# ---------------------------------------------------------------------------
+# /api/projects/{pid}/preprocess/* — 预处理阶段（下载与筛选之间）
+# 第一阶段只做放大（spandrel + 4x-AnimeSharp）；裁剪 / 涂抹后续 PR。
+# ---------------------------------------------------------------------------
+
+
+class PreprocessStartRequest(BaseModel):
+    mode: str = "all"  # all | selected | all_force
+    names: Optional[list[str]] = None
+    model: str = preprocess_svc.DEFAULT_MODEL
+    tile_size: int = preprocess_svc.DEFAULT_TILE_SIZE
+    tile_pad: int = preprocess_svc.DEFAULT_TILE_PAD
+    device: str = preprocess_svc.DEFAULT_DEVICE
+
+
+class PreprocessDeleteRequest(BaseModel):
+    names: list[str]
+
+
+@app.post("/api/projects/{pid}/preprocess/start")
+def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
+    """开始预处理 job（当前只放大）。
+
+    mode='all' 增量跳过已处理；'all_force' 全部重跑；'selected' 处理 names。
+    返回新建的 job 行。
+    """
+    if body.mode not in ("all", "selected", "all_force"):
+        raise HTTPException(400, f"未知 mode: {body.mode}")
+    if body.tile_size <= 0:
+        raise HTTPException(400, "tile_size 必须 > 0")
+    if body.device not in ("auto", "cuda", "cpu"):
+        raise HTTPException(400, f"未知 device: {body.device}")
+
+    # 模型权重必须先下载（避免 worker 启起来才报错）
+    target = model_downloader.upscaler_target(body.model) \
+        if body.model in model_downloader.UPSCALER_VARIANTS else None
+    if target is None:
+        raise HTTPException(400, f"未知放大器: {body.model}")
+    if not target.exists():
+        raise HTTPException(
+            409,
+            f"放大器权重未下载: {body.model}（请先到「设置 → 模型」下载）",
+        )
+
+    with db.connection_for() as conn:
+        if not projects.get_project(conn, pid):
+            raise HTTPException(404, f"项目不存在: id={pid}")
+        try:
+            job = preprocess_svc.start_job(
+                conn,
+                project_id=pid,
+                mode=body.mode,
+                names=body.names,
+                model=body.model,
+                tile_size=body.tile_size,
+                tile_pad=body.tile_pad,
+                device=body.device,
+            )
+        except preprocess_svc.PreprocessError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        # 推进 stage（不阻塞 curate；stepper 自己派生 done/active）
+        p = projects.advance_stage(conn, pid, "preprocessing")
+    _publish_job_state(job)
+    _publish_project_state(p)
+    return job
+
+
+@app.get("/api/projects/{pid}/preprocess/status")
+def preprocess_status(pid: int) -> dict[str, Any]:
+    """返回最新 preprocess job + 日志尾 + 概要统计。"""
+    with db.connection_for() as conn:
+        p = projects.get_project(conn, pid)
+        if not p:
+            raise HTTPException(404, f"项目不存在: id={pid}")
+        job = project_jobs.latest_for(
+            conn, project_id=pid, kind=preprocess_svc.PREPROCESS_KIND
+        )
+    log_tail = ""
+    if job:
+        log_path = Path(job.get("log_path") or "")
+        if log_path.exists():
+            try:
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+                log_tail = "\n".join(text.splitlines()[-50:])
+            except Exception:
+                log_tail = ""
+    return {
+        "job": job,
+        "log_tail": log_tail,
+        "summary": preprocess_svc.summary(p),
+    }
+
+
+@app.get("/api/projects/{pid}/preprocess/files")
+def list_preprocess_files(pid: int) -> dict[str, Any]:
+    """返回 preprocess/ 已处理产物 + download/ 里还没处理的源。"""
+    with db.connection_for() as conn:
+        p = projects.get_project(conn, pid)
+    if not p:
+        raise HTTPException(404, f"项目不存在: id={pid}")
+    return {
+        "processed": preprocess_svc.list_processed(p),
+        "pending": preprocess_svc.list_pending(p),
+        "summary": preprocess_svc.summary(p),
+    }
+
+
+@app.post("/api/projects/{pid}/preprocess/files/delete")
+def delete_preprocess_files(
+    pid: int, body: PreprocessDeleteRequest
+) -> dict[str, Any]:
+    """删除指定产物（含 sidecar），让源回到 pending 状态可重跑。"""
+    if not body.names:
+        return {"deleted": [], "missing": []}
+    with db.connection_for() as conn:
+        p = projects.get_project(conn, pid)
+    if not p:
+        raise HTTPException(404, f"项目不存在: id={pid}")
+    try:
+        res = preprocess_svc.delete_products(p, body.names)
+    except preprocess_svc.PreprocessError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if res["deleted"]:
+        _publish_project_state(p)
+    return res
+
+
+@app.get("/api/projects/{pid}/preprocess/thumb")
+def preprocess_thumb(
+    pid: int, name: str = "", size: int = 256
+) -> FileResponse:
+    """preprocess/ 目录的缩略图（结构同 project_thumb）。"""
+    if "/" in name or "\\" in name or ".." in name or not name:
+        raise HTTPException(400, "invalid name")
+    with db.connection_for() as conn:
+        p = projects.get_project(conn, pid)
+    if not p:
+        raise HTTPException(404, f"项目不存在: id={pid}")
+    _, pre = preprocess_svc.project_paths(p)
+    f = pre / name
+    if not f.exists() or f.suffix.lower() not in datasets.IMAGE_EXTS:
+        logger.info("preprocess thumb 404: pid=%s name=%s -> %s", pid, name, f)
+        raise HTTPException(404)
+    return _thumb_response(f, size)
 
 
 class DeleteFilesRequest(BaseModel):

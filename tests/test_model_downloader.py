@@ -312,3 +312,78 @@ def test_download_qwen3_modelscope_builds_complete_directory(
     assert [repo_subpath for _, repo_subpath, _ in hf_calls] == expected_hf_files
     for f in expected_hf_files:
         assert (qwen_dir / f).read_text(encoding="utf-8") == f
+
+
+# ---------------------------------------------------------------------------
+# 预处理放大器
+# ---------------------------------------------------------------------------
+
+
+def test_upscaler_path_helpers(tmp_path: "Path") -> None:
+    """upscaler_dir / upscaler_target / find_upscaler 路径布局与存在性判断。"""
+    assert model_downloader.upscaler_dir(tmp_path) == tmp_path / "upscalers"
+
+    target = model_downloader.upscaler_target("4x-AnimeSharp", tmp_path)
+    assert target == tmp_path / "upscalers" / "4x-AnimeSharp.pth"
+
+    # 未下载
+    assert model_downloader.find_upscaler("4x-AnimeSharp", tmp_path) is None
+
+    # 已下载
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"weights")
+    assert model_downloader.find_upscaler("4x-AnimeSharp", tmp_path) == target
+
+
+def test_upscaler_target_unknown_label() -> None:
+    """非法 label 抛 ValueError，避免拼错落到错误路径。"""
+    with pytest.raises(ValueError, match="unknown upscaler"):
+        model_downloader.upscaler_target("4x-RealNotALabel")
+
+
+def test_download_upscaler_unknown_label_returns_false() -> None:
+    logs: list[str] = []
+    ok = model_downloader.download_upscaler("nope", on_log=logs.append)
+    assert not ok
+    assert any("未知放大器" in l for l in logs)
+
+
+def test_download_upscaler_delegates_to_download_flat(
+    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """download_upscaler 应走 HF download_flat，参数从 UPSCALER_VARIANTS 取。"""
+    calls: list[tuple] = []
+
+    def fake_download_flat(repo_id, repo_subpath, target, *, on_log=print):
+        calls.append((repo_id, repo_subpath, str(target)))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"esrgan")
+        return True
+
+    monkeypatch.setattr(model_downloader, "download_flat", fake_download_flat)
+
+    ok = model_downloader.download_upscaler("4x-AnimeSharp", tmp_path, on_log=lambda _l: None)
+    assert ok
+    assert calls == [(
+        "Kim2091/AnimeSharp",
+        "4x-AnimeSharp.pth",
+        str(tmp_path / "upscalers" / "4x-AnimeSharp.pth"),
+    )]
+
+
+def test_build_catalog_includes_upscalers(
+    tmp_path: "Path", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_catalog 把 upscalers 段加上；未下载 exists=False。"""
+    from studio import secrets
+
+    monkeypatch.setattr(secrets, "load", lambda: secrets.Secrets())
+    cat = model_downloader.build_catalog(tmp_path)
+    assert "upscalers" in cat
+    section = cat["upscalers"]
+    assert section["default"] == "4x-AnimeSharp"
+    labels = [v["label"] for v in section["variants"]]
+    assert "4x-AnimeSharp" in labels
+    sharp = next(v for v in section["variants"] if v["label"] == "4x-AnimeSharp")
+    assert sharp["exists"] is False
+    assert sharp["target_path"].endswith("4x-AnimeSharp.pth")

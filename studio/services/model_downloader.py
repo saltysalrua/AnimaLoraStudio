@@ -88,6 +88,17 @@ CLTAGGER_VERSIONS: dict[str, tuple[str, str]] = {
 # WD14 模型常驻文件名（HF SmilingWolf/* 仓库顶层都是这两个）。
 WD14_FILES = ("model.onnx", "selected_tags.csv")
 
+# 预处理放大器清单。label → (repo_id, repo_file, target_filename)。
+# 4x-AnimeSharp：Kim2091 训练，ESRGAN-RRDB 架构，~64MB，二次元线稿/扁色友好。
+UPSCALER_VARIANTS: dict[str, tuple[str, str, str]] = {
+    "4x-AnimeSharp": (
+        "Kim2091/AnimeSharp",
+        "4x-AnimeSharp.pth",
+        "4x-AnimeSharp.pth",
+    ),
+}
+DEFAULT_UPSCALER = "4x-AnimeSharp"
+
 # ---------------------------------------------------------------------------
 # paths
 # ---------------------------------------------------------------------------
@@ -167,6 +178,26 @@ def wd14_target_dir(root: Path, model_id: str) -> Path:
 def cltagger_target_root(root: Path, model_id: str) -> Path:
     """CLTagger repo 的本地根目录。子目录布局来自 CLTAGGER_VERSIONS。"""
     return root / "cltagger" / safe_dir_name(model_id)
+
+
+def upscaler_dir(root: Optional[Path] = None) -> Path:
+    """放大器权重根目录 `{models_root}/upscalers/`。"""
+    r = root or models_root()
+    return r / "upscalers"
+
+
+def upscaler_target(label: str, root: Optional[Path] = None) -> Path:
+    """单个放大器权重的目标路径。label 必须在 UPSCALER_VARIANTS 中。"""
+    if label not in UPSCALER_VARIANTS:
+        raise ValueError(f"unknown upscaler {label!r}")
+    _repo, _src, fname = UPSCALER_VARIANTS[label]
+    return upscaler_dir(root) / fname
+
+
+def find_upscaler(label: str, root: Optional[Path] = None) -> Optional[Path]:
+    """已下载返回本地路径，没下载返回 None。"""
+    target = upscaler_target(label, root)
+    return target if target.exists() else None
 
 
 def find_anima_main(root: Optional[Path] = None) -> Optional[Path]:
@@ -503,6 +534,25 @@ def download_cltagger(
     return ok
 
 
+def download_upscaler(
+    label: str = DEFAULT_UPSCALER,
+    root: Optional[Path] = None,
+    *,
+    on_log: Callable[[str], None] = print,
+) -> bool:
+    """下载放大器权重到 `{models_root}/upscalers/{filename}`。
+
+    走 download_flat 拿 HF 单文件；魔搭暂无 Kim2091/AnimeSharp 镜像，统一走 HF。
+    """
+    if label not in UPSCALER_VARIANTS:
+        on_log(f"✗ 未知放大器 {label!r}")
+        return False
+    repo, src, _fname = UPSCALER_VARIANTS[label]
+    target = upscaler_target(label, root)
+    on_log(f"\n📥 放大器 {label} (~64 MB) → {target}")
+    return download_flat(repo, src, target, on_log=on_log)
+
+
 def download_wd14(
     model_id: str,
     root: Optional[Path] = None,
@@ -610,6 +660,17 @@ def build_catalog(root: Optional[Path] = None) -> dict[str, Any]:
             "files": files,
         })
 
+    # 放大器：每个 label 一行（4x-AnimeSharp 等）。预处理页加载列表，决定下载按钮。
+    upscaler_variants = []
+    for label, (repo, _src, _fname) in UPSCALER_VARIANTS.items():
+        target = upscaler_target(label, r)
+        upscaler_variants.append({
+            "label": label,
+            "repo": repo,
+            "target_path": str(target),
+            **_file_status(target),
+        })
+
     return {
         "models_root": str(r),
         "anima_main": {
@@ -665,6 +726,14 @@ def build_catalog(root: Optional[Path] = None) -> dict[str, Any]:
             "current_model_path": cl_cfg.model_path,
             "current_tag_mapping_path": cl_cfg.tag_mapping_path,
             "variants": cl_variants,
+        },
+        "upscalers": {
+            "id": "upscalers",
+            "name": "放大器",
+            "description": "预处理阶段的 super-resolution 模型",
+            "default": DEFAULT_UPSCALER,
+            "target_dir": str(upscaler_dir(r)),
+            "variants": upscaler_variants,
         },
         "downloads": get_status_snapshot(),
     }
@@ -829,6 +898,15 @@ def trigger(model_id: str, variant: Optional[str] = None) -> str:
         key = f"wd14:{variant}"
         start_download_async(
             key, lambda log: download_wd14(variant, root, on_log=log)
+        )
+        return key
+    if model_id == "upscaler":
+        label = variant or DEFAULT_UPSCALER
+        if label not in UPSCALER_VARIANTS:
+            raise ValueError(f"unknown upscaler variant {variant!r}")
+        key = f"upscaler:{label}"
+        start_download_async(
+            key, lambda log: download_upscaler(label, root, on_log=log)
         )
         return key
     raise ValueError(f"unknown model_id {model_id!r}")

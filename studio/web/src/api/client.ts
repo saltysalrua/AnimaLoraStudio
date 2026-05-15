@@ -453,6 +453,23 @@ export interface ModelDownloadStatus {
   log_tail: string[]
 }
 
+export interface UpscalerVariant {
+  label: string
+  repo: string
+  target_path: string
+  exists: boolean
+  size: number
+  mtime: number
+}
+export interface UpscalersCatalog {
+  id: 'upscalers'
+  name: string
+  description: string
+  default: string
+  target_dir: string
+  variants: UpscalerVariant[]
+}
+
 export interface ModelsCatalog {
   models_root: string
   anima_main: AnimaMainCatalog
@@ -461,6 +478,7 @@ export interface ModelsCatalog {
   t5_tokenizer: ModelDirCatalog
   wd14: WD14Catalog
   cltagger: CLTaggerCatalog
+  upscalers?: UpscalersCatalog
   downloads: Record<string, ModelDownloadStatus>
 }
 
@@ -469,6 +487,7 @@ export interface ModelsCatalog {
 export type ProjectStage =
   | 'created'
   | 'downloading'
+  | 'preprocessing'
   | 'curating'
   | 'tagging'
   | 'regularizing'
@@ -515,17 +534,19 @@ export interface ProjectSummary {
   updated_at: number
   note: string | null
   download_image_count?: number
+  preprocess_image_count?: number
 }
 
 export interface ProjectDetail extends ProjectSummary {
   versions: Version[]
   download_image_count: number
+  preprocess_image_count: number
 }
 
 // ---- jobs (PP2) -----------------------------------------------------------
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'canceled'
-export type JobKind = 'download' | 'tag' | 'reg_build'
+export type JobKind = 'download' | 'preprocess' | 'tag' | 'reg_build'
 
 export interface Job {
   id: number
@@ -553,6 +574,29 @@ export interface UploadResult {
   skipped: { name: string; reason: string }[]
 }
 
+// ---- preprocess (放大第一阶段) ---------------------------------------------
+
+/** preprocess/ 目录下的已处理产物（含来源元数据，sidecar 缺失时多个字段为 null）。 */
+export interface PreprocessedItem {
+  name: string
+  mtime: number
+  size: number
+  source: string | null
+  model: string | null
+  scale: number | null
+  src_size: [number, number] | null
+  dst_size: [number, number] | null
+  elapsed_seconds: number | null
+  orphan: boolean
+}
+
+/** download/ 里存在但 preprocess/ 还没产物的待处理图。 */
+export interface PreprocessPendingItem {
+  name: string
+  mtime: number
+  size: number
+}
+
 // ---- curation (PP3) -------------------------------------------------------
 
 /**
@@ -566,8 +610,11 @@ export interface CurationItem {
 }
 
 export interface CurationView {
-  left: CurationItem[] // download − train
+  left: CurationItem[] // download − train，或 preprocess − train
   right: Record<string, CurationItem[]> // folder → items
+  /** 左侧实际源：preprocess/ 有产物时为 'preprocess'，否则 'download'。
+   *  老后端没这字段时前端按 'download' 处理。 */
+  left_source?: 'preprocess' | 'download'
   download_total: number
   train_total: number
   folders: string[]
@@ -1242,6 +1289,43 @@ export const api = {
     ),
   projectThumbUrl: (pid: number, name: string, bucket = 'download', size = 256) =>
     `/api/projects/${pid}/thumb?bucket=${encodeURIComponent(bucket)}&name=${encodeURIComponent(name)}&size=${size}`,
+
+  // Preprocess (放大 / 裁剪 / 涂抹) ----------------------------------------
+  startPreprocess: (
+    pid: number,
+    body: {
+      mode: 'all' | 'selected' | 'all_force'
+      names?: string[]
+      model?: string
+      tile_size?: number
+      tile_pad?: number
+      device?: 'auto' | 'cuda' | 'cpu'
+    },
+  ) =>
+    req<Job>(`/api/projects/${pid}/preprocess/start`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getPreprocessStatus: (pid: number) =>
+    req<{
+      job: Job | null
+      log_tail: string
+      summary: { download_count: number; processed_count: number; pending_count: number }
+    }>(`/api/projects/${pid}/preprocess/status`),
+  listPreprocessFiles: (pid: number) =>
+    req<{
+      processed: PreprocessedItem[]
+      pending: PreprocessPendingItem[]
+      summary: { download_count: number; processed_count: number; pending_count: number }
+    }>(`/api/projects/${pid}/preprocess/files`),
+  deletePreprocessFiles: (pid: number, names: string[]) =>
+    req<{ deleted: string[]; missing: string[] }>(
+      `/api/projects/${pid}/preprocess/files/delete`,
+      { method: 'POST', body: JSON.stringify({ names }) },
+    ),
+  preprocessThumbUrl: (pid: number, name: string, size = 256) =>
+    `/api/projects/${pid}/preprocess/thumb?name=${encodeURIComponent(name)}&size=${size}`,
+
   getJob: (jid: number) => req<Job>(`/api/jobs/${jid}`),
   getJobLog: (jid: number, tail?: number) => {
     const qs = tail ? `?tail=${tail}` : ''

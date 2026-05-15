@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 # PP10.2.b：哪些 job kind 吃 GPU。这些 kind 在训练运行中默认会被推迟，
 # 除非 secrets.queue.allow_gpu_during_train=True 显式允许并行。
-GPU_BOUND_JOB_KINDS: frozenset[str] = frozenset({"tag", "reg_build"})
+# preprocess 走 spandrel super-resolution，加载权重到 GPU 推理。
+GPU_BOUND_JOB_KINDS: frozenset[str] = frozenset({"preprocess", "tag", "reg_build"})
 
 # 槽位名常量
 SLOT_TRAIN = "train"
