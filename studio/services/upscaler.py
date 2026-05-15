@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -129,6 +130,29 @@ def clear_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
+def resize_to_area(img: Image.Image, target_area: int) -> Image.Image:
+    """保 aspect ratio 缩放到 `~target_area` 像素的 LANCZOS resize。
+
+    new_W * new_H ≈ target_area；保留 W/H 比。不 snap 到 64 倍数 — Kohya 内部
+    还要按桶再缩 / 裁，提前 snap 只会减档限制。返回新的 PIL Image。
+    """
+    w, h = img.size
+    if w <= 0 or h <= 0 or target_area <= 0:
+        return img
+    ratio = math.sqrt(target_area / (w * h))
+    new_w = max(1, round(w * ratio))
+    new_h = max(1, round(h * ratio))
+    if (new_w, new_h) == (w, h):
+        return img
+    return img.resize((new_w, new_h), Image.LANCZOS)
+
+
+# 已够大「跳过模型」的下限：面积 >= target_area × SKIP_RATIO 时直接 LANCZOS 缩。
+# 0.95 = 容忍 5% 像素缺口走纯 LANCZOS（轻微上采样）— 视觉差别看不出，省掉
+# 一次模型推理（贵）。再低就该走模型保细节了。
+SKIP_MODEL_RATIO = 0.95
+
+
 def _img_to_tensor(img: Image.Image) -> torch.Tensor:
     """PIL → float32 BCHW [0,1]。RGBA 转 RGB（alpha 直接丢，4x-AnimeSharp 不
     处理透明通道；上游若需要保留 alpha 应改先 composite 到白底）。"""
@@ -230,42 +254,76 @@ def upscale_file(
     tile_pad: int = 16,
     device: str = "auto",
     precision: str = "auto",
+    target_area: Optional[int] = None,
     on_log: Callable[[str], None] = lambda _l: None,
     write_sidecar: bool = True,
     prewarm_thumb_sizes: Optional[list[int]] = None,
 ) -> dict[str, Any]:
-    """读 src 图 → 模型放大 → 写 dst（PNG）。返回元数据 dict。
+    """读 src → 智能放大 → 写 dst（PNG）。返回元数据 dict。
 
-    元数据格式（同时写到 `{dst}.preprocess.json` sidecar 当 write_sidecar=True）：
-        {source, model, scale, tile_size, tile_pad, device, src_size, dst_size,
-         elapsed_seconds, mtime}
+    target_area 控制行为（LoRA 训练面向的"够用即可"）：
+      - target_area=None：纯 4× 模型放大（兼容老路径）
+      - target_area=N，src 面积 ≥ N×SKIP_MODEL_RATIO：跳过模型，直接 LANCZOS 缩到 ~N
+      - target_area=N，src 面积 < N×SKIP_MODEL_RATIO：模型 4× → LANCZOS 缩到 ~N
+
+    跳过模型那一路是"大图直接缩"，几百毫秒；走模型那一路才是几十秒的开销。
+    大部分训练集图片像素都够 1024²/1536²，预处理实际只对少数小图调模型。
+
+    元数据 sidecar（写到 `{dst}.preprocess.json` 当 write_sidecar=True）：
+        {source, model, scale, action, target_area, tile_size, tile_pad,
+         device, dtype, src_size, dst_size, elapsed_seconds, mtime}
+    action: 'resize' | 'upscale' | 'upscale+resize'
 
     `device='cuda'` 但 GPU 不可用时静默降级 cpu。
     """
-    dev = resolve_device(device)
-    dtype = resolve_dtype(precision, dev)
-    descriptor = load_model(model_path, device=dev, dtype=dtype)
-    scale = int(descriptor.scale)
-
     t_start = time.monotonic()
+
+    # 1) 先读图判断走哪条路（避免无谓的模型加载）
     with Image.open(src) as raw:
         raw.load()
-        src_size = raw.size  # (W, H)
-        tensor = _img_to_tensor(raw).to(dev, dtype=dtype)
-
-    out = tiled_inference(
-        descriptor.model,
-        tensor,
-        scale=scale,
-        tile_size=tile_size,
-        tile_pad=tile_pad,
+        if raw.mode != "RGB":
+            raw = raw.convert("RGB")
+        src_img = raw.copy()  # 离开 with 块后还要用
+    src_size = src_img.size  # (W, H)
+    src_area = src_img.width * src_img.height
+    skip_model = (
+        target_area is not None
+        and src_area >= int(target_area * SKIP_MODEL_RATIO)
     )
-    out_img = _tensor_to_img(out)
+
+    if skip_model:
+        # 已够大 — 直接 LANCZOS 缩到目标面积，绕过模型
+        out_img = resize_to_area(src_img, int(target_area))  # type: ignore[arg-type]
+        action = "resize"
+        scale = 1  # 这条路径没经过模型，记 1 表示未放大
+        dev = resolve_device(device)
+        dtype = resolve_dtype(precision, dev)
+    else:
+        # 走模型放大
+        dev = resolve_device(device)
+        dtype = resolve_dtype(precision, dev)
+        descriptor = load_model(model_path, device=dev, dtype=dtype)
+        scale = int(descriptor.scale)
+        tensor = _img_to_tensor(src_img).to(dev, dtype=dtype)
+        out_tensor = tiled_inference(
+            descriptor.model,
+            tensor,
+            scale=scale,
+            tile_size=tile_size,
+            tile_pad=tile_pad,
+        )
+        out_img = _tensor_to_img(out_tensor)
+        if target_area is not None:
+            out_img = resize_to_area(out_img, int(target_area))
+            action = "upscale+resize"
+        else:
+            action = "upscale"
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     out_img.save(dst, format="PNG", optimize=False)
 
     # 趁内存里还有 PIL Image，把缩略图预生成进缓存。
-    # 不预热的话用户首次浏览 grid 时会逐张解码 4× PNG（一张 1-3s, 200 张要等几分钟），
+    # 不预热的话用户首次浏览 grid 时会逐张解码 PNG（一张 1-3s，200 张要等几分钟），
     # 而 worker 这里已经付过解码代价了，多花零点几秒生成 thumb 摊到批处理里几乎无感。
     if prewarm_thumb_sizes:
         try:
@@ -279,7 +337,9 @@ def upscale_file(
     meta = {
         "source": src.name,
         "model": label,
+        "action": action,
         "scale": scale,
+        "target_area": target_area,
         "tile_size": tile_size,
         "tile_pad": tile_pad,
         "device": str(dev),
@@ -295,7 +355,7 @@ def upscale_file(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     on_log(
-        f"   ✓ {src.name} → {dst.name}  "
+        f"   ✓ [{action}] {src.name} → {dst.name}  "
         f"{src_size[0]}×{src_size[1]} → {out_img.size[0]}×{out_img.size[1]}  "
         f"({elapsed:.1f}s)"
     )

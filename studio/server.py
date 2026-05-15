@@ -987,6 +987,8 @@ class PreprocessStartRequest(BaseModel):
     tile_size: int = preprocess_svc.DEFAULT_TILE_SIZE
     tile_pad: int = preprocess_svc.DEFAULT_TILE_PAD
     device: str = preprocess_svc.DEFAULT_DEVICE
+    # target_area=None 走纯 4× 模型；非 None 走智能（够大跳模型 + LANCZOS 缩到目标）
+    target_area: Optional[int] = preprocess_svc.DEFAULT_TARGET_AREA
 
 
 class PreprocessDeleteRequest(BaseModel):
@@ -1006,6 +1008,11 @@ def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
         raise HTTPException(400, "tile_size 必须 > 0")
     if body.device not in ("auto", "cuda", "cpu"):
         raise HTTPException(400, f"未知 device: {body.device}")
+    # 边界：合理面积区间 256² ~ 4096²（再大就该自己写脚本了），None 表示关闭智能模式
+    if body.target_area is not None and (
+        body.target_area < 256 * 256 or body.target_area > 4096 * 4096
+    ):
+        raise HTTPException(400, f"target_area 超出范围: {body.target_area}")
 
     # 模型权重必须先下载（避免 worker 启起来才报错）
     target = model_downloader.upscaler_target(body.model) \
@@ -1031,6 +1038,7 @@ def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
                 tile_size=body.tile_size,
                 tile_pad=body.tile_pad,
                 device=body.device,
+                target_area=body.target_area,
             )
         except preprocess_svc.PreprocessError as exc:
             raise HTTPException(400, str(exc)) from exc

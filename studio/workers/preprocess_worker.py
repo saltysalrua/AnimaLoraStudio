@@ -15,6 +15,7 @@ log 文件，避免 LogTailer 读两次。
 from __future__ import annotations
 
 import argparse
+import math
 import signal
 import sys
 import traceback
@@ -68,6 +69,9 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
         tile_size = int(params.get("tile_size", preprocess.DEFAULT_TILE_SIZE))
         tile_pad = int(params.get("tile_pad", preprocess.DEFAULT_TILE_PAD))
         device = params.get("device", preprocess.DEFAULT_DEVICE)
+        # target_area = None 是 "直接 4×" 路径；非 None 走智能流水（够大跳过模型）
+        target_area_raw = params.get("target_area", preprocess.DEFAULT_TARGET_AREA)
+        target_area = int(target_area_raw) if target_area_raw else None
 
         download_dir, preprocess_dir = preprocess.project_paths(project)
         preprocess_dir.mkdir(parents=True, exist_ok=True)
@@ -91,9 +95,13 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
             log("[done] 没有需要处理的图（已全部预处理）")
             return 0
 
+        target_desc = (
+            f"{int(math.sqrt(target_area))}²={target_area}px"
+            if target_area else "off (直接 4×)"
+        )
         log(
             f"[start] mode={mode} model={model_label} tile={tile_size}+{tile_pad} "
-            f"device={device} total={total}"
+            f"device={device} target={target_desc} total={total}"
         )
 
         # 解析一次实际 device + dtype 并 log，让用户能看出真在用 GPU/fp16 还是
@@ -145,6 +153,7 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
                     tile_size=tile_size,
                     tile_pad=tile_pad,
                     device=device,
+                    target_area=target_area,
                     on_log=log,
                     # 256 给 grid，768 给 curate alt-hover 大图。worker 阶段付一次
                     # decode 代价，前端首次浏览就秒开。

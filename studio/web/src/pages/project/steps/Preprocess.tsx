@@ -50,6 +50,19 @@ const DEVICE_OPTIONS: { value: Device; label: string }[] = [
   { value: 'cpu', label: 'CPU' },
 ]
 
+// 目标分辨率预设 — LoRA 训练桶常用面积。
+// value=null 是「关闭智能」模式，直接 4× 模型输出（老路径，盘费高）。
+type TargetPreset = { label: string; edge: number | null }
+const TARGET_PRESETS: TargetPreset[] = [
+  { label: '768²',  edge: 768 },
+  { label: '1024² (推荐)', edge: 1024 },
+  { label: '1536²', edge: 1536 },
+  { label: '2048²', edge: 2048 },
+  { label: '自定义', edge: 0 },     // edge=0 触发自定义 input
+  { label: '关闭 (4× 输出)', edge: null },
+]
+const DEFAULT_TARGET_EDGE = 1024
+
 export default function PreprocessPage() {
   const { project, reload } = useOutletContext<Ctx>()
   const { toast } = useToast()
@@ -61,6 +74,9 @@ export default function PreprocessPage() {
   const [busy, setBusy] = useState(false)
   const [tileSize, setTileSize] = useState<number>(256)
   const [device, setDevice] = useState<Device>('auto')
+  // targetEdge: 边长（像素），平方就是面积；null = 关闭智能；0 = 自定义中
+  const [targetEdge, setTargetEdge] = useState<number | null>(DEFAULT_TARGET_EDGE)
+  const [customEdge, setCustomEdge] = useState<string>(String(DEFAULT_TARGET_EDGE))
   const [pendingSel, setPendingSel] = useState<Set<string>>(new Set())
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null)
   const [processedSel, setProcessedSel] = useState<Set<string>>(new Set())
@@ -158,6 +174,20 @@ export default function PreprocessPage() {
       toast('请先下载 4x-AnimeSharp 模型', 'error')
       return
     }
+    // 解析 targetEdge → target_area。0 走 customEdge；null 关闭智能；正数平方
+    let target_area: number | null = null
+    if (targetEdge === null) {
+      target_area = null
+    } else if (targetEdge === 0) {
+      const n = Number(customEdge)
+      if (!Number.isFinite(n) || n < 256 || n > 4096) {
+        toast('自定义边长需在 256-4096 之间', 'error')
+        return
+      }
+      target_area = Math.round(n) * Math.round(n)
+    } else {
+      target_area = targetEdge * targetEdge
+    }
     setBusy(true)
     try {
       const j = await api.startPreprocess(project.id, {
@@ -166,6 +196,7 @@ export default function PreprocessPage() {
         model: DEFAULT_MODEL,
         tile_size: tileSize,
         device,
+        target_area,
       })
       setLogs([])
       setStatus((prev) => ({
@@ -240,7 +271,10 @@ export default function PreprocessPage() {
         name: it.name,
         thumbUrl: api.preprocessThumbUrl(project.id, it.name),
         meta: it.dst_size
-          ? `${it.src_size?.join('×') ?? '?'} → ${it.dst_size.join('×')} (${it.scale}×)`
+          ? [
+              it.action ?? 'upscale',
+              `${it.src_size?.join('×') ?? '?'} → ${it.dst_size.join('×')}`,
+            ].join('  ')
           : undefined,
       })),
     [files, project.id],
@@ -266,6 +300,10 @@ export default function PreprocessPage() {
               setTileSize={setTileSize}
               device={device}
               setDevice={setDevice}
+              targetEdge={targetEdge}
+              setTargetEdge={setTargetEdge}
+              customEdge={customEdge}
+              setCustomEdge={setCustomEdge}
               modelReady={modelReady}
               downloadingModel={downloadingModel}
               onDownloadModel={() => void downloadModel()}
@@ -326,6 +364,8 @@ export default function PreprocessPage() {
             summary={summary}
             upscaler={upscaler}
             tileSize={tileSize}
+            processed={files?.processed ?? []}
+            targetEdge={targetEdge}
           />
         </div>
       </div>
@@ -342,6 +382,10 @@ interface OperationPanelProps {
   setTileSize: (n: number) => void
   device: Device
   setDevice: (d: Device) => void
+  targetEdge: number | null
+  setTargetEdge: (n: number | null) => void
+  customEdge: string
+  setCustomEdge: (s: string) => void
   modelReady: boolean
   downloadingModel: boolean
   onDownloadModel: () => void
@@ -358,6 +402,10 @@ function OperationPanel({
   setTileSize,
   device,
   setDevice,
+  targetEdge,
+  setTargetEdge,
+  customEdge,
+  setCustomEdge,
   modelReady,
   downloadingModel,
   onDownloadModel,
@@ -368,6 +416,20 @@ function OperationPanel({
   onStartAll,
   onStartSelected,
 }: OperationPanelProps) {
+  // 当前下拉选中哪一档：用 edge 作为 value（null→'off', 0→'custom', 正数→str）
+  const selectValue =
+    targetEdge === null ? 'off' : targetEdge === 0 ? 'custom' : String(targetEdge)
+  const handlePresetChange = (v: string) => {
+    if (v === 'off') setTargetEdge(null)
+    else if (v === 'custom') setTargetEdge(0)
+    else setTargetEdge(Number(v))
+  }
+  // 在 model panel 上方加一条"目标分辨率"说明，紧凑
+  const targetHint = targetEdge === null
+    ? '关闭：所有图都走 4× 模型（盘费高）'
+    : targetEdge === 0
+      ? `自定义：约 ${customEdge}² 像素`
+      : `${targetEdge}² ≈ ${(targetEdge * targetEdge / 1e6).toFixed(2)}M px`
   return (
     <section className="flex flex-col gap-1.5 rounded-md border border-subtle bg-surface px-3 py-2.5 shrink-0">
       <h3 className="caption flex items-center gap-1.5">
@@ -390,6 +452,42 @@ function OperationPanel({
           </button>
         </div>
       )}
+
+      {/* 目标分辨率行：决定每张图最终输出多少像素（按训练桶面积估的） */}
+      <div className="flex items-center gap-2 text-sm flex-wrap">
+        <label className="flex items-center gap-1.5">
+          <span className="text-fg-tertiary">目标分辨率</span>
+          <select
+            value={selectValue}
+            onChange={(e) => handlePresetChange(e.target.value)}
+            disabled={busy}
+            className="input text-sm"
+            style={{ width: 'auto', padding: '2px 6px' }}
+          >
+            {TARGET_PRESETS.map((p) => (
+              <option
+                key={p.edge === null ? 'off' : p.edge === 0 ? 'custom' : p.edge}
+                value={p.edge === null ? 'off' : p.edge === 0 ? 'custom' : String(p.edge)}
+              >{p.label}</option>
+            ))}
+          </select>
+          {targetEdge === 0 && (
+            <input
+              type="number"
+              min={256}
+              max={4096}
+              step={64}
+              value={customEdge}
+              onChange={(e) => setCustomEdge(e.target.value)}
+              disabled={busy}
+              className="input input-mono text-sm"
+              style={{ width: 80, padding: '2px 6px' }}
+              placeholder="边长"
+            />
+          )}
+          <span className="text-fg-tertiary text-xs">{targetHint}</span>
+        </label>
+      </div>
 
       <div className="flex items-center gap-2 text-sm flex-wrap">
         <label className="flex items-center gap-1.5">
@@ -451,8 +549,8 @@ function OperationPanel({
         </button>
       </div>
 
-      {/* 未来 tabs 占位，提示用户裁剪 / 涂抹 还没上线 */}
-      <div className="flex items-center gap-2 mt-1 text-xs text-fg-tertiary">
+      {/* 智能流水说明 + 未来 tabs 占位 */}
+      <div className="flex items-center gap-2 mt-1 text-xs text-fg-tertiary flex-wrap">
         <span className="font-medium text-fg-secondary">阶段</span>
         <span className="px-1.5 py-0.5 rounded bg-accent-soft text-accent text-xs font-medium">放大</span>
         <span
@@ -463,6 +561,12 @@ function OperationPanel({
           className="px-1.5 py-0.5 rounded bg-overlay opacity-50 cursor-not-allowed"
           title="未来阶段：画笔涂抹（取色 + 高斯）"
         >涂抹</span>
+        <span className="flex-1" />
+        {targetEdge !== null && (
+          <span title="像素够目标的图直接 LANCZOS 缩，省掉昂贵的 4× 推理">
+            智能：像素够 → 跳过模型直接 LANCZOS 缩
+          </span>
+        )}
       </div>
     </section>
   )
@@ -629,15 +733,30 @@ function PreprocessSidebar({
   summary,
   upscaler,
   tileSize,
+  processed,
+  targetEdge,
 }: {
   summary: Status['summary']
   upscaler: UpscalerVariant | null
   tileSize: number
+  processed: PreprocessedItem[]
+  targetEdge: number | null
 }) {
   const { download_count, processed_count, pending_count } = summary
   const pct = download_count > 0 ? Math.round((processed_count / download_count) * 100) : 0
-  // 粗略 VRAM 估算：tile²×scale²×4byte×7倍中间张量，单位 MB。仅给用户一个量级。
-  const estVramMB = Math.round((tileSize * tileSize * 16 * 4 * 7) / (1024 * 1024))
+  // 粗略 VRAM 估算：tile²×scale²×2byte (fp16)×7倍中间张量，单位 MB。给个量级。
+  const estVramMB = Math.round((tileSize * tileSize * 16 * 2 * 7) / (1024 * 1024))
+
+  // action 分布：让用户看到智能流水的实际收益（有多少图根本没走模型）
+  const actionStats = useMemo(() => {
+    const stats = { resize: 0, upscale: 0, 'upscale+resize': 0, unknown: 0 }
+    for (const it of processed) {
+      const a = it.action ?? 'unknown'
+      if (a in stats) (stats as Record<string, number>)[a]++
+      else stats.unknown++
+    }
+    return stats
+  }, [processed])
 
   return (
     <div className="flex flex-col gap-3 min-w-0">
@@ -657,6 +776,32 @@ function PreprocessSidebar({
         </div>
         <p className="text-xs text-fg-tertiary mt-1 text-right">{pct}%</p>
       </div>
+
+      {/* action 分布：跳过模型的图越多，整体越快 */}
+      {processed.length > 0 && (
+        <div className="rounded-md border border-subtle bg-surface px-3 py-2.5">
+          <h3 className="caption flex items-center gap-1.5">
+            <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-accent" />
+            处理方式分布
+          </h3>
+          {actionStats.resize > 0 && (
+            <StatRow label="直接缩 (大图)" value={`${actionStats.resize} 张`} accent="ok" />
+          )}
+          {actionStats['upscale+resize'] > 0 && (
+            <StatRow label="放大 + 缩" value={`${actionStats['upscale+resize']} 张`} accent="warn" />
+          )}
+          {actionStats.upscale > 0 && (
+            <StatRow label="纯 4× 放大" value={`${actionStats.upscale} 张`} />
+          )}
+          {actionStats.unknown > 0 && (
+            <StatRow label="旧数据" value={`${actionStats.unknown} 张`} />
+          )}
+          <p className="text-[11px] text-fg-tertiary mt-1.5 leading-snug">
+            「直接缩」走 LANCZOS 不调用模型，秒级；「放大+缩」才是慢的那条路。
+            {targetEdge === null && '（关闭目标模式时所有图都走 4× 路径）'}
+          </p>
+        </div>
+      )}
 
       <div className="rounded-md border border-subtle bg-surface px-3 py-2.5">
         <h3 className="caption flex items-center gap-1.5">

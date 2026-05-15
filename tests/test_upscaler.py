@@ -212,6 +212,84 @@ def test_upscale_file_writes_png_and_sidecar(
     assert any("in.png" in line for line in logs)
 
 
+def test_upscale_file_smart_skips_model_when_already_big(
+    tmp_path: Path, stub_model: StubDescriptor
+) -> None:
+    """target_area + 源图足够大 → 跳过模型，走 LANCZOS resize，action='resize'。"""
+    src = tmp_path / "big.png"
+    dst = tmp_path / "out.png"
+    # 源 1024×1024 = ~1M px，target = 768² = 589824 px → 源面积远大于 target
+    _write_test_image(src, size=(1024, 1024))
+
+    meta = upscaler.upscale_file(
+        src,
+        dst,
+        model_path=tmp_path / "dummy.pth",
+        device="cpu",
+        target_area=768 * 768,
+    )
+    # 行为：跳过模型 (scale=1)，输出面积接近 target
+    assert meta["action"] == "resize"
+    assert meta["scale"] == 1
+    out_w, out_h = meta["dst_size"]
+    assert abs(out_w * out_h - 768 * 768) <= 768  # 取整误差容忍
+
+
+def test_upscale_file_smart_upscales_when_too_small(
+    tmp_path: Path, stub_model: StubDescriptor
+) -> None:
+    """target_area + 源图像素不够 → 走模型 + LANCZOS 缩到 target，action='upscale+resize'。"""
+    src = tmp_path / "small.png"
+    dst = tmp_path / "out.png"
+    # 源 256×256 = 65k px，target = 1024² = 1M px → 源面积远小于 target
+    _write_test_image(src, size=(256, 256))
+
+    meta = upscaler.upscale_file(
+        src,
+        dst,
+        model_path=tmp_path / "dummy.pth",
+        device="cpu",
+        tile_size=128,
+        target_area=1024 * 1024,
+    )
+    assert meta["action"] == "upscale+resize"
+    assert meta["scale"] == 4
+    out_w, out_h = meta["dst_size"]
+    # stub 是 4× bicubic，256→1024，再 LANCZOS 缩到 target 应该接近 1024×1024
+    assert abs(out_w * out_h - 1024 * 1024) <= 1024
+
+
+def test_upscale_file_target_area_none_keeps_old_behavior(
+    tmp_path: Path, stub_model: StubDescriptor
+) -> None:
+    """target_area=None → 老路径，直接 4× 模型输出，action='upscale'。"""
+    src = tmp_path / "in.png"
+    dst = tmp_path / "out.png"
+    _write_test_image(src, size=(64, 64))
+
+    meta = upscaler.upscale_file(
+        src,
+        dst,
+        model_path=tmp_path / "dummy.pth",
+        device="cpu",
+        tile_size=32,
+        target_area=None,
+    )
+    assert meta["action"] == "upscale"
+    assert meta["dst_size"] == [256, 256]
+
+
+def test_resize_to_area_preserves_aspect() -> None:
+    """resize_to_area 应保比例，输出面积 ~= target。"""
+    img = Image.new("RGB", (1920, 3360), color=(120, 60, 30))
+    out = upscaler.resize_to_area(img, 1024 * 1024)
+    w, h = out.size
+    # aspect 保留
+    assert abs((w / h) - (1920 / 3360)) < 1e-3
+    # 面积接近 1M
+    assert abs(w * h - 1024 * 1024) / (1024 * 1024) < 0.01
+
+
 def test_upscale_file_prewarms_thumbnails(
     tmp_path: Path, stub_model: StubDescriptor, monkeypatch: pytest.MonkeyPatch
 ) -> None:

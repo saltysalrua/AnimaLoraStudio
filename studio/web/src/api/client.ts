@@ -584,6 +584,10 @@ export interface PreprocessedItem {
   source: string | null
   model: string | null
   scale: number | null
+  /** 'resize' | 'upscale' | 'upscale+resize'，sidecar 缺失或老数据时为 null。 */
+  action: string | null
+  /** 目标像素面积；null = 关闭智能模式（老路径 4×）。 */
+  target_area: number | null
   src_size: [number, number] | null
   dst_size: [number, number] | null
   elapsed_seconds: number | null
@@ -1300,6 +1304,8 @@ export const api = {
       tile_size?: number
       tile_pad?: number
       device?: 'auto' | 'cuda' | 'cpu'
+      /** 目标像素面积。null = 关闭智能模式，纯 4× 输出。 */
+      target_area?: number | null
     },
   ) =>
     req<Job>(`/api/projects/${pid}/preprocess/start`, {

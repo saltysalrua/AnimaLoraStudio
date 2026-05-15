@@ -40,6 +40,9 @@ DEFAULT_MODEL = "4x-AnimeSharp"
 DEFAULT_TILE_SIZE = 256
 DEFAULT_TILE_PAD = 16
 DEFAULT_DEVICE = "auto"
+# LoRA 训练桶的目标面积。1024² = 1048576 px 是 SDXL/Flux/Anima 常用桶；用户
+# 可以在 UI 选 768²/1024²/1536²/2048² 或自定义边长。
+DEFAULT_TARGET_AREA = 1024 * 1024
 
 PRODUCT_SUFFIX = ".png"
 SIDECAR_SUFFIX = ".preprocess.json"
@@ -130,6 +133,8 @@ def list_processed(p: dict[str, Any]) -> list[dict[str, Any]]:
             "source": meta.get("source"),
             "model": meta.get("model"),
             "scale": meta.get("scale"),
+            "action": meta.get("action"),
+            "target_area": meta.get("target_area"),
             "src_size": meta.get("src_size"),
             "dst_size": meta.get("dst_size"),
             "elapsed_seconds": meta.get("elapsed_seconds"),
@@ -214,6 +219,7 @@ def start_job(
     tile_size: int = DEFAULT_TILE_SIZE,
     tile_pad: int = DEFAULT_TILE_PAD,
     device: str = DEFAULT_DEVICE,
+    target_area: Optional[int] = DEFAULT_TARGET_AREA,
 ) -> dict[str, Any]:
     """创建预处理 job。worker 自己读 params 决定要做什么。
 
@@ -239,6 +245,7 @@ def start_job(
         "tile_size": int(tile_size),
         "tile_pad": int(tile_pad),
         "device": device,
+        "target_area": int(target_area) if target_area else None,
     }
     if names:
         params["names"] = list(names)
