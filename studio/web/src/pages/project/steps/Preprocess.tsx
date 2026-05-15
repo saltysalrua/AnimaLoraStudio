@@ -41,7 +41,7 @@ const STATUS_COLOR: Record<Job['status'], string> = {
   canceled: 'badge badge-neutral',
 }
 
-const DEFAULT_MODEL = '4x-AnimeSharp'
+const FALLBACK_MODEL = '4x-AnimeSharp'
 const TILE_OPTIONS = [128, 192, 256, 384, 512] as const
 type Device = 'auto' | 'cuda' | 'cpu'
 const DEVICE_OPTIONS: { value: Device; label: string }[] = [
@@ -83,8 +83,14 @@ export default function PreprocessPage() {
   const [processedAnchor, setProcessedAnchor] = useState<string | null>(null)
 
   // 模型权重就绪状态（catalog 取一次，下载完成后用户手动刷新或 SSE 更新）
-  const [upscaler, setUpscaler] = useState<UpscalerVariant | null>(null)
+  const [allUpscalers, setAllUpscalers] = useState<UpscalerVariant[]>([])
+  // 当前选中的放大器 label。初值 fallback；refreshUpscaler 拉 catalog.upscalers.current 覆盖
+  const [selectedModel, setSelectedModel] = useState<string>(FALLBACK_MODEL)
   const [downloadingModel, setDownloadingModel] = useState(false)
+  const upscaler = useMemo<UpscalerVariant | null>(
+    () => allUpscalers.find((x) => x.label === selectedModel) ?? null,
+    [allUpscalers, selectedModel],
+  )
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -108,12 +114,26 @@ export default function PreprocessPage() {
   const refreshUpscaler = useCallback(async () => {
     try {
       const cat = await api.getModelsCatalog()
-      const v = cat.upscalers?.variants?.find((x) => x.label === DEFAULT_MODEL) ?? null
-      setUpscaler(v)
+      const variants = cat.upscalers?.variants ?? []
+      setAllUpscalers(variants)
+      const current = cat.upscalers?.current
+      // 后端兜底逻辑已经保证 current 合法（预设 or 已存在 custom）；前端只在
+      // 后端返回空时回退 FALLBACK_MODEL。setSelectedModel 是 idempotent。
+      setSelectedModel(current || FALLBACK_MODEL)
     } catch {
       /* ignore */
     }
   }, [])
+
+  const changeSelectedModel = useCallback(async (label: string) => {
+    setSelectedModel(label)
+    try {
+      await api.selectUpscaler(label)
+    } catch (e) {
+      toast(String(e), 'error')
+      void refreshUpscaler()  // 失败回滚
+    }
+  }, [refreshUpscaler, toast])
 
   useEffect(() => {
     void refreshFiles()
@@ -158,10 +178,16 @@ export default function PreprocessPage() {
   // ----- 操作 ---------------------------------------------------------------
   const downloadModel = async () => {
     if (downloadingModel) return
+    // custom（kind='custom'）的不能从这里再下载——它本来就是用户手动下来的；
+    // 走自定义下载流程在 Settings 页里处理。
+    if (upscaler?.kind === 'custom') {
+      toast('自定义模型请前往设置 → 预处理重新下载', 'error')
+      return
+    }
     setDownloadingModel(true)
     try {
-      await api.startModelDownload({ model_id: 'upscaler', variant: DEFAULT_MODEL })
-      toast('开始下载 4x-AnimeSharp', 'success')
+      await api.startModelDownload({ model_id: 'upscaler', variant: selectedModel })
+      toast(`开始下载 ${selectedModel}`, 'success')
       // 让 SSE 推 model_download_changed；这里也立即刷一下兜底
       setTimeout(() => void refreshUpscaler(), 1500)
     } catch (e) {
@@ -176,7 +202,7 @@ export default function PreprocessPage() {
     names?: string[],
   ) => {
     if (!modelReady) {
-      toast('请先下载 4x-AnimeSharp 模型', 'error')
+      toast(`请先下载放大器：${selectedModel}`, 'error')
       return
     }
     // 解析 targetEdge → target_area。0 走 customEdge；null 关闭智能；正数平方
@@ -198,7 +224,7 @@ export default function PreprocessPage() {
       const j = await api.startPreprocess(project.id, {
         mode,
         names,
-        model: DEFAULT_MODEL,
+        model: selectedModel,
         tile_size: tileSize,
         device,
         target_area,
@@ -313,6 +339,9 @@ export default function PreprocessPage() {
               downloadingModel={downloadingModel}
               onDownloadModel={() => void downloadModel()}
               upscaler={upscaler}
+              allUpscalers={allUpscalers}
+              selectedModel={selectedModel}
+              onSelectedModelChange={(label) => void changeSelectedModel(label)}
               pendingCount={summary.pending_count}
               pendingSelCount={pendingSel.size}
               busy={busy || isLive}
@@ -368,6 +397,7 @@ export default function PreprocessPage() {
           <PreprocessSidebar
             summary={summary}
             upscaler={upscaler}
+            selectedModel={selectedModel}
             tileSize={tileSize}
             processed={files?.processed ?? []}
             targetEdge={targetEdge}
@@ -395,6 +425,9 @@ interface OperationPanelProps {
   downloadingModel: boolean
   onDownloadModel: () => void
   upscaler: UpscalerVariant | null
+  allUpscalers: UpscalerVariant[]
+  selectedModel: string
+  onSelectedModelChange: (label: string) => void
   pendingCount: number
   pendingSelCount: number
   busy: boolean
@@ -415,6 +448,9 @@ function OperationPanel({
   downloadingModel,
   onDownloadModel,
   upscaler,
+  allUpscalers,
+  selectedModel,
+  onSelectedModelChange,
   pendingCount,
   pendingSelCount,
   busy,
@@ -446,14 +482,16 @@ function OperationPanel({
         <div className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-sm bg-warn-soft border border-warn">
           <span className="text-warn font-medium">需要下载模型</span>
           <span className="text-fg-secondary text-xs flex-1 truncate">
-            {upscaler?.repo ?? 'Kim2091/AnimeSharp'} · ~64 MB
+            {upscaler?.kind === 'custom'
+              ? '自定义模型未在本地（请到设置 → 预处理）'
+              : `${upscaler?.hf_repo ?? upscaler?.ms_repo ?? '—'} · ~${upscaler?.size_mb ?? 64} MB`}
           </span>
           <button
             onClick={onDownloadModel}
-            disabled={downloadingModel}
+            disabled={downloadingModel || upscaler?.kind === 'custom'}
             className="btn btn-primary btn-sm"
           >
-            {downloadingModel ? '下载中...' : '下载 4x-AnimeSharp'}
+            {downloadingModel ? '下载中...' : `下载 ${selectedModel}`}
           </button>
         </div>
       )}
@@ -497,8 +535,24 @@ function OperationPanel({
       <div className="flex items-center gap-2 text-sm flex-wrap">
         <label className="flex items-center gap-1.5">
           <span className="text-fg-tertiary">模型</span>
-          <span className="mono text-fg-primary">{DEFAULT_MODEL}</span>
-          <span className="text-fg-tertiary">· scale=4</span>
+          <select
+            value={selectedModel}
+            onChange={(e) => onSelectedModelChange(e.target.value)}
+            disabled={busy}
+            className="input text-sm mono"
+            style={{ width: 'auto', padding: '2px 6px' }}
+          >
+            {allUpscalers.map((v) => (
+              <option key={v.label} value={v.label}>
+                {v.label}
+                {!v.exists ? ' · 未下载' : ''}
+                {v.kind === 'custom' ? ' · 自定义' : ''}
+              </option>
+            ))}
+            {allUpscalers.length === 0 && (
+              <option value={selectedModel}>{selectedModel}</option>
+            )}
+          </select>
         </label>
 
         <span className="text-dim">·</span>
@@ -737,12 +791,14 @@ function JobStrip({
 function PreprocessSidebar({
   summary,
   upscaler,
+  selectedModel,
   tileSize,
   processed,
   targetEdge,
 }: {
   summary: Status['summary']
   upscaler: UpscalerVariant | null
+  selectedModel: string
   tileSize: number
   processed: PreprocessedItem[]
   targetEdge: number | null
@@ -849,7 +905,7 @@ function PreprocessSidebar({
           设备 / 模型
         </h3>
         <StatRow
-          label={DEFAULT_MODEL}
+          label={selectedModel}
           value={upscaler?.exists ? '已就绪' : '未下载'}
           accent={upscaler?.exists ? 'ok' : 'warn'}
         />
