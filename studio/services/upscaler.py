@@ -56,13 +56,39 @@ def resolve_device(device: str = "auto") -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_model(model_path: Path, *, device: Optional[torch.device] = None) -> Any:
+def resolve_dtype(precision: str, device: torch.device) -> torch.dtype:
+    """precision='auto' → cuda 上 fp16，cpu 上 fp32。
+
+    fp16 对 ESRGAN/RRDB 这类 CNN 视觉模型几乎无肉眼差异，但 GPU 上速度
+    通常 1.6-2× ；ComfyUI 默认也走 fp16。
+    bf16 在 sm_80+ (Ampere 及以后) 可用，对数值范围更友好但 RTX 20 / Tesla 不支持。
+    """
+    if precision == "fp32":
+        return torch.float32
+    if precision == "fp16":
+        return torch.float16
+    if precision == "bf16":
+        return torch.bfloat16
+    # auto
+    if device.type == "cuda":
+        return torch.float16
+    return torch.float32
+
+
+def load_model(
+    model_path: Path,
+    *,
+    device: Optional[torch.device] = None,
+    dtype: Optional[torch.dtype] = None,
+) -> Any:
     """加载 spandrel ImageModelDescriptor，进程级缓存。
 
     描述符暴露：
         .model — torch.nn.Module，可直接前向
         .scale — 整数放大倍率（4x-AnimeSharp 是 4）
         .input_channels / .output_channels — 通常 3
+
+    传 dtype 时把模型权重 cast 过去（fp16 在 GPU 上典型 1.6-2× 提速）。
     """
     if not model_path.exists():
         raise FileNotFoundError(f"模型权重不存在: {model_path}")
@@ -72,6 +98,8 @@ def load_model(model_path: Path, *, device: Optional[torch.device] = None) -> An
     if cached is not None:
         if device is not None:
             cached.model.to(device)
+        if dtype is not None:
+            cached.model.to(dtype)
         return cached
 
     try:
@@ -85,6 +113,8 @@ def load_model(model_path: Path, *, device: Optional[torch.device] = None) -> An
     descriptor.model.eval()
     if device is not None:
         descriptor.model.to(device)
+    if dtype is not None:
+        descriptor.model.to(dtype)
     _MODEL_CACHE[key] = descriptor
     return descriptor
 
@@ -112,12 +142,13 @@ def _img_to_tensor(img: Image.Image) -> torch.Tensor:
 
 
 def _tensor_to_img(t: torch.Tensor) -> Image.Image:
-    """1CHW 或 CHW float[0,1] → PIL RGB。"""
+    """1CHW 或 CHW float[0,1] → PIL RGB。fp16/bf16 自动 cast 回 fp32 再转 numpy。"""
     import numpy as np
 
     if t.dim() == 4:
         t = t.squeeze(0)
-    arr = t.clamp(0, 1).permute(1, 2, 0).cpu().numpy()  # HWC
+    # numpy 不直接支持 bf16；fp16 能直接转但乘 255 时精度不够 — 统一回 fp32
+    arr = t.clamp(0, 1).permute(1, 2, 0).float().cpu().numpy()  # HWC
     arr = (arr * 255.0 + 0.5).astype(np.uint8)
     return Image.fromarray(arr)
 
@@ -198,6 +229,7 @@ def upscale_file(
     tile_size: int = 256,
     tile_pad: int = 16,
     device: str = "auto",
+    precision: str = "auto",
     on_log: Callable[[str], None] = lambda _l: None,
     write_sidecar: bool = True,
     prewarm_thumb_sizes: Optional[list[int]] = None,
@@ -211,14 +243,15 @@ def upscale_file(
     `device='cuda'` 但 GPU 不可用时静默降级 cpu。
     """
     dev = resolve_device(device)
-    descriptor = load_model(model_path, device=dev)
+    dtype = resolve_dtype(precision, dev)
+    descriptor = load_model(model_path, device=dev, dtype=dtype)
     scale = int(descriptor.scale)
 
     t_start = time.monotonic()
     with Image.open(src) as raw:
         raw.load()
         src_size = raw.size  # (W, H)
-        tensor = _img_to_tensor(raw).to(dev)
+        tensor = _img_to_tensor(raw).to(dev, dtype=dtype)
 
     out = tiled_inference(
         descriptor.model,
@@ -250,6 +283,7 @@ def upscale_file(
         "tile_size": tile_size,
         "tile_pad": tile_pad,
         "device": str(dev),
+        "dtype": str(dtype).replace("torch.", ""),
         "src_size": list(src_size),
         "dst_size": list(out_img.size),
         "elapsed_seconds": round(elapsed, 3),

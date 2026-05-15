@@ -55,9 +55,11 @@ def stub_model(monkeypatch: pytest.MonkeyPatch) -> StubDescriptor:
     """让 upscaler.load_model 返回 stub，不真去 spandrel 加载。"""
     stub = StubDescriptor(scale=4)
 
-    def fake_load(model_path: Path, *, device=None):
+    def fake_load(model_path: Path, *, device=None, dtype=None):
         if device is not None:
             stub.model.to(device)
+        if dtype is not None:
+            stub.model.to(dtype)
         return stub
 
     monkeypatch.setattr(upscaler, "load_model", fake_load)
@@ -89,6 +91,28 @@ def test_resolve_device_cuda_falls_back(monkeypatch: pytest.MonkeyPatch) -> None
     """显式 cuda 但不可用 → 降级 cpu，不抛。"""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert upscaler.resolve_device("cuda").type == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# resolve_dtype
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_dtype_explicit() -> None:
+    cpu = torch.device("cpu")
+    assert upscaler.resolve_dtype("fp32", cpu) == torch.float32
+    assert upscaler.resolve_dtype("fp16", cpu) == torch.float16
+    assert upscaler.resolve_dtype("bf16", cpu) == torch.bfloat16
+
+
+def test_resolve_dtype_auto_cpu() -> None:
+    """auto + cpu → fp32（CPU 上 fp16 慢，无收益）。"""
+    assert upscaler.resolve_dtype("auto", torch.device("cpu")) == torch.float32
+
+
+def test_resolve_dtype_auto_cuda() -> None:
+    """auto + cuda → fp16（ComfyUI 默认；ESRGAN/RRDB 在 fp16 上几乎无肉眼差异）。"""
+    assert upscaler.resolve_dtype("auto", torch.device("cuda")) == torch.float16
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +319,46 @@ def test_load_model_caches_by_path(
     d2 = upscaler.load_model(model_path)
     assert d1 is d2
     assert call_count["n"] == 1
+
+
+def test_load_model_casts_to_dtype(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dtype 传进来时模型权重应被 cast 过去（fp16 提速主要靠这）。"""
+    model_path = tmp_path / "fake.pth"
+    model_path.write_bytes(b"x")
+
+    # 带参数的 stub（BicubicScaleModel 无参数，cast 测不出来）
+    class StubWithParams(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 3, 3, padding=1)
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return F.interpolate(self.conv(x), scale_factor=4, mode="bicubic", align_corners=False)
+
+    class FakeDescriptor:
+        def __init__(self):
+            self.model = StubWithParams()
+            self.scale = 4
+            self.input_channels = 3
+            self.output_channels = 3
+
+    class FakeLoader:
+        def load_from_file(self, _path: str) -> FakeDescriptor:
+            return FakeDescriptor()
+
+    import sys
+    import types
+
+    fake_spandrel = types.ModuleType("spandrel")
+    fake_spandrel.ModelLoader = FakeLoader  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "spandrel", fake_spandrel)
+
+    d = upscaler.load_model(
+        model_path, device=torch.device("cpu"), dtype=torch.float16
+    )
+    p = next(d.model.parameters())
+    assert p.dtype == torch.float16
 
 
 def test_load_model_without_spandrel_raises(

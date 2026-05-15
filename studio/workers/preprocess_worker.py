@@ -96,8 +96,26 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
             f"device={device} total={total}"
         )
 
-        # 提示用户：若 cuda 不可用而 device='auto'，会自动降级 cpu（在 upscaler 里 log）
-        # 这里只打输入参数，实际 device 在每张 upscale 调用时由 upscaler 决定。
+        # 解析一次实际 device + dtype 并 log，让用户能看出真在用 GPU/fp16 还是
+        # 悄悄降级到了 CPU。先做一次以打印诊断信息（也顺便预热模型缓存，省第一张
+        # cold-start 时间）。
+        try:
+            import torch
+            resolved_dev = upscaler.resolve_device(device)
+            resolved_dtype = upscaler.resolve_dtype("auto", resolved_dev)
+            gpu_name = (
+                torch.cuda.get_device_name(0)
+                if resolved_dev.type == "cuda" and torch.cuda.is_available()
+                else "—"
+            )
+            log(
+                f"[device] resolved={resolved_dev} dtype={str(resolved_dtype).replace('torch.', '')} "
+                f"gpu={gpu_name} cuda_available={torch.cuda.is_available()}"
+            )
+            upscaler.load_model(model_path, device=resolved_dev, dtype=resolved_dtype)
+            log(f"[model] {model_label} loaded → {resolved_dev}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"[device] diagnostic failed: {exc}（继续，但可能跑在 CPU 上）")
 
         succeeded = 0
         failed = 0
