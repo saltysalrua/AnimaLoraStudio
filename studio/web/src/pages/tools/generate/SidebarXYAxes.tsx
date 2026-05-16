@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, type LoraCkpt, type LoraEntry, type XYAxisType } from '../../../api/client'
 import PathPicker from '../../../components/PathPicker'
 import InlineLoraPicker from './InlineLoraPicker'
 import NumberListInput from './NumberListInput'
 import type { ProjectLora } from './types'
-import { AXIS_LABELS, AXIS_VALUE_TYPE, REQUIRES_LORA_INDEX, ckptStemFromPath, type XYAxisDraft } from './xy'
+import { axisLabel, AXIS_VALUE_TYPE, REQUIRES_LORA_INDEX, ckptStemFromPath, type XYAxisDraft } from './xy'
 
 const ALL_AXES: XYAxisType[] = ['lora_ckpt', 'lora_scale', 'cfg_scale', 'steps']
 
@@ -27,6 +28,7 @@ function CkptMultiPicker({
   raw: string
   onChange: (raw: string) => void
 }) {
+  const { t } = useTranslation()
   const [ckpts, setCkpts] = useState<LoraCkpt[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -60,15 +62,15 @@ function CkptMultiPicker({
   if (!loaded) {
     return (
       <div className="text-2xs text-fg-tertiary font-mono">
-        加载 ckpt…（{projectId}/{versionId}）
+        {t('generate.loadingCkpt', { projectId, versionId })}
       </div>
     )
   }
   if (error) {
-    return <div className="text-2xs text-err font-mono">加载 ckpt 失败：{error}</div>
+    return <div className="text-2xs text-err font-mono">{t('generate.loadCkptFailed', { error })}</div>
   }
   if (ckpts.length === 0) {
-    return <div className="text-2xs text-fg-tertiary">该 LoRA 没扫到 ckpt 文件（output/ 下需 *.safetensors）</div>
+    return <div className="text-2xs text-fg-tertiary">{t('generate.noCkptFiles')}</div>
   }
   return (
     <div className="flex flex-wrap gap-1">
@@ -108,6 +110,7 @@ function AxisLoraPicker({
   loraIndex: number | null
   onLoraIndexChange: (i: number | null) => void
 }) {
+  const { t } = useTranslation()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [externalOpen, setExternalOpen] = useState(false)
   const selectedPaths = useMemo(() => new Set(loras.map((l) => l.path)), [loras])
@@ -144,7 +147,7 @@ function AxisLoraPicker({
           background: 'var(--bg-elevated)',
         }}
       >
-        <span className="text-fg-tertiary shrink-0">绑定:</span>
+        <span className="text-fg-tertiary shrink-0">{t('generate.bound')}</span>
         <span className="font-medium truncate flex-1" title={bound.path}>{label}</span>
         <button
           type="button"
@@ -152,7 +155,7 @@ function AxisLoraPicker({
           className="btn btn-ghost btn-sm font-mono text-2xs shrink-0"
           style={{ padding: '2px 8px' }}
         >
-          换 LoRA
+          {t('generate.changeLora')}
         </button>
       </div>
     )
@@ -175,7 +178,7 @@ function AxisLoraPicker({
             cursor: 'pointer',
           }}
         >
-          + 添加 LoRA
+          {t('generate.addLora')}
         </button>
       ) : (
         <InlineLoraPicker
@@ -211,6 +214,7 @@ function AxisCard({
   onLorasChange: (l: LoraEntry[]) => void
   projectLoras: ProjectLora[]
 }) {
+  const { t } = useTranslation()
   const needsLora = REQUIRES_LORA_INDEX.has(draft.axis)
   const isCkpt = draft.axis === 'lora_ckpt'
   const bound =
@@ -238,15 +242,15 @@ function AxisCard({
           }}
         >
           {ALL_AXES.map((a) => (
-            <option key={a} value={a}>{AXIS_LABELS[a]}</option>
+            <option key={a} value={a}>{axisLabel(a)}</option>
           ))}
         </select>
         {onRemove && (
           <button
             onClick={onRemove}
             className="btn btn-ghost btn-sm text-fg-tertiary hover:text-err shrink-0 px-1.5"
-            title="移除 Y 轴（退化到单轴）"
-            aria-label="移除 Y 轴"
+            title={t('generate.removeYAxisTitle')}
+            aria-label={t('generate.removeYAxis')}
           >
             ×
           </button>
@@ -275,7 +279,7 @@ function AxisCard({
             onChange={(raw) => onChange({ ...draft, raw })}
           />
         ) : bound ? (
-          <div className="text-2xs text-fg-tertiary">外部文件 LoRA 没法列 ckpt（要 picker 选项目里的）</div>
+          <div className="text-2xs text-fg-tertiary">{t('generate.externalLoraNoCkpt')}</div>
         ) : null
       ) : draft.axis === 'lora_scale' ? (
         <NumberListInput
@@ -318,10 +322,11 @@ export default function SidebarXYAxes({
   onLorasChange: (l: LoraEntry[]) => void
   projectLoras: ProjectLora[]
 }) {
+  const { t } = useTranslation()
   return (
     <div className="card" style={{ padding: 18 }}>
       <div className="flex items-center justify-between mb-3">
-        <div className="text-md font-semibold">XY 轴</div>
+        <div className="text-md font-semibold">{t('generate.xyAxes')}</div>
       </div>
       <div className="flex flex-col gap-2">
         <AxisCard
@@ -344,7 +349,7 @@ export default function SidebarXYAxes({
             })}
             className="btn btn-ghost btn-sm self-start text-xs text-fg-tertiary"
           >
-            + 添加 Y 轴
+            {t('generate.addYAxis')}
           </button>
         )}
       </div>

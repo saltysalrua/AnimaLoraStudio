@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SchemaProperty } from '../api/client'
 import { useProjectCtx } from '../context/ProjectContext'
-import { controlKind, fieldLabel } from '../lib/schema'
+import { controlKind, fieldLabel, schemaEnumLabel } from '../lib/schema'
 import PathPicker from './PathPicker'
 import ResumeFieldPicker from './ResumeFieldPicker'
 
@@ -36,10 +37,11 @@ const FieldHint = ({ text }: { text: string }) => (
 export default function Field({
   name, prop, value, onChange, disabled = false, hint, descriptionOverride,
 }: Props) {
+  const { t } = useTranslation()
   const kind = controlKind(prop)
   const label = fieldLabel(name)
   const help = descriptionOverride ?? prop.description
-  const hintText = hint ?? (disabled ? '自动 · 项目控制' : null)
+  const hintText = hint ?? (disabled ? t('field.autoProject') : null)
   const hintNode = hintText ? <FieldHint text={hintText} /> : null
   void name
 
@@ -80,7 +82,7 @@ export default function Field({
         >
           {(prop.enum ?? []).map((opt) => (
             <option key={String(opt)} value={String(opt)}>
-              {String(opt)}
+              {schemaEnumLabel(name, opt, t)}
             </option>
           ))}
         </select>
@@ -115,7 +117,7 @@ export default function Field({
     return (
       <div className="py-1.5">
         <div className="text-sm font-medium text-fg-secondary mb-1">
-          {label}（每行一项）{hintNode}
+          {label}{t('field.multilineHint')}{hintNode}
         </div>
         <textarea
           rows={Math.max(3, list.length + 1)}
@@ -259,6 +261,7 @@ interface PathFieldProps {
 function PathStringField({
   name, label, kind, help, value, onChange, disabled = false, hintNode,
 }: PathFieldProps) {
+  const { t } = useTranslation()
   const [picking, setPicking] = useState(false)
   const text = value === null || value === undefined ? '' : String(value)
   const browseBtnRef = useRef<HTMLButtonElement | null>(null)
@@ -276,7 +279,7 @@ function PathStringField({
       <div className="text-sm font-medium text-fg-secondary mb-1">
         {label}
         {kind === 'path' && (
-          <span className="ml-2 text-xs text-fg-tertiary">(path)</span>
+          <span className="ml-2 text-xs text-fg-tertiary">{t('field.pathHint')}</span>
         )}
         {hintNode}
       </div>
@@ -296,7 +299,7 @@ function PathStringField({
             disabled={disabled}
             className="btn btn-secondary btn-sm shrink-0"
           >
-            {useResumePicker ? '📁 浏览本项目' : '浏览'}
+            {useResumePicker ? t('field.browseProject') : t('field.browse')}
           </button>
         )}
       </div>

@@ -9,6 +9,7 @@
  * - 不做"预览请求 JSON" / "试跑一张" / token 价格统计（按用户决定）
  * - savebar 只保留「放弃修改」按钮；保存依赖全局 Settings 顶部"保存"按钮
  */
+import { Trans, useTranslation } from 'react-i18next'
 import { useMemo } from 'react'
 import type { LLMPreset } from '../api/client'
 import LLMMessagesEditor from './LLMMessagesEditor'
@@ -171,6 +172,7 @@ function PresetBar({
   onUpdateLabel: (s: string) => void
   dirtyCount: number
 }) {
+  const { t } = useTranslation()
   return (
     <div
       style={{
@@ -183,7 +185,7 @@ function PresetBar({
       }}
     >
       <div className="flex items-center gap-3.5 min-w-0">
-        <Caption>Preset</Caption>
+        <Caption>{t('llmWorkspace.preset')}</Caption>
         <div
           className="flex items-center gap-2.5 cursor-pointer"
           style={{
@@ -210,7 +212,7 @@ function PresetBar({
                 letterSpacing: '0.04em',
               }}
             >
-              内置
+              {t('llmWorkspace.builtin')}
             </span>
           )}
           {/* 用 select 覆盖整个 pick 让用户能切换；select 透明 */}
@@ -218,11 +220,11 @@ function PresetBar({
             value={currentPresetId}
             onChange={(e) => onSelectPreset(e.target.value)}
             className="absolute inset-0 opacity-0 cursor-pointer"
-            aria-label="选择 preset"
+            aria-label={t('llmWorkspace.selectPreset')}
           >
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.builtin ? '内置 · ' : ''}{p.label}
+                {p.builtin ? t('llmWorkspace.builtinPrefix') : ''}{p.label}
               </option>
             ))}
           </select>
@@ -238,7 +240,11 @@ function PresetBar({
               whiteSpace: 'nowrap',
             }}
           >
-            已修改 · <b style={{ color: 'var(--fg-secondary)', fontWeight: 500 }}>{dirtyCount} 处</b> 与默认不同
+            <Trans
+              i18nKey="llmWorkspace.dirtySummary"
+              values={{ n: dirtyCount }}
+              components={{ count: <b style={{ color: 'var(--fg-secondary)', fontWeight: 500 }} /> }}
+            />
           </span>
         )}
         {/* 编辑当前 preset label */}
@@ -252,14 +258,14 @@ function PresetBar({
       </div>
       <div className="flex items-center gap-1.5">
         {currentPreset.builtin && (
-          <PBtn variant="danger" onClick={onResetToBuiltin} title="把当前内置预设重置为程序默认值">
-            ↺ 重置默认
+          <PBtn variant="danger" onClick={onResetToBuiltin} title={t('llmWorkspace.resetBuiltinTitle')}>
+            {t('llmWorkspace.resetBuiltin')}
           </PBtn>
         )}
-        <PBtn onClick={onSaveAs} title="复制当前 preset 字段为新预设">⎘ 另存为…</PBtn>
-        <PBtn onClick={onAddPreset}>+ 新 Preset</PBtn>
+        <PBtn onClick={onSaveAs} title={t('llmWorkspace.saveAsTitle')}>{t('llmWorkspace.saveAs')}</PBtn>
+        <PBtn onClick={onAddPreset}>{t('llmWorkspace.newPreset')}</PBtn>
         {!currentPreset.builtin && presets.length > 1 && (
-          <PBtn variant="danger" onClick={onDeletePreset}>✕ 删除</PBtn>
+          <PBtn variant="danger" onClick={onDeletePreset}>{t('llmWorkspace.deletePreset')}</PBtn>
         )}
       </div>
     </div>
@@ -282,11 +288,21 @@ function ConnectionSection({
   onTestConnection: () => void
   bottomBorder?: boolean
 }) {
+  const { t } = useTranslation()
   return (
     <Section bottomBorder={bottomBorder}>
-      <SectionHeader step="01" title="连接" hint="openai-compatible" />
+      <SectionHeader step="01" title={t('llmWorkspace.connection')} hint="openai-compatible" />
       <SectionBody>
-        <Field label="Base URL" required help={<>可填 <Code>/v1</Code>、<Code>/chat/completions</Code> 或 <Code>/responses</Code></>}>
+        <Field
+          label="Base URL"
+          required
+          help={(
+            <Trans
+              i18nKey="llmWorkspace.baseUrlHelp"
+              components={{ code: <Code /> }}
+            />
+          )}
+        >
           <input
             type="text"
             value={preset.base_url}
@@ -312,7 +328,7 @@ function ConnectionSection({
           <InputWithSuffix
             suffix={
               <ChipButton onClick={onRefreshModels} disabled={llmModelsBusy || !preset.base_url.trim()}>
-                {llmModelsBusy ? '读取中…' : '从服务器拉取'}
+                {llmModelsBusy ? t('llmWorkspace.fetchingModels') : t('llmWorkspace.fetchModels')}
               </ChipButton>
             }
           >
@@ -334,14 +350,14 @@ function ConnectionSection({
                 type="text"
                 value={preset.model}
                 onChange={(e) => onUpdate('model', e.target.value)}
-                placeholder="gpt-4.1-mini / qwen-vl-max / 本地模型名"
+                placeholder={t('llmWorkspace.modelPlaceholder')}
                 style={{ ...inputStyle, paddingRight: 130 }}
               />
             )}
           </InputWithSuffix>
         </Field>
 
-        <Field label="Endpoint 风格">
+        <Field label={t('llmWorkspace.endpointStyle')}>
           {/* 测试连接按钮内联在 Segmented 末尾；结果走 toast 通知，不在 UI 常驻。 */}
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
@@ -358,7 +374,7 @@ function ConnectionSection({
               onClick={onTestConnection}
               disabled={llmTestBusy || !preset.base_url.trim() || !preset.model.trim()}
             >
-              {llmTestBusy ? '测试中…' : '测试连接'}
+              {llmTestBusy ? t('llmWorkspace.testing') : t('llmWorkspace.testConnection')}
             </ChipButton>
           </div>
         </Field>
@@ -374,6 +390,7 @@ function AdvancedSection({ preset, onUpdate }: {
   preset: LLMPreset
   onUpdate: <K extends keyof LLMPreset>(field: K, value: LLMPreset[K]) => void
 }) {
+  const { t } = useTranslation()
   return (
     <details className="group">
       <summary
@@ -395,7 +412,7 @@ function AdvancedSection({ preset, onUpdate }: {
             ▸
           </span>
           <Step>⚙</Step>
-          <span>高级参数</span>
+          <span>{t('llmWorkspace.advanced')}</span>
         </h3>
         {/* summary 值：折叠时显示当前关键数值（紧凑形式，避免 360px 左栏装不下）。
          * truncate + min-w-0 让超长时优雅省略而不是把标题挤竖。 */}
@@ -423,11 +440,12 @@ function SamplingSection({ preset, onUpdate, bottomBorder }: {
   onUpdate: <K extends keyof LLMPreset>(field: K, value: LLMPreset[K]) => void
   bottomBorder?: boolean
 }) {
+  const { t } = useTranslation()
   return (
     <Section bottomBorder={bottomBorder}>
-      <SectionHeader step="03" title="采样参数" hint="model-side" />
+      <SectionHeader step="03" title={t('llmWorkspace.sampling')} hint="model-side" />
       <SectionBody>
-        <Field label="Temperature" optional="— 越低越稳定">
+        <Field label="Temperature" optional={t('llmWorkspace.temperatureHint')}>
           <SliderRow value={preset.temperature} min={0} max={2} step={0.05}
             onChange={(v) => onUpdate('temperature', v)} />
         </Field>
@@ -464,11 +482,12 @@ function ImageSection({ preset, onUpdate, bottomBorder }: {
   onUpdate: <K extends keyof LLMPreset>(field: K, value: LLMPreset[K]) => void
   bottomBorder?: boolean
 }) {
+  const { t } = useTranslation()
   return (
     <Section bottomBorder={bottomBorder}>
-      <SectionHeader step="04" title="图片预处理" hint="before upload" />
+      <SectionHeader step="04" title={t('llmWorkspace.imagePreprocess')} hint="before upload" />
       <SectionBody>
-        <Field label="Max side" optional="px · 缩放最长边">
+        <Field label="Max side" optional={t('llmWorkspace.maxSideHint')}>
           <SliderRow value={preset.max_side} min={512} max={2048} step={64}
             onChange={(v) => onUpdate('max_side', Math.round(v))} integer />
         </Field>
@@ -493,7 +512,10 @@ function ImageSection({ preset, onUpdate, bottomBorder }: {
           </Field>
         </Row2>
         <Help>
-          Claude 等服务限制 <b style={{ color: 'var(--fg-secondary)' }}>5 MB</b> / 张。超过会被压缩到此值以下。
+          <Trans
+            i18nKey="llmWorkspace.imageSizeHint"
+            components={{ limit: <b style={{ color: 'var(--fg-secondary)' }} /> }}
+          />
         </Help>
       </SectionBody>
     </Section>
@@ -506,6 +528,7 @@ function ComposerSection({ preset, onUpdate }: {
   preset: LLMPreset
   onUpdate: <K extends keyof LLMPreset>(field: K, value: LLMPreset[K]) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div
       className="flex flex-col"
@@ -521,13 +544,13 @@ function ComposerSection({ preset, onUpdate }: {
             fontSize: 'var(--t-md)', fontWeight: 600, letterSpacing: '-0.005em',
           }}>
             <Step>02</Step>
-            <span>Prompt 模板</span>
+            <span>{t('llmWorkspace.promptTemplate')}</span>
           </h3>
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 'var(--t-2xs)',
             color: 'var(--fg-tertiary)', letterSpacing: '0.04em',
           }}>
-            {preset.messages.length} 条消息 · 拖动调整顺序
+            {t('llmWorkspace.messageSummary', { n: preset.messages.length })}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -542,7 +565,7 @@ function ComposerSection({ preset, onUpdate }: {
               fontFamily: 'var(--font-mono)', fontSize: 'var(--t-2xs)',
               color: 'var(--fg-tertiary)', letterSpacing: '0.06em',
               textTransform: 'uppercase',
-            }}>Output</span>
+            }}>{t('llmWorkspace.output')}</span>
             <select
               value={preset.output_format}
               onChange={(e) => onUpdate('output_format', e.target.value as LLMPreset['output_format'])}
@@ -552,8 +575,8 @@ function ComposerSection({ preset, onUpdate }: {
                 fontSize: 'var(--t-sm)', padding: '4px 6px',
               }}
             >
-              <option value="json">JSON caption</option>
-              <option value="text">Text caption</option>
+              <option value="json">{t('llmWorkspace.jsonCaption')}</option>
+              <option value="text">{t('llmWorkspace.textCaption')}</option>
             </select>
           </div>
         </div>
@@ -572,7 +595,7 @@ function ComposerSection({ preset, onUpdate }: {
               marginBottom: 10,
             }}
           >
-            ⚠️ Responses endpoint 只用 system + 第一条 user；其他 messages 会被忽略
+            {t('llmWorkspace.responsesWarning')}
           </div>
         )}
         <LLMMessagesEditor
@@ -697,7 +720,7 @@ function Help({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Code({ children }: { children: React.ReactNode }) {
+function Code({ children }: { children?: React.ReactNode }) {
   return (
     <code style={{
       fontFamily: 'var(--font-mono)',
@@ -912,12 +935,13 @@ function SensitiveInput({ value, serverValue, onChange }: {
   serverValue: string
   onChange: (v: string) => void
 }) {
+  const { t } = useTranslation()
   const masked = value === MASK
   return (
     <input
       type="password"
       value={masked ? '' : value}
-      placeholder={serverValue === MASK ? '已保存（不显示），输入新值才覆盖' : ''}
+      placeholder={serverValue === MASK ? t('llmWorkspace.secretSavedPlaceholder') : ''}
       onChange={(e) => onChange(e.target.value || MASK)}
       style={inputStyle}
     />

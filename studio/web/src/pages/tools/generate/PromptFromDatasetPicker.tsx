@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, type CaptionEntry, type ProjectSummary } from '../../../api/client'
 import { useLocalStorageState } from '../../../lib/useLocalStorageState'
 
@@ -35,6 +36,7 @@ export default function PromptFromDatasetPicker({
   onReplace: (tags: string[]) => void
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   // 一次性 migrate 旧 anima.* key 到 studio: 命名（PR #66 P1-4 约定）；module 顶部
   // 调用即可，没必要进 useEffect —— 没读 / 写 React state 副作用，只动 localStorage。
   if (typeof window !== 'undefined') {
@@ -107,13 +109,13 @@ export default function PromptFromDatasetPicker({
     >
       {/* header */}
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold text-fg-secondary shrink-0">从训练集选 prompt</span>
+        <span className="text-xs font-semibold text-fg-secondary shrink-0">{t('generate.datasetPromptTitle')}</span>
         <span className="flex-1" />
         <button
           onClick={onClose}
           className="btn btn-ghost btn-sm text-fg-tertiary px-1.5"
-          title="关闭"
-          aria-label="关闭"
+          title={t('common.close')}
+          aria-label={t('common.close')}
         >
           ×
         </button>
@@ -126,7 +128,7 @@ export default function PromptFromDatasetPicker({
           value={pid ?? ''}
           onChange={(e) => setPid(e.target.value ? Number(e.target.value) : null)}
         >
-          <option value="">选项目…</option>
+          <option value="">{t('generate.selectProject')}</option>
           {projects.map((p) => (
             <option key={p.id} value={p.id}>{p.title}</option>
           ))}
@@ -137,7 +139,7 @@ export default function PromptFromDatasetPicker({
           onChange={(e) => setVid(e.target.value ? Number(e.target.value) : null)}
           disabled={versions.length === 0}
         >
-          <option value="">选版本…</option>
+          <option value="">{t('generate.selectVersion')}</option>
           {versions.map((v) => (
             <option key={v.id} value={v.id}>{v.label}</option>
           ))}
@@ -148,7 +150,7 @@ export default function PromptFromDatasetPicker({
       <input
         type="text"
         className="input text-xs"
-        placeholder="搜索文件名 / tag…"
+        placeholder={t('generate.searchFilenameTag')}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         disabled={!pid || !vid || captions.length === 0}
@@ -158,9 +160,9 @@ export default function PromptFromDatasetPicker({
 
       {/* caption 列表 */}
       <div className="flex flex-col gap-px overflow-y-auto" style={{ maxHeight: 280 }}>
-        {loading && <div className="text-2xs text-fg-tertiary">加载中…</div>}
+        {loading && <div className="text-2xs text-fg-tertiary">{t('common.loading')}</div>}
         {!loading && pid && vid && captions.length === 0 && (
-          <div className="text-2xs text-fg-tertiary">该版本没有 caption</div>
+          <div className="text-2xs text-fg-tertiary">{t('generate.noCaptions')}</div>
         )}
         {!loading && filtered.map((c) => {
           const k = `${c.folder}/${c.name}`
@@ -202,13 +204,13 @@ export default function PromptFromDatasetPicker({
               onClick={() => { onReplace(selected.tags); onClose() }}
               className="btn btn-ghost btn-sm text-xs"
             >
-              替换当前提示词
+              {t('generate.replaceCurrentPrompt')}
             </button>
             <button
               onClick={() => { onAppend(selected.tags); onClose() }}
               className="btn btn-primary btn-sm text-xs"
             >
-              追加到当前提示词
+              {t('generate.appendToCurrentPrompt')}
             </button>
           </div>
         </>

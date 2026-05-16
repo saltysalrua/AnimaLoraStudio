@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, type LoraCkpt, type LoraEntry } from '../../../api/client'
 import { projectAbbr } from './InlineLoraPicker'
 import { ckptStemFromPath } from './xy'
@@ -23,6 +24,7 @@ export default function LoraCard({
   onChange: (next: LoraEntry) => void
   onRemove: () => void
 }) {
+  const { t } = useTranslation()
   const filename = ckptStemFromPath(lora.path)
   const live = stage === 'training'
 
@@ -76,7 +78,7 @@ export default function LoraCard({
                 letterSpacing: '0.03em',
               }}
             >
-              训练中
+              {t('status.training')}
             </span>
           )}
         </div>
@@ -120,7 +122,7 @@ export default function LoraCard({
             className="font-mono text-fg-tertiary shrink-0"
             style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase' }}
           >
-            权重
+            {t('generate.weight')}
           </span>
           <input
             type="range"
@@ -130,7 +132,7 @@ export default function LoraCard({
             value={lora.scale}
             onChange={(e) => onChange({ ...lora, scale: Number(e.target.value) })}
             className="flex-1"
-            aria-label="权重滑杆"
+            aria-label={t('generate.weightSlider')}
             style={{ accentColor: 'var(--accent)' }}
           />
           <input
@@ -142,7 +144,7 @@ export default function LoraCard({
             onChange={(e) => onChange({ ...lora, scale: Number(e.target.value) })}
             className="input font-mono text-center"
             style={{ width: 54, padding: '3px 6px', fontSize: 12 }}
-            aria-label="权重数值"
+            aria-label={t('generate.weightValue')}
           />
         </div>
       </div>
@@ -151,8 +153,8 @@ export default function LoraCard({
         onClick={onRemove}
         className="btn btn-ghost text-fg-tertiary hover:text-err shrink-0"
         style={{ width: 28, height: 28, padding: 0, alignSelf: 'flex-start' }}
-        title="移除"
-        aria-label="移除 LoRA"
+        title={t('common.delete')}
+        aria-label={t('generate.removeLora')}
       >
         ×
       </button>

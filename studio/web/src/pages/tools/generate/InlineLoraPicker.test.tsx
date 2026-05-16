@@ -59,10 +59,10 @@ describe('InlineLoraPicker', () => {
     return { ...utils, onPick, onClose, onPickExternal }
   }
 
-  it('shows count in header (已选 / 总)', () => {
+  it('shows count in header (Selected / 总)', () => {
     renderPicker()
-    // 改成扁平 + 已选/总。3 个总，0 已选
-    expect(screen.getByText(/已选 0 \/ 3/)).toBeInTheDocument()
+    // 改成扁平 + Selected/总。3 个总，0 Selected
+    expect(screen.getByText(/Selected 0 \/ 3/)).toBeInTheDocument()
   })
 
   it('shows project and version labels in each row', () => {
@@ -76,20 +76,20 @@ describe('InlineLoraPicker', () => {
     const user = userEvent.setup()
     renderPicker()
 
-    await user.selectOptions(screen.getByLabelText('筛选项目'), '1')
+    await user.selectOptions(screen.getByLabelText('Filter project'), '1')
     expect(rows().getByText(/cute_chibi \/ v3/)).toBeInTheDocument()
     expect(rows().getByText(/cute_chibi \/ v2/)).toBeInTheDocument()
     expect(rows().queryByText(/noir_portrait \/ v1/)).not.toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('筛选版本'), '1:12')
+    await user.selectOptions(screen.getByLabelText('Filter version'), '1:12')
     expect(rows().queryByText(/cute_chibi \/ v3/)).not.toBeInTheDocument()
     expect(rows().getByText(/cute_chibi \/ v2/)).toBeInTheDocument()
-    expect(screen.getByText(/已选 0 \/ 1/)).toBeInTheDocument()
+    expect(screen.getByText(/Selected 0 \/ 1/)).toBeInTheDocument()
   })
 
-  it('shows 训练中 badge for training-stage versions', () => {
+  it('shows Training badge for training-stage versions', () => {
     renderPicker()
-    expect(screen.getByText('训练中')).toBeInTheDocument()
+    expect(screen.getByText('Training')).toBeInTheDocument()
   })
 
   it('marks already-added versions with ✓ marker; disables when no onRemove (multi-select off)', () => {
@@ -123,19 +123,19 @@ describe('InlineLoraPicker', () => {
   it('filters by project title via search', async () => {
     const user = userEvent.setup()
     renderPicker()
-    const search = screen.getByPlaceholderText('搜索项目 / 版本 / 文件名…')
+    const search = screen.getByPlaceholderText('Search project / version / filename…')
     await user.type(search, 'noir')
     // cute_chibi 的版本应该消失
     expect(rows().queryByText(/cute_chibi \/ v3/)).not.toBeInTheDocument()
     expect(rows().getByText(/noir_portrait \/ v1/)).toBeInTheDocument()
-    // count 更新（改成 已选 0/总）
-    expect(screen.getByText(/已选 0 \/ 1/)).toBeInTheDocument()
+    // count 更新（改成 Selected 0/总）
+    expect(screen.getByText(/Selected 0 \/ 1/)).toBeInTheDocument()
   })
 
   it('filters by version label via search', async () => {
     const user = userEvent.setup()
     renderPicker()
-    const search = screen.getByPlaceholderText('搜索项目 / 版本 / 文件名…')
+    const search = screen.getByPlaceholderText('Search project / version / filename…')
     await user.type(search, 'v3')
     expect(rows().getByText(/cute_chibi \/ v3/)).toBeInTheDocument()
     expect(rows().queryByText(/cute_chibi \/ v2/)).not.toBeInTheDocument()
@@ -145,26 +145,26 @@ describe('InlineLoraPicker', () => {
   it('shows empty hint when no matches', async () => {
     const user = userEvent.setup()
     renderPicker()
-    await user.type(screen.getByPlaceholderText('搜索项目 / 版本 / 文件名…'), 'zzznomatch')
-    expect(screen.getByText(/没有匹配的 LoRA/)).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('Search project / version / filename…'), 'zzznomatch')
+    expect(screen.getByText(/No matching LoRA/)).toBeInTheDocument()
   })
 
   it('shows "no LoRAs trained" hint when projectLoras is empty', () => {
     renderPicker({ projectLoras: [] })
-    expect(screen.getByText(/还没有训练好的 LoRA/)).toBeInTheDocument()
+    expect(screen.getByText(/No trained LoRA yet/)).toBeInTheDocument()
   })
 
   it('triggers onClose when × is clicked', async () => {
     const user = userEvent.setup()
     const { onClose } = renderPicker()
-    await user.click(screen.getByLabelText('关闭挑选区'))
+    await user.click(screen.getByLabelText('Close picker'))
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('triggers onPickExternal when 外部文件 is clicked', async () => {
+  it('triggers onPickExternal when External file is clicked', async () => {
     const user = userEvent.setup()
     const { onPickExternal } = renderPicker()
-    await user.click(screen.getByText('外部文件'))
+    await user.click(screen.getByText('External file'))
     expect(onPickExternal).toHaveBeenCalled()
   })
 })

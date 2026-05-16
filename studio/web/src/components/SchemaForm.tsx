@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SchemaResponse, ConfigData } from '../api/client'
-import { evalShowWhen } from '../lib/schema'
+import { evalShowWhen, schemaAltDescription, schemaDisableHint, schemaDescription, schemaGroupLabel } from '../lib/schema'
 import Field from './Field'
 
 interface Props {
@@ -25,6 +26,7 @@ interface Props {
 export default function SchemaForm({
   schema, values, onChange, disabledFields, disabledHints, autoHints, advancedMode = false,
 }: Props) {
+  const { t } = useTranslation()
   const disabledSet = new Set(disabledFields ?? [])
   const dHints = disabledHints ?? {}
   const aHints = autoHints ?? {}
@@ -76,6 +78,7 @@ export default function SchemaForm({
   return (
     <div className="space-y-3">
       {schema.groups.map(({ key, label }) => {
+        const groupLabel = schemaGroupLabel(key, label, t)
         const fields = buckets.get(key) ?? []
         if (fields.length === 0) return null
         const isCollapsed = collapsed[key]
@@ -91,9 +94,9 @@ export default function SchemaForm({
               }
               className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-fg-primary bg-transparent border-none cursor-pointer"
             >
-              <span>{label}</span>
+              <span>{groupLabel}</span>
               <span className="text-fg-tertiary text-xs">
-                {fields.length} 项 {isCollapsed ? '▸' : '▾'}
+                {t('schema.fieldCount', { n: fields.length })} {isCollapsed ? '▸' : '▾'}
               </span>
             </button>
             {!isCollapsed && (
@@ -111,14 +114,14 @@ export default function SchemaForm({
                   const hint = disabledSet.has(name)
                     ? dHints[name]
                     : conditionallyDisabled
-                      ? prop.disable_hint
+                      ? schemaDisableHint(name, prop.disable_hint, t)
                       : aHints[name]
                   const descriptionOverride =
                     prop.alt_description_when &&
                     prop.alt_description &&
                     evalShowWhen(prop.alt_description_when, values)
-                      ? prop.alt_description
-                      : undefined
+                      ? schemaAltDescription(name, prop.alt_description, t)
+                      : schemaDescription(name, prop.description, t)
                   return (
                     <Field
                       key={name}

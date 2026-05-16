@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ProjectLora } from './types'
 import { ckptStemFromPath } from './xy'
 
@@ -37,6 +38,7 @@ export default function InlineLoraPicker({
   onClose: () => void
   onPickExternal: () => void
 }) {
+  const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [projectId, setProjectId] = useState<string>('all')
   const [versionKey, setVersionKey] = useState<string>('all')
@@ -95,35 +97,35 @@ export default function InlineLoraPicker({
         <input
           type="text"
           className="input flex-1 text-xs min-w-[160px]"
-          placeholder="搜索项目 / 版本 / 文件名…"
+          placeholder={t('generate.searchProjectVersionFile')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           autoFocus
         />
         <span className="text-2xs text-fg-tertiary whitespace-nowrap">
-          已选 {selectedCount} / {filtered.length}
+          {t('generate.selectedCount', { selected: selectedCount, total: filtered.length })}
         </span>
         {onClearAll && selectedCount > 0 && (
           <button
             onClick={onClearAll}
             className="btn btn-ghost btn-sm text-2xs text-fg-tertiary"
-            title="清空所有已选 LoRA"
+            title={t('generate.clearAllLoraTitle')}
           >
-            一键清空
+            {t('generate.clearAll')}
           </button>
         )}
         <button
           onClick={onPickExternal}
           className="btn btn-ghost btn-sm text-2xs text-fg-tertiary"
-          title="选系统中任意 .safetensors 文件"
+          title={t('generate.pickExternalTitle')}
         >
-          外部文件
+          {t('generate.externalFile')}
         </button>
         <button
           onClick={onClose}
           className="btn btn-ghost btn-sm text-fg-tertiary px-1.5"
-          title="关闭"
-          aria-label="关闭挑选区"
+          title={t('common.close')}
+          aria-label={t('generate.closePicker')}
         >
           ×
         </button>
@@ -137,10 +139,10 @@ export default function InlineLoraPicker({
               setProjectId(e.target.value)
               setVersionKey('all')
             }}
-            aria-label="筛选项目"
+            aria-label={t('generate.filterProject')}
             style={{ width: 132 }}
           >
-            <option value="all">全部项目</option>
+            <option value="all">{t('generate.allProjects')}</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.title}</option>
             ))}
@@ -149,11 +151,11 @@ export default function InlineLoraPicker({
             className="input text-xs"
             value={versionKey}
             onChange={(e) => setVersionKey(e.target.value)}
-            aria-label="筛选版本"
+            aria-label={t('generate.filterVersion')}
             disabled={versions.length === 0}
             style={{ width: 150 }}
           >
-            <option value="all">全部版本</option>
+            <option value="all">{t('generate.allVersions')}</option>
             {versions.map(({ key, item }) => (
               <option key={key} value={key}>
                 {projectId === 'all'
@@ -204,7 +206,7 @@ export default function InlineLoraPicker({
                 <div className="font-medium truncate flex items-center gap-1.5">
                   <span>{l.projectTitle} / {l.versionLabel}</span>
                   {l.stage === 'training' && (
-                    <span className="badge badge-info" style={{ fontSize: 10 }}>训练中</span>
+                    <span className="badge badge-info" style={{ fontSize: 10 }}>{t('status.training')}</span>
                   )}
                 </div>
                 <div className="text-2xs text-fg-tertiary font-mono truncate" title={l.path}>
@@ -220,7 +222,7 @@ export default function InlineLoraPicker({
 
         {filtered.length === 0 && (
           <div className="text-fg-tertiary text-xs px-2 py-4 text-center">
-            {search ? '没有匹配的 LoRA' : '还没有训练好的 LoRA —— 先去训练一个，或用「外部文件」'}
+            {search ? t('generate.noMatchingLora') : t('generate.noTrainedLora')}
           </div>
         )}
       </div>

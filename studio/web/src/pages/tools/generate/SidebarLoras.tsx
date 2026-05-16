@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { LoraEntry } from '../../../api/client'
 import PathPicker from '../../../components/PathPicker'
 import InlineLoraPicker from './InlineLoraPicker'
@@ -15,6 +16,7 @@ export default function SidebarLoras({
   onChange: (l: LoraEntry[]) => void
   projectLoras: ProjectLora[]
 }) {
+  const { t } = useTranslation()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pathPickerOpen, setPathPickerOpen] = useState(false)
 
@@ -88,7 +90,7 @@ export default function SidebarLoras({
             e.currentTarget.style.borderColor = 'var(--border-subtle)'
           }}
         >
-          + 从项目添加 LoRA
+          {t('generate.addLoraFromProject')}
         </button>
       ) : (
         <InlineLoraPicker
