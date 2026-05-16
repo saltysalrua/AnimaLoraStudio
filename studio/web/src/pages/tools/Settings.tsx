@@ -29,11 +29,33 @@ import LLMTaggerWorkspace from '../../components/LLMTaggerWorkspace'
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../components/Toast'
 import { useEventStream } from '../../lib/useEventStream'
+import type { TFunction } from 'i18next'
 import { Trans, useTranslation } from 'react-i18next'
 import { applyDensity, applyTheme, getStoredDensity, getStoredTheme, setStoredDensity, setStoredTheme, type Density, type Theme } from '../../lib/theme'
 import i18n, { getStoredLangWithDefault, setStoredLang } from '../../i18n'
 
 const MASK = '***'
+
+const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
+  anima_main: 'settings.modelDescriptions.animaMain',
+  anima_vae: 'settings.modelDescriptions.animaVae',
+  qwen3: 'settings.modelDescriptions.qwen3',
+  t5_tokenizer: 'settings.modelDescriptions.t5Tokenizer',
+  wd14: 'settings.modelDescriptions.wd14',
+  cltagger: 'settings.modelDescriptions.cltagger',
+}
+
+const UPSCALER_DESCRIPTION_KEYS: Record<string, string> = {
+  '4x-AnimeSharp': 'settings.upscalerDescriptions.animeSharp',
+  'R-ESRGAN_4x+Anime6B': 'settings.upscalerDescriptions.realEsrganAnime6B',
+  '4x_foolhardy_Remacri': 'settings.upscalerDescriptions.remacri',
+  'ESRGAN_4x': 'settings.upscalerDescriptions.esrgan4x',
+}
+
+function translatedCatalogText(keys: Record<string, string>, id: string, fallback: string | undefined, t: TFunction): string {
+  const key = keys[id]
+  return key ? t(key, { defaultValue: fallback ?? '' }) : (fallback ?? '')
+}
 
 type Section =
   | 'gelbooru'
@@ -1281,11 +1303,12 @@ function WD14ModelCard({
   if (!wd14) {
     return <p className="text-fg-tertiary text-xs">{t('settings.loadingModelCatalog')}</p>
   }
+  const description = translatedCatalogText(MODEL_DESCRIPTION_KEYS, 'wd14', wd14.description, t)
   return (
     <ModelGroupCard
       title={t('settings.wd14CandidateTitle', { name: wd14.name })}
       helpTooltip={
-        <p><Trans i18nKey="settings.wd14CandidateHelp" values={{ desc: wd14.description }} components={{ code: <code /> }} /></p>
+        <p><Trans i18nKey="settings.wd14CandidateHelp" values={{ desc: description }} components={{ code: <code /> }} /></p>
       }
     >
       <ul className="list-none m-0 p-0 flex flex-col gap-1">
@@ -1351,11 +1374,12 @@ function CLTaggerModelCard({
   if (!cl) {
     return <p className="text-fg-tertiary text-xs">{t('settings.loadingModelCatalog')}</p>
   }
+  const description = translatedCatalogText(MODEL_DESCRIPTION_KEYS, 'cltagger', cl.description, t)
   return (
     <ModelGroupCard
       title={t('settings.clTaggerVersionTitle', { name: cl.name })}
       helpTooltip={
-        <p><Trans i18nKey="settings.repoHelp" values={{ desc: cl.description, repo: cl.repo }} components={{ code: <code /> }} /></p>
+        <p><Trans i18nKey="settings.repoHelp" values={{ desc: description, repo: cl.repo }} components={{ code: <code /> }} /></p>
       }
     >
       <ul className="list-none m-0 p-0 flex flex-col gap-1">
@@ -1495,6 +1519,8 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
 
   const rootDirty = rootDraft.trim() !== (serverRoot ?? '')
   const error = catalogError
+  const modelDescription = (id: string, fallback: string | undefined) =>
+    translatedCatalogText(MODEL_DESCRIPTION_KEYS, id, fallback, t)
 
   return (
     <SettingsSection id="models" title={t('settings.trainingModelsOneClick')}>
@@ -1527,7 +1553,7 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
             title={catalog.anima_main.name}
             helpTooltip={
               <>
-                <p><Trans i18nKey="settings.repoHelp" values={{ desc: catalog.anima_main.description, repo: catalog.anima_main.repo }} components={{ code: <code /> }} /></p>
+                <p><Trans i18nKey="settings.repoHelp" values={{ desc: modelDescription('anima_main', catalog.anima_main.description), repo: catalog.anima_main.repo }} components={{ code: <code /> }} /></p>
                 <p><Trans i18nKey="settings.defaultTransformerHelp" components={{ strong: <strong /> }} /></p>
               </>
             }
@@ -1561,7 +1587,7 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
           {/* VAE */}
           <ModelGroupCard title={catalog.anima_vae.name}>
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-fg-tertiary">{catalog.anima_vae.description} · <code>{catalog.anima_vae.repo}</code></span>
+              <span className="text-fg-tertiary">{modelDescription('anima_vae', catalog.anima_vae.description)} · <code>{catalog.anima_vae.repo}</code></span>
               <span style={{ flex: 1 }} />
               <ModelStatusBadge exists={catalog.anima_vae.exists} size={catalog.anima_vae.size} status={catalog.downloads.anima_vae?.status} />
               <DownloadButton exists={catalog.anima_vae.exists} status={catalog.downloads.anima_vae?.status} busy={busy.has('anima_vae')} onClick={() => void start('anima_vae')} />
@@ -1577,7 +1603,7 @@ function ModelsSection({ catalog, busy, start, reloadCatalog, catalogError }: {
             return (
               <ModelGroupCard key={id} title={m.name}>
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="text-fg-tertiary">{m.description} · <code>{m.repo}</code></span>
+                  <span className="text-fg-tertiary">{modelDescription(id, m.description)} · <code>{m.repo}</code></span>
                   <span style={{ flex: 1 }} />
                   <ModelStatusBadge exists={allExist} size={totalSize} status={dl?.status} fileCount={m.files.length} existsCount={m.files.filter((f) => f.exists).length} />
                   <DownloadButton exists={allExist} status={dl?.status} busy={busy.has(id)} onClick={() => void start(id)} />
@@ -1665,6 +1691,8 @@ function UpscalerSection({
 
   const variants = catalog?.upscalers?.variants ?? []
   const current = catalog?.upscalers?.current ?? ''
+  const upscalerDescription = (label: string, fallback: string | undefined) =>
+    translatedCatalogText(UPSCALER_DESCRIPTION_KEYS, label, fallback, t)
 
   return (
     <SettingsSection id="upscalers" title={t('settings.upscalersPreprocess')}>
@@ -1711,7 +1739,7 @@ function UpscalerSection({
                         )}
                       </div>
                       <span className="text-fg-tertiary text-[11px] truncate">
-                        {v.description}
+                        {upscalerDescription(v.label, v.description)}
                         {v.hf_repo && <> · HF <code>{v.hf_repo}</code></>}
                         {v.ms_repo && <> · MS <code>{v.ms_repo}</code></>}
                         {v.size_mb != null && <> · ~{v.size_mb} MB</>}

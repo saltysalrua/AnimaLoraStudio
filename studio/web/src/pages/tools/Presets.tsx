@@ -382,8 +382,8 @@ export default function PresetsPage() {
         <button
           onClick={handleSave}
           disabled={saveDisabled}
-          className="btn btn-primary btn-sm"
-          style={{ minWidth: 80 }}
+          className="btn btn-primary btn-sm inline-flex items-center justify-center"
+          style={{ minWidth: 0, paddingLeft: 12, paddingRight: 12 }}
         >
           {t('common.save')}
         </button>

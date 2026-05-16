@@ -9,12 +9,25 @@
  * - 不做"预览请求 JSON" / "试跑一张" / token 价格统计（按用户决定）
  * - savebar 只保留「放弃修改」按钮；保存依赖全局 Settings 顶部"保存"按钮
  */
+import type { TFunction } from 'i18next'
 import { Trans, useTranslation } from 'react-i18next'
 import { useMemo } from 'react'
 import type { LLMPreset } from '../api/client'
 import LLMMessagesEditor from './LLMMessagesEditor'
 
 const MASK = '***'
+
+const LLM_PRESET_LABEL_KEYS: Record<string, string> = {
+  style_json: 'llmWorkspace.presetLabels.styleJson',
+  general_json: 'llmWorkspace.presetLabels.generalJson',
+  txt_tags: 'llmWorkspace.presetLabels.txtTags',
+  joycaption: 'llmWorkspace.presetLabels.joycaption',
+}
+
+function presetLabel(preset: LLMPreset, t: TFunction): string {
+  const key = LLM_PRESET_LABEL_KEYS[preset.id]
+  return key ? t(key, { defaultValue: preset.label }) : preset.label
+}
 
 interface Props {
   /** 卡片内顶部的 section 标题；与 SettingsSection 的 h2 视觉对齐。 */
@@ -224,11 +237,11 @@ function PresetBar({
           >
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.builtin ? t('llmWorkspace.builtinPrefix') : ''}{p.label}
+                {p.builtin ? t('llmWorkspace.builtinPrefix') : ''}{presetLabel(p, t)}
               </option>
             ))}
           </select>
-          <span className="truncate">{currentPreset.label}</span>
+          <span className="truncate">{presetLabel(currentPreset, t)}</span>
           <span className="ml-auto" style={{ color: 'var(--fg-tertiary)' }}>▾</span>
         </div>
         {dirtyCount > 0 && (

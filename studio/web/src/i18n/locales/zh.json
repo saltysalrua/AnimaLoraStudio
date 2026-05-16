@@ -288,7 +288,10 @@
       }
     },
     "disableHints": {
-      "lr_scheduler": "Schedule-Free 自带调度"
+      "learning_rate": "Prodigy 接管学习率",
+      "lr_scheduler": "Schedule-Free 自带调度",
+      "timestep_sampling": "InfoNoise 接管时间步采样",
+      "timestep_shift": "InfoNoise 接管时间步采样"
     },
     "descriptions": {
       "transformer_path": "主 transformer 权重 (.safetensors)",
@@ -428,7 +431,28 @@
     "jsonCaption": "JSON caption",
     "textCaption": "Text caption",
     "responsesWarning": "⚠️ Responses endpoint 只用 system + 第一条 user；其他 messages 会被忽略",
-    "secretSavedPlaceholder": "已保存（不显示），输入新值才覆盖"
+    "secretSavedPlaceholder": "已保存（不显示），输入新值才覆盖",
+    "presetLabels": {
+      "styleJson": "画风 LoRA JSON",
+      "generalJson": "通用 LoRA JSON",
+      "txtTags": "TXT 标签列表",
+      "joycaption": "JoyCaption（vLLM 本地）"
+    }
+  },
+  "llmMessages": {
+    "roleHintSystem": "指令性 · 一般写一次",
+    "roleHintUser": "few-shot 示例 / 任务描述",
+    "roleHintAssistant": "few-shot 期望答案",
+    "addMessage": "+ 添加消息",
+    "dragHandle": "拖动调整位置",
+    "currentImage": "🖼 当前图片",
+    "imageHint": "打标时把图片塞入此位置 · 可拖动",
+    "deleteMessage": "删除消息",
+    "placeholderLabel": "占位：",
+    "imageReplaceHint": "每次打标时被替换为正在处理的图片",
+    "placeholderSystem": "系统提示，例如：You are an image captioning assistant...",
+    "placeholderUser": "（可选）用户内容 — few-shot 示例 / 任务描述",
+    "placeholderAssistant": "assistant 期望输出（few-shot 示例答案）"
   },
   "projects": {
     "title": "项目",
@@ -652,6 +676,20 @@
     "hfMirrorHint": "国内推荐",
     "hfOfficialHint": "官方源",
     "hfCustomHint": "自定义镜像",
+    "modelDescriptions": {
+      "animaMain": "Cosmos transformer（约 4 GB）",
+      "animaVae": "qwen_image_vae（约 250 MB）",
+      "qwen3": "文本编码器（约 1.2 GB）",
+      "t5Tokenizer": "spiece.model 等 3 个 tokenizer 文件（不含权重）",
+      "wd14": "SmilingWolf 系列 ONNX 打标模型",
+      "cltagger": "cella110n CLTagger ONNX"
+    },
+    "upscalerDescriptions": {
+      "animeSharp": "二次元线稿/扁色友好（Kim2091, ESRGAN-RRDB）",
+      "realEsrganAnime6B": "动漫专用小模型（Real-ESRGAN，A1111 默认）",
+      "remacri": "写实风格（口碑模型）",
+      "esrgan4x": "通用 ESRGAN baseline"
+    },
     "downloadSourceHuggingface": "HuggingFace（含 hf-mirror 等镜像）",
     "downloadSourceModelscope": "ModelScope（魔搭社区，国内直连）",
     "confirmInstallOnnxAuto": "将按 nvidia-smi 检测自动选 GPU/CPU 包。装包需要几分钟。\n\n注意：装完后必须重启 Studio 才能生效。继续？",
@@ -985,6 +1023,7 @@
   },
   "overview": {
     "pipelineProgress": "流水线进度",
+    "stages": "阶段",
     "versions": "版本",
     "creating": "创建中…",
     "newVersion": "新版本",

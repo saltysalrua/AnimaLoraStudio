@@ -244,7 +244,13 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(
         1e-4, gt=0.0,
         description="学习率（Prodigy 必须为 1.0）",
-        json_schema_extra=_meta("training", cli_alias="--lr"),
+        json_schema_extra=_meta(
+            "training",
+            cli_alias="--lr",
+            disable_when="optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
+            disable_value=1.0,
+            disable_hint="Prodigy 接管学习率",
+        ),
     )
     lr_scheduler: Literal["none", "cosine", "cosine_with_restart"] = Field(
         "none",
@@ -365,6 +371,8 @@ class TrainingConfig(BaseModel):
             "noise_schedule",
             alt_description="【时间步采样】分布；InfoNoise 启用时作为热身期 baseline，正式阶段由自适应 CDF 接管",
             alt_description_when="infonoise_enabled==true",
+            disable_when="infonoise_enabled==true",
+            disable_hint="InfoNoise 接管时间步采样",
             advanced=True,
         ),
     )
@@ -376,6 +384,8 @@ class TrainingConfig(BaseModel):
             show_when="timestep_sampling!=uniform",
             alt_description="【InfoNoise 热身期】InfoNoise 开启时作为热身阶段的 baseline shift，正式阶段由自适应 CDF 接管",
             alt_description_when="infonoise_enabled==true",
+            disable_when="infonoise_enabled==true",
+            disable_hint="InfoNoise 接管时间步采样",
             advanced=True,
         ),
     )

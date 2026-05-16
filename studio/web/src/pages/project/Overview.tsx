@@ -286,12 +286,12 @@ export default function ProjectOverview() {
           ))}
         </div>
 
-        <div className="card p-0 overflow-hidden">
-          <div className="px-4.5 py-3.5 border-b border-subtle flex items-center justify-between">
-            <h2 className="text-md font-semibold" style={{ margin: 0 }}>{t('overview.pipelineProgress')}</h2>
-            <span className="caption">stages</span>
+        <div className="card" style={{ padding: 18 }}>
+          <div className="flex items-center mb-3.5">
+            <h2 className="text-md font-semibold flex-1" style={{ margin: 0 }}>{t('overview.pipelineProgress')}</h2>
+            <span className="caption">{t('overview.stages')}</span>
           </div>
-          <div style={{ padding: 18 }}>
+          <div>
             <PipelineTimeline steps={steps} />
           </div>
         </div>

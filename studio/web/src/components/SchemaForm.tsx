@@ -52,9 +52,9 @@ export default function SchemaForm({
     for (const [name, prop] of Object.entries(props)) {
       if (!prop.disable_when) continue
       if (!evalShowWhen(prop.disable_when, values)) continue
-      const def = prop.default
-      if (def !== undefined && values[name] !== def) {
-        nextValues = { ...nextValues, [name]: def }
+      const takeoverValue = prop.disable_value ?? prop.default
+      if (takeoverValue !== undefined && values[name] !== takeoverValue) {
+        nextValues = { ...nextValues, [name]: takeoverValue }
         changed = true
       }
     }
@@ -118,7 +118,6 @@ export default function SchemaForm({
                       : aHints[name]
                   const descriptionOverride =
                     prop.alt_description_when &&
-                    prop.alt_description &&
                     evalShowWhen(prop.alt_description_when, values)
                       ? schemaAltDescription(name, prop.alt_description, t)
                       : schemaDescription(name, prop.description, t)

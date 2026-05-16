@@ -288,7 +288,10 @@
       }
     },
     "disableHints": {
-      "lr_scheduler": "Schedule-Free has its own scheduler"
+      "learning_rate": "Prodigy controls the learning rate",
+      "lr_scheduler": "Schedule-Free has its own scheduler",
+      "timestep_sampling": "InfoNoise controls timestep sampling",
+      "timestep_shift": "InfoNoise controls timestep sampling"
     },
     "descriptions": {
       "transformer_path": "Main transformer weights (.safetensors)",
@@ -428,7 +431,28 @@
     "jsonCaption": "JSON caption",
     "textCaption": "Text caption",
     "responsesWarning": "⚠️ Responses endpoint only uses system + first user message; other messages are ignored",
-    "secretSavedPlaceholder": "Saved (hidden); enter a new value to overwrite"
+    "secretSavedPlaceholder": "Saved (hidden); enter a new value to overwrite",
+    "presetLabels": {
+      "styleJson": "Style LoRA JSON",
+      "generalJson": "General LoRA JSON",
+      "txtTags": "TXT tag list",
+      "joycaption": "JoyCaption (local vLLM)"
+    }
+  },
+  "llmMessages": {
+    "roleHintSystem": "Instructional · usually written once",
+    "roleHintUser": "few-shot example / task description",
+    "roleHintAssistant": "expected few-shot answer",
+    "addMessage": "+ Add message",
+    "dragHandle": "Drag to reorder",
+    "currentImage": "🖼 Current image",
+    "imageHint": "Image is inserted here during tagging · draggable",
+    "deleteMessage": "Delete message",
+    "placeholderLabel": "Placeholder: ",
+    "imageReplaceHint": "Replaced with the image being tagged each time",
+    "placeholderSystem": "System prompt, e.g. You are an image captioning assistant...",
+    "placeholderUser": "(Optional) user content — few-shot example / task description",
+    "placeholderAssistant": "assistant expected output (few-shot answer)"
   },
   "projects": {
     "title": "Projects",
@@ -652,6 +676,20 @@
     "hfMirrorHint": "Recommended in China",
     "hfOfficialHint": "Official source",
     "hfCustomHint": "Custom mirror",
+    "modelDescriptions": {
+      "animaMain": "Cosmos transformer (~4 GB)",
+      "animaVae": "qwen_image_vae (~250 MB)",
+      "qwen3": "Text encoder (~1.2 GB)",
+      "t5Tokenizer": "3 tokenizer files including spiece.model (no weights)",
+      "wd14": "SmilingWolf ONNX tagging models",
+      "cltagger": "cella110n CLTagger ONNX"
+    },
+    "upscalerDescriptions": {
+      "animeSharp": "Anime line art / flat color friendly (Kim2091, ESRGAN-RRDB)",
+      "realEsrganAnime6B": "Small anime-focused model (Real-ESRGAN, A1111 default)",
+      "remacri": "Realistic-style community favorite",
+      "esrgan4x": "Generic ESRGAN baseline"
+    },
     "downloadSourceHuggingface": "HuggingFace (including hf-mirror and other mirrors)",
     "downloadSourceModelscope": "ModelScope (direct access in China)",
     "confirmInstallOnnxAuto": "nvidia-smi will be used to choose the GPU/CPU package automatically. Package installation takes a few minutes.\n\nNote: restart Studio after installation for it to take effect. Continue?",
@@ -985,6 +1023,7 @@
   },
   "overview": {
     "pipelineProgress": "Pipeline progress",
+    "stages": "Stages",
     "versions": "Versions",
     "creating": "Creating…",
     "newVersion": "New version",
