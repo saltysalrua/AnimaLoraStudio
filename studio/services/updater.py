@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -49,6 +50,12 @@ UPDATE_CACHE_TTL_SECONDS = 24 * 3600
 GIT_FETCH_TIMEOUT = 30.0
 GIT_PULL_TIMEOUT = 120.0
 
+# zip 解压用户没有 .git/，自更新功能完全失效。bootstrap_git_repo() 一次性
+# 在本地 init + remote add origin + fetch master，之后走正常 self-update 路径。
+# fork 维护者通过 env var ANIMA_STUDIO_ORIGIN_URL 覆盖默认上游 URL。
+DEFAULT_ORIGIN_URL = "https://github.com/WalkingMeatAxolotl/AnimaLoraStudio.git"
+ORIGIN_URL = os.environ.get("ANIMA_STUDIO_ORIGIN_URL", "").strip() or DEFAULT_ORIGIN_URL
+
 
 # ----- 数据类型 -----------------------------------------------------------
 @dataclass
@@ -66,9 +73,14 @@ class VersionInfo:
     tag: Optional[str]         # HEAD 上的 tag（仅 exact match），无则 None
     is_dirty: bool             # working tree 有未提交改动
     # ---- 产品 UI 用的「装了什么」分类（前端唯一应该看的字段）----
-    installed_kind: str        # "stable" / "dev" / "custom"
-    installed_label: str       # 用户可读："v0.8.0" / "dev @ f6f202b · 2026-05-16" / "自定义（feat/foo @ a1b2c3d）"
-    stable_version: Optional[str]  # "vX.Y.Z" 形式，仅 installed_kind=stable 时填；用于版本号比对
+    # 真实生产路径里这三个永远由 _classify_install 派生；给默认值只是让单测
+    # 构造 fake VersionInfo 时不用每次都写满（ADR 0005 漏改的 hotfix 同步）。
+    installed_kind: str = "custom"  # "stable" / "dev" / "custom" / "zip"
+    installed_label: str = ""       # 用户可读："v0.8.0" / "dev @ f6f202b · 2026-05-16" / "自定义（feat/foo @ a1b2c3d）" / "v0.8.0（zip 安装）"
+    stable_version: Optional[str] = None  # "vX.Y.Z" 形式，仅 installed_kind=stable 时填；用于版本号比对
+    # ---- zip 模式探测（0.8.1 hotfix）----
+    is_git_repo: bool = True   # False = REPO_ROOT/.git 缺失 / 没有 origin remote（zip 解压用户）
+    git_available: bool = True # False = git binary 不在 PATH
 
 
 @dataclass
@@ -149,9 +161,148 @@ def _git(*args: str, timeout: float = 15.0) -> tuple[int, str, str]:
 _RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
+# ----- zip 用户检测 + 一键 init（0.8.1 hotfix）---------------------------
+@dataclass
+class GitRepoStatus:
+    """REPO_ROOT 的 git 可用性快照。版本面板用这个决定显示哪类 banner。"""
+    git_available: bool   # git binary 在 PATH（不依赖 .git 存在）
+    has_dot_git: bool     # REPO_ROOT/.git 目录存在
+    has_origin: bool      # origin remote 已配置（蕴含 has_dot_git）
+    @property
+    def is_repo(self) -> bool:
+        """版本面板视角的"可以走自更新"= 三者全 True。"""
+        return self.git_available and self.has_dot_git and self.has_origin
+
+
+def git_repo_status() -> GitRepoStatus:
+    """三态检测：① git binary？② .git/？③ origin remote？
+
+    顺序固定：git binary 不在 PATH → 后两步无意义直接 False（避免误判）。
+    """
+    rc, _, _ = _git("--version")
+    git_available = rc == 0
+    if not git_available:
+        return GitRepoStatus(False, False, False)
+    has_dot_git = (REPO_ROOT / ".git").exists()
+    if not has_dot_git:
+        return GitRepoStatus(True, False, False)
+    rc, _, _ = _git("remote", "get-url", "origin")
+    return GitRepoStatus(True, True, rc == 0)
+
+
+@dataclass
+class BootstrapResult:
+    """bootstrap_git_repo() 结果。anchor = HEAD 最终指向的 ref（vX.Y.Z tag 或 FETCH_HEAD sha）。"""
+    ok: bool
+    anchor: Optional[str] = None
+    anchor_kind: str = ""      # "version_tag" / "master_head"；ok=False 时空
+    error: Optional[str] = None
+
+
+def bootstrap_git_repo() -> BootstrapResult:
+    """zip 解压用户首次启用自更新功能：在 REPO_ROOT 上 init git 仓库。
+
+    流程：
+    1. precondition：git binary 在 PATH（否则返 error，提示用户先装 git）
+    2. .git/ 不存在 → `git init` + `git symbolic-ref HEAD refs/heads/master`
+       （强制 master 默认 branch，避免不同 git 版本 main/master 默认差异）
+    3. origin remote 不存在 → `git remote add origin {ORIGIN_URL}`
+       （ORIGIN_URL 走 env var 覆盖，fork 维护者可配）
+    4. `git fetch origin master --tags`（拉完整 master 历史 + 全部 tag；
+       不带 --depth 保证 dev 通道时间线 / 回滚到任意 commit 可用）
+    5. 找 `v{__version__}` tag：存在则用作 anchor（让 HEAD 指向用户当前装
+       的版本对应的 tag commit，working tree 看上去就"干净"）；不存在则
+       fallback 到 FETCH_HEAD（master HEAD）
+    6. `git reset --mixed {anchor}` —— 更新 HEAD + index，**不动 working
+       tree**。zip 解压的源文件保留原样，不覆盖用户可能的本地修改
+
+    bootstrap 后 _classify_install 大概率回 "stable"（zip 用户的 __version__
+    匹 release tag 且 tree 一致），版本面板正常显示「v0.8.0」+「检查更新」可用。
+
+    不在范围：fetch dev / 拉 dev_commits。用户切到 dev 通道时由 check_update
+    / dev_commits 自己触发首次 fetch dev（多等几秒，可接受）。
+    """
+    status = git_repo_status()
+    if not status.git_available:
+        return BootstrapResult(
+            ok=False,
+            error="git binary 不在 PATH。请先安装 git（https://git-scm.com/downloads）后重启 Studio。",
+        )
+
+    # 1. git init（仅当 .git/ 不存在）
+    if not status.has_dot_git:
+        rc, _, err = _git("init", str(REPO_ROOT))
+        if rc != 0:
+            return BootstrapResult(ok=False, error=f"git init 失败: {err[:200]}")
+        # 强制 default branch = master（git 2.28+ 起 init.defaultBranch 默认可能是 main）
+        rc, _, err = _git("symbolic-ref", "HEAD", "refs/heads/master")
+        if rc != 0:
+            return BootstrapResult(ok=False, error=f"git symbolic-ref 失败: {err[:200]}")
+
+    # 2. origin remote
+    rc, _, _ = _git("remote", "get-url", "origin")
+    if rc != 0:
+        rc, _, err = _git("remote", "add", "origin", ORIGIN_URL)
+        if rc != 0:
+            return BootstrapResult(ok=False, error=f"git remote add 失败: {err[:200]}")
+
+    # 3. fetch master + tags（这一步是大头，30-60 MB）
+    rc, _, err = _git("fetch", "origin", "master", "--tags", timeout=GIT_FETCH_TIMEOUT * 4)
+    if rc != 0:
+        return BootstrapResult(ok=False, error=f"git fetch 失败: {err[:200]}")
+
+    # 4. 选 anchor：优先匹 __version__ 的 release tag
+    anchor_ref: str
+    anchor_kind: str
+    version_tag = f"v{__version__}"
+    if _RELEASE_TAG_RE.match(version_tag):
+        rc, _, _ = _git("rev-parse", "--verify", f"refs/tags/{version_tag}^{{commit}}")
+        if rc == 0:
+            anchor_ref = version_tag
+            anchor_kind = "version_tag"
+        else:
+            anchor_ref = "FETCH_HEAD"
+            anchor_kind = "master_head"
+    else:
+        anchor_ref = "FETCH_HEAD"
+        anchor_kind = "master_head"
+
+    # 5. reset --mixed：更新 HEAD + index，不动 working tree（保留用户文件）
+    rc, _, err = _git("reset", "--mixed", anchor_ref, timeout=GIT_PULL_TIMEOUT)
+    if rc != 0:
+        return BootstrapResult(ok=False, error=f"git reset 失败: {err[:200]}")
+
+    # 解析 anchor sha 给前端 / 日志用
+    rc, anchor_sha, _ = _git("rev-parse", anchor_ref)
+    return BootstrapResult(
+        ok=True,
+        anchor=anchor_sha if rc == 0 else anchor_ref,
+        anchor_kind=anchor_kind,
+    )
+
+
 # ----- 公开 API -----------------------------------------------------------
 def current_version() -> VersionInfo:
-    """读当前仓库状态。git 不可用时返回占位值（不抛）。"""
+    """读当前仓库状态。git 不可用 / zip 解压模式时返回占位值（不抛）。"""
+    repo = git_repo_status()
+    if not repo.is_repo:
+        # zip 模式：没有 .git/ 或 origin remote。版本面板看 is_git_repo
+        # 决定显示 init banner，不再依赖 commit/branch 字段。
+        return VersionInfo(
+            version=__version__,
+            commit="unknown",
+            commit_short="?",
+            commit_time_iso="",
+            branch="detached",
+            tag=None,
+            is_dirty=False,
+            installed_kind="zip",
+            installed_label=f"v{__version__}（zip 安装）",
+            stable_version=None,
+            is_git_repo=False,
+            git_available=repo.git_available,
+        )
+
     rc, head, _ = _git("rev-parse", "HEAD")
     commit = head if rc == 0 else "unknown"
     short = commit[:8] if commit != "unknown" else "?"
@@ -191,6 +342,8 @@ def current_version() -> VersionInfo:
         installed_kind=installed_kind,
         installed_label=installed_label,
         stable_version=stable_version,
+        is_git_repo=True,
+        git_available=True,
     )
 
 

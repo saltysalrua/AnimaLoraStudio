@@ -1856,6 +1856,14 @@ export const api = {
   // target 接受任意 git ref（tag / branch / commit sha）。
   getPreflight: (target: string) =>
     req<PreflightResult>(`/api/system/preflight?target=${encodeURIComponent(target)}`),
+
+  // 0.8.1 hotfix — zip 安装用户一键初始化 git 仓库。幂等：已是 git 仓库
+  // 直接返 ok=true + already_initialized=true。失败 500 + detail.error。
+  initGitRepo: () =>
+    req<{ ok: boolean; already_initialized: boolean; anchor?: string; anchor_kind?: string }>(
+      '/api/system/init_git',
+      { method: 'POST' },
+    ),
 }
 
 export interface SystemVersion {
@@ -1870,13 +1878,18 @@ export interface SystemVersion {
   /** 产品视角的"装了什么"分类（ADR 0005）。
    *  - stable：HEAD 命中 vX.Y.Z release tag，或 __version__ 匹某 release tag 且 tree 一致
    *  - dev：commit == origin/dev HEAD
-   *  - custom：feature branch / detached / 未识别 commit */
-  installed_kind: 'stable' | 'dev' | 'custom'
+   *  - custom：feature branch / detached / 未识别 commit
+   *  - zip：REPO_ROOT/.git 缺失（zip 解压用户，0.8.1 hotfix） */
+  installed_kind: 'stable' | 'dev' | 'custom' | 'zip'
   /** 用户可读 label，如 "v0.8.0" / "dev @ f6f202b · 2026-05-16" / "自定义（feat/foo @ a1b2c3d）"。
    *  dirty 时追加 "· 未提交修改" */
   installed_label: string
   /** "vX.Y.Z" 形式，仅 installed_kind=stable 时填；前端做版本号比对用 */
   stable_version: string | null
+  /** False = zip 安装 / 没有 origin remote。前端显示 init banner 时用（0.8.1 hotfix） */
+  is_git_repo: boolean
+  /** False = git binary 不在 PATH。zip 用户 + 没装 git → 显示"先装 git"提示而非 init 按钮 */
+  git_available: boolean
 }
 
 export interface SystemUpdateCheck {

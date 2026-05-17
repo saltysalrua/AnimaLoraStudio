@@ -50,7 +50,7 @@ export function formatDevStateText(check: SystemUpdateCheck | null): string {
  */
 export function shouldShowMasterUpdateButton(
   check: SystemUpdateCheck | null,
-  installedKind: 'stable' | 'dev' | 'custom' | undefined,
+  installedKind: 'stable' | 'dev' | 'custom' | 'zip' | undefined,
 ): boolean {
   if (!check || check.state !== 'update_available') return false
   if (installedKind !== 'stable') return false
@@ -64,7 +64,7 @@ export function shouldShowMasterUpdateButton(
  */
 export function shouldShowSwitchToStableButton(
   check: SystemUpdateCheck | null,
-  installedKind: 'stable' | 'dev' | 'custom' | undefined,
+  installedKind: 'stable' | 'dev' | 'custom' | 'zip' | undefined,
 ): boolean {
   if (!check || installedKind === 'stable') return false
   return !!check.latest_version
@@ -80,7 +80,7 @@ export function shouldShowSwitchToStableButton(
  */
 export function isDevSwitchButtonDisabled(
   check: SystemUpdateCheck | null,
-  installedKind?: 'stable' | 'dev' | 'custom',
+  installedKind?: 'stable' | 'dev' | 'custom' | 'zip',
 ): boolean {
   if (check?.state === 'up_to_date') return true
   if (!check && installedKind === 'dev') return true

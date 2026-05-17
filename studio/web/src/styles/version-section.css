@@ -91,6 +91,44 @@
   font-style: italic;
 }
 
+/* ==================== zip 安装 init banner（0.8.1 hotfix）====================
+ * 出现在 vs-installed-row 上方，仅 version.is_git_repo=false 时显示。
+ * accent-soft 背景区分于"上次更新失败"红色 banner。 */
+.vs-zip-banner {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.vs-zip-banner-title {
+  font-weight: 600;
+  color: var(--accent);
+}
+.vs-zip-banner-body {
+  color: var(--fg-secondary);
+  line-height: 1.5;
+}
+.vs-zip-banner-body a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.vs-zip-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.vs-zip-banner-error {
+  color: var(--danger, #c0392b);
+  font-size: 12px;
+}
+
 /* ==================== 单卡片 ==================== */
 .vs-chan {
   background: var(--bg-sunken);

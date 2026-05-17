@@ -2677,13 +2677,49 @@ function VersionSection() {
   )
   // chunk 2 重做：release notes 详细内容 modal（含 detail markdown）
   const [detailModalOpen, setDetailModalOpen] = useState(false)
+  // 0.8.1 hotfix — zip 安装用户首次 init git 仓库
+  const [initing, setIniting] = useState(false)
+  const [initError, setInitError] = useState<string | null>(null)
 
   useEffect(() => {
-    void api.getSystemVersion().then(setVersion).catch(() => { /* silent */ })
-    void api.checkSystemUpdate('master').then(setCheck).catch(() => { /* silent */ })
+    let cancelled = false
+    void (async () => {
+      const v = await api.getSystemVersion().catch(() => null)
+      if (cancelled) return
+      if (v) setVersion(v)
+      // zip 模式下 check_update 会失败（git fetch 在没 .git/ 时报错），
+      // 没必要发请求。等用户 init 完后再触发。
+      if (v?.is_git_repo !== false) {
+        void api.checkSystemUpdate('master').then((r) => { if (!cancelled) setCheck(r) }).catch(() => { /* silent */ })
+      }
+    })()
     void api.getSystemUpdateStatus().then(setStatus).catch(() => { /* silent */ })
     void api.getSecrets().then((s) => setPrefs(s.system)).catch(() => { /* silent */ })
+    return () => { cancelled = true }
   }, [])
+
+  // 0.8.1 hotfix — 触发 zip → git 自动 normalize。成功后刷一遍 version + check
+  // 让 banner 消失、版本面板正常显示。bootstrap 不重启 server（只动 .git/），
+  // 不需要 pollHealthThenReload。
+  const handleInitGit = async () => {
+    setIniting(true)
+    setInitError(null)
+    try {
+      await api.initGitRepo()
+      toast('git 仓库初始化完成，自动更新已启用', 'success')
+      const v = await api.getSystemVersion().catch(() => null)
+      if (v) setVersion(v)
+      // init 后立刻拉一次 check，banner 消失 + 同屏显示「已是最新 / 有新版」
+      void api.checkSystemUpdate('master', true).then(setCheck).catch(() => { /* silent */ })
+    } catch (e) {
+      const err = e as Error & { detail?: { message?: string } }
+      const msg = err.detail?.message ?? err.message ?? String(e)
+      setInitError(msg)
+      toast(`初始化失败: ${msg}`, 'error')
+    } finally {
+      setIniting(false)
+    }
+  }
 
   // 选中 dev 通道时自动拉 dev_commits + dev check（用户不用先手动按 [抓取 dev]）。
   // 即便装的是 stable，用户切到 dev 通道偏好时也要能立刻看到 dev HEAD 信息。
@@ -2946,6 +2982,44 @@ function VersionSection() {
         </InfoButton>
       }
     >
+      {/* 0.8.1 hotfix — zip 安装用户首次启用自更新功能的 banner。
+          version.is_git_repo=false 时显示；git 不可用 vs 可用分两种文案。
+          init 成功后 setVersion 刷新，banner 自动消失。 */}
+      {version && !version.is_git_repo && (
+        <div className="vs-zip-banner">
+          {!version.git_available ? (
+            <>
+              <div className="vs-zip-banner-title">未检测到 git</div>
+              <div className="vs-zip-banner-body">
+                自动更新功能需要本地装有 git。请先{' '}
+                <a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">安装 git</a>
+                {' '}后重启 Studio。
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="vs-zip-banner-title">启用自动更新</div>
+              <div className="vs-zip-banner-body">
+                检测到你是 zip 解压安装。要使用版本面板的一键更新 / 切换通道功能，
+                需要在本地初始化 git 仓库（首次约 30–60 MB 下载，仅下载历史元数据，
+                <b>不会覆盖你的文件</b>）。
+              </div>
+              <div className="vs-zip-banner-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => void handleInitGit()}
+                  disabled={initing}
+                >
+                  {initing ? '初始化中…（约 30 秒）' : '启用自动更新'}
+                </button>
+                {initError && <span className="vs-zip-banner-error">失败：{initError}</span>}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* 顶部：你装的是什么（一行事实状态，与通道偏好解耦） */}
       <div className="vs-installed-row">
         <span className="vs-installed-label">你装的：</span>
@@ -3496,7 +3570,7 @@ type DevCardProps = {
   check: SystemUpdateCheck | null
   commits: DevCommitsResult | null
   currentSha: string
-  installedKind: 'stable' | 'dev' | 'custom' | undefined
+  installedKind: 'stable' | 'dev' | 'custom' | 'zip' | undefined
   selectedSha: string | null
   setSelectedSha: (sha: string | null) => void
   checking: boolean

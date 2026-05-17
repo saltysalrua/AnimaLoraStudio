@@ -420,6 +420,255 @@ def test_rollback_target_tolerates_utf8_bom(
 
 
 # ---------------------------------------------------------------------------
+# 0.8.1 hotfix：zip 解压用户的 git 仓库自动 init
+# ---------------------------------------------------------------------------
+
+def test_git_repo_status_git_binary_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """git 不在 PATH 时 git_repo_status 三 False —— 后续 .git/origin 检测都跳过。"""
+    monkeypatch.setattr(updater, "_git",
+                        lambda *a, **k: (1, "", "git not found on PATH"))
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    s = updater.git_repo_status()
+    assert s.git_available is False
+    assert s.has_dot_git is False
+    assert s.has_origin is False
+    assert s.is_repo is False
+
+
+def test_git_repo_status_no_dot_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """zip 解压典型场景：git 在 PATH 但目录里没 .git/。"""
+    monkeypatch.setattr(updater, "_git",
+                        lambda *a, **k: (0, "git version 2.40.0", ""))
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)  # 空 tmp_path 没 .git/
+    s = updater.git_repo_status()
+    assert s.git_available is True
+    assert s.has_dot_git is False
+    assert s.has_origin is False
+    assert s.is_repo is False
+
+
+def test_git_repo_status_no_origin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """.git/ 存在但 remote get-url origin 失败（用户自己 git init 过但没加 remote）。"""
+    (tmp_path / ".git").mkdir()
+    def _fake_git(*args, **_):
+        if args == ("--version",):
+            return 0, "git version 2.40.0", ""
+        if args[:2] == ("remote", "get-url"):
+            return 2, "", "error: No such remote 'origin'"
+        return 0, "", ""
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    s = updater.git_repo_status()
+    assert s.git_available is True
+    assert s.has_dot_git is True
+    assert s.has_origin is False
+    assert s.is_repo is False
+
+
+def test_git_repo_status_full_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """git clone 用户的正常路径：三个都 True。"""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(updater, "_git", lambda *a, **k: (0, "ok", ""))
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    s = updater.git_repo_status()
+    assert s.is_repo is True
+
+
+def test_current_version_zip_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """zip 模式（is_repo=False）→ installed_kind='zip' + is_git_repo=False，
+    不会去调真 git 命令（不会 rev-parse / log / describe）。"""
+    git_calls: list[tuple] = []
+    def _fake_git(*args, **_):
+        git_calls.append(args)
+        # --version 仍要回 0（git binary 在 PATH，只是没 .git/）
+        if args == ("--version",):
+            return 0, "git version 2.40.0", ""
+        # 其他都不应被调用 —— 早 return 走 zip 分支
+        return 0, "", ""
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+
+    v = updater.current_version()
+    assert v.installed_kind == "zip"
+    assert v.is_git_repo is False
+    assert v.git_available is True
+    assert v.commit == "unknown"
+    assert v.branch == "detached"
+    assert "zip" in v.installed_label.lower() or "zip 安装" in v.installed_label
+    # 早 return：除了 --version 不该调任何 git
+    other_calls = [c for c in git_calls if c != ("--version",)]
+    assert other_calls == [], f"zip 模式不该调 git 子命令，实际调了 {other_calls}"
+
+
+def test_current_version_zip_mode_no_git_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """zip + 没装 git → git_available=False（前端用这个区分文案）。"""
+    monkeypatch.setattr(updater, "_git", lambda *a, **k: (1, "", "git not found"))
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    v = updater.current_version()
+    assert v.is_git_repo is False
+    assert v.git_available is False
+    assert v.installed_kind == "zip"
+
+
+def test_bootstrap_aborts_without_git_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """bootstrap 第一关：git binary 不在 PATH 直接返 ok=False，error 文案
+    指向 git-scm 下载页（前端给用户提示）。"""
+    monkeypatch.setattr(updater, "_git", lambda *a, **k: (1, "", "git not found"))
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    r = updater.bootstrap_git_repo()
+    assert r.ok is False
+    assert r.error is not None
+    assert "git" in r.error.lower()
+
+
+def test_bootstrap_full_sequence_uses_version_tag_anchor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """zip 用户 happy path：__version__ 对应的 release tag 在远端存在 →
+    bootstrap 把 HEAD anchor 在 vX.Y.Z tag 上（让 working tree 看起来"干净"）。
+
+    验证调用序列：init → symbolic-ref master → remote add origin → fetch
+    --tags → rev-parse tag（成功）→ reset --mixed tag → rev-parse anchor。"""
+    calls: list[tuple] = []
+    def _fake_git(*args, **_):
+        calls.append(args)
+        if args == ("--version",):
+            return 0, "git version 2.40.0", ""
+        if args[:2] == ("remote", "get-url"):
+            # init 后还没加 origin → 失败一次（触发 remote add）
+            return 2, "", "no remote"
+        if args[0] == "rev-parse" and args[1] == "--verify":
+            # v{__version__} tag 存在
+            return 0, "abc123", ""
+        if args[0] == "rev-parse":
+            # 末尾的 rev-parse anchor → 返回 sha
+            return 0, "abc123def456" + "0" * 20, ""
+        return 0, "", ""
+
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)  # 空 → has_dot_git=False
+    monkeypatch.setattr(updater, "__version__", "0.8.0")
+
+    r = updater.bootstrap_git_repo()
+    assert r.ok is True, f"bootstrap should succeed, error={r.error}"
+    assert r.anchor_kind == "version_tag"
+    assert r.anchor and len(r.anchor) > 0
+
+    # 序列验证：必须包含 init / symbolic-ref / remote add / fetch / reset
+    first_args = [c[0] for c in calls]
+    assert "init" in first_args
+    assert "symbolic-ref" in first_args
+    # remote add 应当被调（因为前面 get-url 失败）
+    assert any(c[:2] == ("remote", "add") and c[2] == "origin" for c in calls), \
+        "应当调 git remote add origin"
+    # fetch origin master --tags
+    assert any(c[:3] == ("fetch", "origin", "master") for c in calls)
+    # reset --mixed 到 anchor（v{__version__}）
+    assert any(c[0] == "reset" and "--mixed" in c for c in calls)
+
+
+def test_bootstrap_fallbacks_to_master_head_when_no_version_tag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """__version__ 对应的 tag 在远端不存在（开发版 / 非 release commit zip）→
+    anchor fallback 到 FETCH_HEAD。"""
+    calls: list[tuple] = []
+    def _fake_git(*args, **_):
+        calls.append(args)
+        if args == ("--version",):
+            return 0, "ok", ""
+        if args[:2] == ("remote", "get-url"):
+            return 2, "", ""
+        if args[0] == "rev-parse" and args[1] == "--verify":
+            # v{__version__} tag 不存在
+            return 1, "", "fatal: ambiguous argument"
+        if args[0] == "rev-parse":
+            return 0, "fetched_head_sha", ""
+        return 0, "", ""
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+
+    r = updater.bootstrap_git_repo()
+    assert r.ok is True
+    assert r.anchor_kind == "master_head"
+    # reset 的 target 应当是 FETCH_HEAD（不是 vX.Y.Z）
+    reset_calls = [c for c in calls if c[0] == "reset"]
+    assert len(reset_calls) == 1
+    assert "FETCH_HEAD" in reset_calls[0]
+
+
+def test_bootstrap_fetch_failure_propagates_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """fetch 失败（网络 / DNS）→ ok=False + 错误文案含 stderr 摘要。
+    不应继续到 reset 步骤。"""
+    calls: list[tuple] = []
+    def _fake_git(*args, **_):
+        calls.append(args)
+        if args == ("--version",):
+            return 0, "ok", ""
+        if args[:2] == ("remote", "get-url"):
+            return 2, "", ""
+        if args[0] == "fetch":
+            return 128, "", "fatal: unable to access 'https://github.com/'"
+        return 0, "", ""
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+
+    r = updater.bootstrap_git_repo()
+    assert r.ok is False
+    assert r.error is not None
+    assert "fetch" in r.error.lower() or "github" in r.error.lower()
+    # reset 不应被调（fetch 失败就中止）
+    assert not any(c[0] == "reset" for c in calls)
+
+
+def test_bootstrap_honors_env_origin_url_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ANIMA_STUDIO_ORIGIN_URL env var 覆盖默认 origin URL —— fork 维护者可配。
+
+    注意：updater 在 import 时读 env，这里 monkeypatch 模块属性等价。"""
+    custom_url = "https://example.com/my-fork/AnimaLoraStudio.git"
+    monkeypatch.setattr(updater, "ORIGIN_URL", custom_url)
+    captured_url: list[str] = []
+    def _fake_git(*args, **_):
+        if args == ("--version",):
+            return 0, "ok", ""
+        if args[:2] == ("remote", "get-url"):
+            return 2, "", ""
+        if args[:3] == ("remote", "add", "origin"):
+            captured_url.append(args[3])
+            return 0, "", ""
+        if args[0] == "rev-parse" and args[1] == "--verify":
+            return 1, "", ""
+        if args[0] == "rev-parse":
+            return 0, "sha", ""
+        return 0, "", ""
+    monkeypatch.setattr(updater, "_git", _fake_git)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+
+    r = updater.bootstrap_git_repo()
+    assert r.ok is True
+    assert captured_url == [custom_url], \
+        f"应当用 ORIGIN_URL 覆盖值，实际调用 = {captured_url}"
+
+
+# ---------------------------------------------------------------------------
 # target_has_self_update (chunk 4 safety net)
 # ---------------------------------------------------------------------------
 
