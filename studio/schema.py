@@ -175,8 +175,8 @@ class TrainingConfig(BaseModel):
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
-        32, ge=4, le=256,
-        description="rank（推荐 8/16/32/64）",
+        32, ge=4,
+        description="rank（推荐 8/16/32/64；LoKr 可设足够大触发 full dimension）",
         json_schema_extra=_meta("lora"),
     )
     lora_alpha: float = Field(
@@ -244,15 +244,22 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(
         1e-4, gt=0.0,
         description="学习率（Prodigy 必须为 1.0）",
-        json_schema_extra=_meta("training", cli_alias="--lr"),
+        json_schema_extra=_meta(
+            "training",
+            cli_alias="--lr",
+            disable_when="optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
+            disable_value=1.0,
+            disable_hint="Prodigy 接管学习率",
+        ),
     )
     lr_scheduler: Literal["none", "cosine", "cosine_with_restart"] = Field(
         "none",
-        description="学习率调度（选 prodigy_plus_schedulefree 时必须 none）",
+        description="学习率调度（none = 常数；Prodigy / PPSF 固定为 none）",
         json_schema_extra=_meta(
             "training",
-            disable_when="optimizer_type==prodigy_plus_schedulefree",
-            disable_hint="Schedule-Free 自带调度",
+            disable_when="optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
+            disable_value="none",
+            disable_hint="Prodigy 固定为常数学习率",
         ),
     )
     lr_scheduler_t0: int = Field(
@@ -372,6 +379,8 @@ class TrainingConfig(BaseModel):
             "noise_schedule",
             alt_description="【时间步采样】分布；InfoNoise 启用时作为热身期 baseline，正式阶段由自适应 CDF 接管",
             alt_description_when="infonoise_enabled==true",
+            disable_when="infonoise_enabled==true",
+            disable_hint="InfoNoise 接管时间步采样",
             advanced=True,
         ),
     )
@@ -383,6 +392,8 @@ class TrainingConfig(BaseModel):
             show_when="timestep_sampling!=uniform",
             alt_description="【InfoNoise 热身期】InfoNoise 开启时作为热身阶段的 baseline shift，正式阶段由自适应 CDF 接管",
             alt_description_when="infonoise_enabled==true",
+            disable_when="infonoise_enabled==true",
+            disable_hint="InfoNoise 接管时间步采样",
             advanced=True,
         ),
     )
@@ -505,13 +516,12 @@ class TrainingConfig(BaseModel):
         return migrate_legacy_attention(data)
 
     @model_validator(mode="after")
-    def _validate_ppsf_scheduler(self) -> "TrainingConfig":
-        """ProdigyPlusScheduleFree 内置 Schedule-Free，外面再叠 scheduler 会破坏
-        averaged weights 的收敛保证。UI/CLI/YAML 三个入口在这里统一拦下来。"""
-        if self.optimizer_type == "prodigy_plus_schedulefree" and self.lr_scheduler != "none":
+    def _validate_prodigy_scheduler(self) -> "TrainingConfig":
+        """Prodigy 系列固定使用常数学习率，外部 scheduler 统一拦截。"""
+        if self.optimizer_type in {"prodigy", "prodigy_plus_schedulefree"} and self.lr_scheduler != "none":
             raise ValueError(
-                "optimizer_type=prodigy_plus_schedulefree requires lr_scheduler=none "
-                "(Schedule-Free 不需要 scheduler；强行叠加会破坏 averaged weights)."
+                f"optimizer_type={self.optimizer_type} requires lr_scheduler=none "
+                "(Prodigy 系列固定使用常数学习率)."
             )
         return self
 

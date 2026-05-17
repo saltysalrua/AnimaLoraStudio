@@ -40,6 +40,8 @@ export interface SchemaProperty {
    * 表达式语法与 show_when 一致：`key==value` / `key!=value`。
    * 例：lr_scheduler 在 optimizer_type=prodigy_plus_schedulefree 时被 disable。 */
   disable_when?: string
+  /** disable_when 触发时写回的值；缺省回退到 default。 */
+  disable_value?: unknown
   /** disable_when 触发时显示的提示徽章文本。 */
   disable_hint?: string
   /** 条件说明文字：当 alt_description_when 表达式为真时，替换 description 显示。 */

@@ -51,6 +51,15 @@ def test_schema_is_complete() -> None:
     assert "prodigy_plus_schedulefree" in getattr(optimizer_annotation, "__args__", ())
 
 
+def test_lokr_rank_allows_full_dimension_trigger() -> None:
+    payload = TrainingConfig().model_dump(mode="python")
+    payload["lora_type"] = "lokr"
+    payload["lora_rank"] = 50000
+    cfg = TrainingConfig.model_validate(payload)
+    assert cfg.lora_rank == 50000
+    assert "maximum" not in TrainingConfig.model_json_schema()["properties"]["lora_rank"]
+
+
 def test_schema_endpoint_returns_groups(client: TestClient) -> None:
     resp = client.get("/api/schema")
     assert resp.status_code == 200
@@ -99,6 +108,15 @@ def test_ppsf_accepts_none_scheduler() -> None:
     payload["lr_scheduler"] = "none"
     cfg = TrainingConfig.model_validate(payload)
     assert cfg.optimizer_type == "prodigy_plus_schedulefree"
+
+
+def test_prodigy_rejects_non_none_scheduler() -> None:
+    """普通 Prodigy 也固定常数学习率，不允许外部 scheduler。"""
+    payload = TrainingConfig().model_dump(mode="python")
+    payload["optimizer_type"] = "prodigy"
+    payload["lr_scheduler"] = "cosine"
+    with pytest.raises(Exception):
+        TrainingConfig.model_validate(payload)
 
 
 # ---------------------------------------------------------------------------

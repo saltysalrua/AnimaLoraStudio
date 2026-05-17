@@ -4,7 +4,7 @@ import PathPicker from '../../../components/PathPicker'
 import InlineLoraPicker from './InlineLoraPicker'
 import NumberListInput from './NumberListInput'
 import type { ProjectLora } from './types'
-import { AXIS_LABELS, AXIS_VALUE_TYPE, REQUIRES_LORA_INDEX, ckptStemFromPath, type XYAxisDraft } from './xy'
+import { AXIS_VALUE_TYPE, REQUIRES_LORA_INDEX, axisLabel, ckptStemFromPath, type XYAxisDraft } from './xy'
 
 const ALL_AXES: XYAxisType[] = ['lora_ckpt', 'lora_scale', 'cfg_scale', 'steps']
 
@@ -142,7 +142,7 @@ function AxisCard({
           }}
         >
           {ALL_AXES.map((a) => (
-            <option key={a} value={a}>{AXIS_LABELS[a]}</option>
+            <option key={a} value={a}>{axisLabel(a)}</option>
           ))}
         </select>
         {onRemove && (
