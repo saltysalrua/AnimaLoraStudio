@@ -79,10 +79,13 @@ export default function ProjectsPage() {
   const handleDelete = async (p: ProjectSummary, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!(await confirm(`移到回收站？\n${p.title} (${p.slug})`, { tone: 'warn', okText: t('projects.moveToTrash') }))) return
+    if (!(await confirm(
+      t('projects.deleteConfirm', { title: p.title, slug: p.slug }),
+      { tone: 'danger', okText: t('projects.deleteProject') },
+    ))) return
     try {
       await api.deleteProject(p.id)
-      toast(t('projects.movedToTrash', { title: p.title }), 'success')
+      toast(t('projects.deleted', { title: p.title }), 'success')
       await refresh()
     } catch (err) {
       toast(String(err), 'error')
@@ -107,16 +110,6 @@ export default function ProjectsPage() {
     }
   }
 
-  const handleEmptyTrash = async () => {
-    if (!(await confirm(t('projects.confirmEmptyTrash'), { tone: 'danger', okText: t('projects.emptyTrash') }))) return
-    try {
-      const r = await api.emptyTrash()
-      toast(t('projects.trashCleared', { n: r.removed }), 'success')
-    } catch (e) {
-      toast(String(e), 'error')
-    }
-  }
-
   const openProject = (p: ProjectSummary) => {
     navigate(`/projects/${p.id}`)
   }
@@ -128,13 +121,6 @@ export default function ProjectsPage() {
         subtitle={t('projects.description')}
         actions={
           <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={handleEmptyTrash}
-              title={t('projects.emptyTrash')}
-            >
-              {t('projects.emptyTrash')}
-            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -261,7 +247,7 @@ function ProjectCard({
         <button
           onClick={onDelete}
           className="bg-transparent border-none px-1.5 py-0.5 rounded-sm text-fg-tertiary text-xs cursor-pointer"
-          title={t('projects.moveToTrash')}
+          title={t('projects.deleteProjectTitle')}
         >
           ×
         </button>

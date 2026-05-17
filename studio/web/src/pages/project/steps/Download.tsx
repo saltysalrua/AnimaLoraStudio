@@ -10,6 +10,7 @@ import {
   type Version,
 } from '../../../api/client'
 import ImageGrid, { applySelection } from '../../../components/ImageGrid'
+import ImagePreviewModal from '../../../components/ImagePreviewModal'
 import StepShell from '../../../components/StepShell'
 import { useDialog } from '../../../components/Dialog'
 import { useToast } from '../../../components/Toast'
@@ -53,6 +54,7 @@ export default function DownloadPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [anchor, setAnchor] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
   const [tag, setTag] = useState('')
   const [apiSource, setApiSource] = useState<'gelbooru' | 'danbooru'>(
     'gelbooru'
@@ -231,7 +233,7 @@ export default function DownloadPage() {
             </div>
           )}
 
-          {/* 已下载 grid — 占满剩余高度，支持多选 + 删除 */}
+          {/* 已下载 grid — 占满剩余高度，支持多选 + 删除 + 大图预览 */}
           <DownloadedGrid
             project={project}
             files={files}
@@ -248,6 +250,10 @@ export default function DownloadPage() {
               )
               setSelected(r.next)
               setAnchor(r.anchor)
+            }}
+            onPreview={(name) => {
+              const i = files.findIndex((f) => f.name === name)
+              if (i >= 0) setPreviewIdx(i)
             }}
             onSelectAll={() => setSelected(new Set(files.map((f) => f.name)))}
             onClear={() => {
@@ -288,6 +294,18 @@ export default function DownloadPage() {
         <DownloadStatsSidebar files={files} projectDownloadCount={project.download_image_count} />
       </div>
     </div>
+
+    {previewIdx !== null && files[previewIdx] && (
+      <ImagePreviewModal
+        src={api.projectThumbUrl(project.id, files[previewIdx].name, 'download', 1600)}
+        caption={files[previewIdx].name}
+        hasPrev={previewIdx > 0}
+        hasNext={previewIdx < files.length - 1}
+        onClose={() => setPreviewIdx(null)}
+        onPrev={() => previewIdx > 0 && setPreviewIdx(previewIdx - 1)}
+        onNext={() => previewIdx < files.length - 1 && setPreviewIdx(previewIdx + 1)}
+      />
+    )}
     </StepShell>
   )
 }
@@ -303,6 +321,7 @@ function DownloadedGrid({
   anchor,
   deleting,
   onSelect,
+  onPreview,
   onSelectAll,
   onClear,
   onDelete,
@@ -313,6 +332,7 @@ function DownloadedGrid({
   anchor: string | null
   deleting: boolean
   onSelect: (name: string, e: React.MouseEvent) => void
+  onPreview: (name: string) => void
   onSelectAll: () => void
   onClear: () => void
   onDelete: () => void | Promise<void>
@@ -365,6 +385,9 @@ function DownloadedGrid({
           items={items}
           selected={selected}
           onSelect={onSelect}
+          onActivate={onPreview}
+          onPreview={onPreview}
+          clickMode="activate"
           ariaLabel="downloaded-grid"
           emptyHint={t('download.emptyHint')}
         />

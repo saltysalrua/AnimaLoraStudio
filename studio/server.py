@@ -419,6 +419,33 @@ def duplicate_preset_endpoint(name: str, body: DuplicateRequest) -> dict[str, st
     return {"name": body.new_name, "path": str(path)}
 
 
+@app.get("/api/presets/{name}/download")
+def download_preset(name: str) -> FileResponse:
+    """端到端文件 I/O：直接返回 `studio_data/presets/{name}.yaml` 原文件。"""
+    try:
+        path = presets_io.preset_path(name)
+    except presets_io.PresetError as exc:
+        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"预设不存在: {name}")
+    return FileResponse(path, media_type="application/yaml", filename=f"{name}.yaml")
+
+
+@app.post("/api/presets/import")
+async def import_preset(file: UploadFile = File(...)) -> dict[str, Any]:
+    """接 .yaml/.yml/.json 上传 → 解析 + schema 校验 → 返回 config + suggested_name。
+
+    不写盘 —— 让前端 draftSeed flow 拿 config + suggested 进新建模式，
+    用户确认名字 + 编辑后再走 PUT /api/presets/{name}。
+    """
+    raw = await file.read()
+    try:
+        config, suggested = presets_io.parse_preset_bytes(raw, file.filename or "")
+    except presets_io.PresetError as exc:
+        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
+    return {"config": config, "suggested_name": suggested}
+
+
 def _err_code(exc: presets_io.PresetError) -> int:
     """PresetError → HTTP 状态码：'不存在' → 404，名字非法/已存在 → 400，其它 → 422。"""
     msg = str(exc)
@@ -689,15 +716,10 @@ def patch_project_endpoint(pid: int, body: ProjectUpdate) -> dict[str, Any]:
 def delete_project_endpoint(pid: int) -> dict[str, Any]:
     with db.connection_for() as conn:
         try:
-            projects.soft_delete_project(conn, pid)
+            projects.delete_project(conn, pid)
         except projects.ProjectError as exc:
             raise HTTPException(_project_err_code(exc), str(exc)) from exc
     return {"deleted": pid}
-
-
-@app.post("/api/projects/_trash/empty")
-def empty_trash_endpoint() -> dict[str, Any]:
-    return {"removed": projects.empty_trash()}
 
 
 # Versions ------------------------------------------------------------------
@@ -3633,6 +3655,32 @@ def system_dev_commits(limit: int = 10) -> dict[str, Any]:
         "fetched": result.fetched,
         "error": result.error,
     }
+
+
+@app.post("/api/system/init_git")
+def system_init_git() -> dict[str, Any]:
+    """zip 解压用户一键初始化 git 仓库（0.8.1 hotfix）。
+
+    幂等：调用前 / 调用后都跑 `git_repo_status()`，如已是仓库直接返 ok=true。
+    流程见 `updater.bootstrap_git_repo()`：init + remote add origin + fetch master
+    + reset --mixed 到对应 release tag。
+
+    失败状态码：
+    - 500 + error 字符串：git binary 缺失 / fetch 网络问题 / 磁盘问题
+    """
+    from dataclasses import asdict
+    pre = updater.git_repo_status()
+    if pre.is_repo:
+        return {"ok": True, "already_initialized": True}
+
+    result = updater.bootstrap_git_repo()
+    if not result.ok:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "bootstrap_failed", "message": result.error or "未知错误"},
+        )
+
+    return {"ok": True, "already_initialized": False, **asdict(result)}
 
 
 @app.get("/api/system/release_notes")

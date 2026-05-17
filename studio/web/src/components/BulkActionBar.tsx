@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import TagAutocomplete from './TagAutocomplete'
 import { useToast } from './Toast'
 
-type ScopeKind = 'selected' | 'all'
+type ScopeKind = 'selected' | 'filtered' | 'all'
 type Op = 'add' | 'remove' | 'replace' | 'dedupe'
 
 interface Props {
@@ -15,6 +15,7 @@ interface Props {
   onClearSelection?: () => void
   filterTag: string
   onFilterTagChange: (v: string) => void
+  filteredKeys: string[]
   totalCount: number
   filteredCount: number
   onSelectAll: () => void
@@ -23,7 +24,7 @@ interface Props {
 export default function BulkActionBar({
   cache, selectedKeys, onApply,
   tagSuggestions = [], defaultScope = 'selected', onClearSelection,
-  filterTag, onFilterTagChange, totalCount, filteredCount, onSelectAll,
+  filterTag, onFilterTagChange, filteredKeys, totalCount, filteredCount, onSelectAll,
 }: Props) {
   const { t } = useTranslation()
   const { toast } = useToast()
@@ -38,16 +39,27 @@ export default function BulkActionBar({
     setOpenOp(null); setTagsInput(''); setOldTag(''); setNewTag('')
   }
 
-  const targetKeys = (): string[] =>
-    scope === 'selected' ? selectedKeys : Array.from(cache.keys())
+  const targetKeys = (): string[] => {
+    if (scope === 'selected') return selectedKeys
+    if (scope === 'filtered') return filteredKeys
+    return Array.from(cache.keys())
+  }
 
   const parseTags = (raw: string): string[] =>
     raw.split(/[,，\n]/).map((t) => t.trim()).filter(Boolean)
 
   const apply = (op: Op) => {
     const keys = targetKeys()
-    if (scope === 'selected' && keys.length === 0) {
-      toast(t('bulkAction.noFiles'), 'error'); return
+    if (keys.length === 0) {
+      toast(
+        scope === 'selected'
+          ? t('bulkAction.noFiles')
+          : scope === 'filtered'
+            ? t('bulkAction.noFilteredFiles')
+            : t('bulkAction.noImages'),
+        'error',
+      )
+      return
     }
     const updates = new Map<string, string[]>()
 
@@ -98,7 +110,13 @@ export default function BulkActionBar({
   }
 
   const isSelected = scope === 'selected'
-  const opDisabled = isSelected && selectedKeys.length === 0
+  const opDisabled =
+    (isSelected && selectedKeys.length === 0) ||
+    (scope === 'filtered' && filteredKeys.length === 0) ||
+    (scope === 'all' && cache.size === 0)
+  const filteredScopeLabel = filterTag
+    ? t('bulkAction.scopeFiltered', { n: filteredCount })
+    : t('bulkAction.scopeCurrentList', { n: filteredCount })
 
   return (
     <div className="rounded-md border border-subtle bg-surface px-3 py-2 flex flex-col gap-1.5 text-xs shrink-0">
@@ -150,7 +168,8 @@ export default function BulkActionBar({
           style={{ fontSize: 'var(--t-xs)', padding: '2px 8px' }}
         >
           <option value="selected">{t('bulkAction.scopeSelected', { n: selectedKeys.length })}</option>
-          <option value="all">{t('bulkAction.scopeAll')}</option>
+          <option value="filtered" disabled={filteredCount === 0}>{filteredScopeLabel}</option>
+          <option value="all">{t('bulkAction.scopeAllCount', { n: totalCount })}</option>
         </select>
 
         <span className="text-dim">|</span>

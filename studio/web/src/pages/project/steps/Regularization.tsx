@@ -14,7 +14,7 @@ import {
   type Task,
   type Version,
 } from '../../../api/client'
-import ImageGrid from '../../../components/ImageGrid'
+import ImageGrid, { applySelection } from '../../../components/ImageGrid'
 import ImagePreviewModal from '../../../components/ImagePreviewModal'
 import JobProgress from '../../../components/JobProgress'
 import StepShell from '../../../components/StepShell'
@@ -1080,23 +1080,35 @@ function RegPreview({
       }),
     [reg.files, pid, vid]
   )
+  const names = useMemo(() => items.map((it) => it.name), [items])
   const indexByName = useMemo(() => {
     const m = new Map<string, number>()
     items.forEach((it, i) => m.set(it.name, i))
     return m
   }, [items])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const openByName = (name: string) => {
+    const i = indexByName.get(name)
+    if (i !== undefined) onPick(i)
+  }
   return (
     <section className="rounded-md border border-subtle bg-surface p-2 flex-1 min-h-0 overflow-y-auto">
       <p className="text-2xs text-fg-tertiary px-1 pb-1 m-0">
         {t('reg.regPreviewTitle', { n: reg.image_count })}
+        {selected.size > 0 && <span className="text-accent">{t('reg.regPreviewSelected', { n: selected.size })}</span>}
       </p>
       <ImageGrid
         items={items}
-        selected={new Set()}
-        onSelect={(name) => {
-          const i = indexByName.get(name)
-          if (i !== undefined) onPick(i)
+        selected={selected}
+        onSelect={(name, e) => {
+          const r = applySelection(selected, name, e, names, anchor)
+          setSelected(r.next)
+          setAnchor(r.anchor)
         }}
+        onActivate={openByName}
+        onPreview={openByName}
+        clickMode="activate"
         ariaLabel="reg-preview"
       />
     </section>

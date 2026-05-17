@@ -136,19 +136,6 @@ export default function QueuePage() {
   // 切换时 hook 自动清状态 + 重拉 /api/state 冷启动；不需要本组件再写清理逻辑。
   const { state: monitor } = useMonitorProgress(runningTaskId)
 
-  const clearDone = async () => {
-    const done = tasks.filter((t) => t.status === 'done')
-    if (done.length === 0) { toast(t('queue.noDone'), 'success'); return }
-    if (!(await confirm(t('queue.confirmClearDone', { n: done.length }), { tone: 'danger', okText: t('common.delete') }))) return
-    setBusy(true)
-    try {
-      for (const task of done) await api.deleteTask(task.id)
-      toast(t('queue.cleared', { n: done.length }), 'success')
-      await reload()
-    } catch (e) { toast(String(e), 'error') }
-    finally { setBusy(false) }
-  }
-
   const sorted = useMemo(() => [...tasks].sort((a, b) => b.id - a.id), [tasks])
 
   const prevCount = useCallback((taskId: number): number => {
@@ -200,7 +187,6 @@ export default function QueuePage() {
       subtitle={t('queue.description')}
       actions={
         <>
-          <button onClick={clearDone} disabled={busy} className="btn btn-ghost btn-sm">{t('queue.clearDone')}</button>
           {hasRunning && (
             <button
               onClick={() => void cancelRunning()}

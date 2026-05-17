@@ -85,7 +85,7 @@ export default function ProjectLayout() {
     if (!projectRef.current) return
     const v = projectRef.current.versions.find((x) => x.id === vid)
     if (!v) return
-    if (!(await confirm(t('layout.deleteVersionConfirm', { label: v.label }), { tone: 'warn', okText: t('layout.deleteVersionOk') }))) return
+    if (!(await confirm(t('layout.deleteVersionConfirm', { label: v.label }), { tone: 'danger', okText: t('layout.deleteVersionOk') }))) return
     const pid = projectRef.current.id
     try {
       await api.deleteVersion(pid, vid)
