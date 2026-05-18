@@ -40,6 +40,8 @@ export interface SchemaProperty {
    * 表达式语法与 show_when 一致：`key==value` / `key!=value`。
    * 例：lr_scheduler 在 optimizer_type=prodigy_plus_schedulefree 时被 disable。 */
   disable_when?: string
+  /** disable_when 触发时写回的值；缺省回退到 default。 */
+  disable_value?: unknown
   /** disable_when 触发时显示的提示徽章文本。 */
   disable_hint?: string
   /** 条件说明文字：当 alt_description_when 表达式为真时，替换 description 显示。 */
@@ -346,9 +348,13 @@ export interface GenerateSecretsConfig {
   attention_backend: AttentionBackend
 }
 
-/** 系统级偏好（ADR 0002 / PR-D）。show_dev_channel 开启后 Settings 暴露 dev
- *  通道按钮（手动检查 / 更新到 dev）；自动检查 + Topbar badge 仍然只看 master。 */
+/** 系统级偏好（ADR 0002 / 0005）。update_channel 是用户视图偏好（"stable" /
+ *  "dev"），与 git 工作树状态解耦：toggle 切换不触发 git 操作，仅改 UI 展示
+ *  的通道；真正"切到 dev HEAD" / "更新到 vX.Y.Z" 是单独按钮。
+ *  show_dev_channel 是 deprecated 字段（pydantic 兼容），新代码用 update_channel。 */
 export interface SystemPrefsConfig {
+  update_channel: 'stable' | 'dev'
+  /** @deprecated use update_channel */
   show_dev_channel: boolean
 }
 
@@ -598,7 +604,10 @@ export interface UploadResult {
 
 // ---- preprocess (放大第一阶段) ---------------------------------------------
 
-/** preprocess/ 目录下的已处理产物（含来源元数据，sidecar 缺失时多个字段为 null）。 */
+/** 已处理图：manifest 里 kind=processed 的 entry 拼上磁盘 stat。
+ *
+ *  ADR 0004 之后状态走 `preprocess/manifest.json` 单文件（无 per-image sidecar），
+ *  manifest 缺字段时 source/model/... 为 null（兼容迁移自老 sidecar 的旧 entry）。 */
 export interface PreprocessedItem {
   name: string
   mtime: number
@@ -606,17 +615,18 @@ export interface PreprocessedItem {
   source: string | null
   model: string | null
   scale: number | null
-  /** 'resize' | 'upscale' | 'upscale+resize'，sidecar 缺失或老数据时为 null。 */
+  /** 'resize' | 'upscale' | 'upscale+resize'，老 entry 可能为 null。 */
   action: string | null
   /** 目标像素面积；null = 关闭智能模式（老路径 4×）。 */
   target_area: number | null
   src_size: [number, number] | null
   dst_size: [number, number] | null
   elapsed_seconds: number | null
+  /** 源图（download/{source}）已被删 → orphan=true。 */
   orphan: boolean
 }
 
-/** download/ 里存在但 preprocess/ 还没产物的待处理图。 */
+/** 未处理图：download/ 存在、manifest 没记的图（隐式 original）。 */
 export interface PreprocessPendingItem {
   name: string
   mtime: number
@@ -636,11 +646,8 @@ export interface CurationItem {
 }
 
 export interface CurationView {
-  left: CurationItem[] // download − train，或 preprocess − train
+  left: CurationItem[] // download − train
   right: Record<string, CurationItem[]> // folder → items
-  /** 左侧实际源：preprocess/ 有产物时为 'preprocess'，否则 'download'。
-   *  老后端没这字段时前端按 'download' 处理。 */
-  left_source?: 'preprocess' | 'download'
   download_total: number
   train_total: number
   folders: string[]
@@ -765,6 +772,11 @@ export interface VersionConfigResponse {
   config: ConfigData | null
   /** 服务端强制覆盖的项目特定字段（前端表单应 disabled 这些） */
   project_specific_fields: string[]
+  /** fork preset 时后端将注入的项目预填值（项目路径 + 全局模型路径 + reg
+   * 检测）。新建预设预览表单用它显示「保存后会得到的值」。无论 has_config
+   * 与否都返回 —— 新建预设可以在 version 已有 config 的状态下被点（覆盖
+   * 当前预设），所以这个 hint 跟 has_config 状态无关。 */
+  project_specific_defaults?: ConfigData
 }
 
 export interface RegBuildRequest {
@@ -1120,6 +1132,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ new_name: newName }),
     }),
+  /** 端到端文件上传：把 .yaml/.yml/.json 文件给后端 yaml + pydantic 校验，
+   *  返回 config + suggested_name，前端走 draftSeed flow 让用户改名 + 编辑后保存。
+   *  绕过 req() 的 JSON header，让浏览器自加 multipart boundary。 */
+  importPreset: async (file: File): Promise<{ config: ConfigData; suggested_name: string }> => {
+    const fd = new FormData()
+    fd.append('file', file, file.name)
+    const resp = await fetch('/api/presets/import', { method: 'POST', body: fd })
+    if (!resp.ok) {
+      let detail = `${resp.status} ${resp.statusText}`
+      try {
+        const body = await resp.json()
+        if (body?.detail) detail = body.detail
+      } catch { /* ignore */ }
+      throw new Error(detail)
+    }
+    return (await resp.json()) as { config: ConfigData; suggested_name: string }
+  },
 
   // 兼容别名：PP0 之前叫 listConfigs / getConfig / ...。保留一段时间。
   listConfigs: () =>
@@ -1217,8 +1246,6 @@ export const api = {
     }),
   deleteProject: (pid: number) =>
     req<{ deleted: number }>(`/api/projects/${pid}`, { method: 'DELETE' }),
-  emptyTrash: () =>
-    req<{ removed: number }>('/api/projects/_trash/empty', { method: 'POST' }),
 
   listVersions: (pid: number) =>
     req<{ items: Version[] }>(`/api/projects/${pid}/versions`).then(
@@ -1360,13 +1387,13 @@ export const api = {
       pending: PreprocessPendingItem[]
       summary: { download_count: number; processed_count: number; pending_count: number }
     }>(`/api/projects/${pid}/preprocess/files`),
-  deletePreprocessFiles: (pid: number, names: string[]) =>
-    req<{ deleted: string[]; missing: string[] }>(
-      `/api/projects/${pid}/preprocess/files/delete`,
+  /** 还原指定产物：删 manifest entry + 删 preprocess/{name} PNG。
+   *  还原后图回到「未处理」（隐式 original）。ADR 0004。 */
+  restorePreprocessFiles: (pid: number, names: string[]) =>
+    req<{ restored: string[]; missing: string[] }>(
+      `/api/projects/${pid}/preprocess/files/restore`,
       { method: 'POST', body: JSON.stringify({ names }) },
     ),
-  preprocessThumbUrl: (pid: number, name: string, size = 256) =>
-    `/api/projects/${pid}/preprocess/thumb?name=${encodeURIComponent(name)}&size=${size}`,
 
   getJob: (jid: number) => req<Job>(`/api/jobs/${jid}`),
   getJobLog: (jid: number, tail?: number) => {
@@ -1838,6 +1865,14 @@ export const api = {
   // target 接受任意 git ref（tag / branch / commit sha）。
   getPreflight: (target: string) =>
     req<PreflightResult>(`/api/system/preflight?target=${encodeURIComponent(target)}`),
+
+  // 0.8.1 hotfix — zip 安装用户一键初始化 git 仓库。幂等：已是 git 仓库
+  // 直接返 ok=true + already_initialized=true。失败 500 + detail.error。
+  initGitRepo: () =>
+    req<{ ok: boolean; already_initialized: boolean; anchor?: string; anchor_kind?: string }>(
+      '/api/system/init_git',
+      { method: 'POST' },
+    ),
 }
 
 export interface SystemVersion {
@@ -1845,20 +1880,50 @@ export interface SystemVersion {
   commit: string
   commit_short: string
   commit_time_iso: string
+  /** @deprecated UI 用 installed_kind / installed_label；branch 仅 debug */
   branch: string
   tag: string | null
   is_dirty: boolean
+  /** 产品视角的"装了什么"分类（ADR 0005）。
+   *  - stable：HEAD 命中 vX.Y.Z release tag，或 __version__ 匹某 release tag 且 tree 一致
+   *  - dev：commit == origin/dev HEAD
+   *  - custom：feature branch / detached / 未识别 commit
+   *  - zip：REPO_ROOT/.git 缺失（zip 解压用户，0.8.1 hotfix） */
+  installed_kind: 'stable' | 'dev' | 'custom' | 'zip'
+  /** 用户可读 label，如 "v0.8.0" / "dev @ f6f202b · 2026-05-16" / "自定义（feat/foo @ a1b2c3d）"。
+   *  dirty 时追加 "· 未提交修改" */
+  installed_label: string
+  /** "vX.Y.Z" 形式，仅 installed_kind=stable 时填；前端做版本号比对用 */
+  stable_version: string | null
+  /** False = zip 安装 / 没有 origin remote。前端显示 init banner 时用（0.8.1 hotfix） */
+  is_git_repo: boolean
+  /** False = git binary 不在 PATH。zip 用户 + 没装 git → 显示"先装 git"提示而非 init 按钮 */
+  git_available: boolean
 }
 
 export interface SystemUpdateCheck {
   channel: 'master' | 'dev'
   current_commit: string
   latest_commit: string
+  /** @deprecated 前端用 behind_count；commits_ahead 是 git 词汇 */
   commits_ahead: number
+  /** @deprecated 前端用 state；has_update = (state === 'update_available') */
   has_update: boolean
   latest_tag: string | null
   checked_at: number
   error: string | null
+  /** 状态机（ADR 0005）。
+   *  - up_to_date：已是最新（版本号 / commit 一致）
+   *  - update_available：远端有更新
+   *  - ahead：本地领先远端（罕见，常见于回滚后又抢跑）
+   *  - detached：当前 commit 不在 channel 历史上（feature branch / 离群） */
+  state: 'up_to_date' | 'update_available' | 'ahead' | 'detached'
+  /** 当前装的稳定版（master 通道）："vX.Y.Z" / null（没装 stable） */
+  installed_version: string | null
+  /** 远端最新稳定版（master 通道）："vX.Y.Z" / null（远端没 tag / dev 通道） */
+  latest_version: string | null
+  /** 前端文案"N 项更新"用（= commits_ahead，但语义更清楚） */
+  behind_count: number
 }
 
 /** PR-C — 最近一次 update 的结构化结果。

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, type Task, type TaskStatus } from '../api/client'
 import StepShell from '../components/StepShell'
@@ -15,7 +16,7 @@ async function downloadJson(filename: string, data: unknown) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-async function pickJsonFile(): Promise<unknown | null> {
+async function pickJsonFile(jsonErrorMsg: string): Promise<unknown | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input')
     input.type = 'file'; input.accept = '.json,application/json'
@@ -23,21 +24,13 @@ async function pickJsonFile(): Promise<unknown | null> {
       const f = input.files?.[0]
       if (!f) { resolve(null); return }
       try { resolve(JSON.parse(await f.text())) }
-      catch { reject(new Error('JSON 解析失败')) }
+      catch { reject(new Error(jsonErrorMsg)) }
     }
     input.click()
   })
 }
 
 type TaskKind = 'train' | 'tag' | 'reg' | 'download' | 'curate' | 'unknown'
-
-const STATUS_LABEL: Record<TaskStatus, string> = {
-  pending:   '排队中',
-  running:   '运行中',
-  done:      '已完成',
-  failed:    '失败',
-  canceled:  '已取消',
-}
 
 const STATUS_TONE: Record<TaskStatus, string> = {
   pending:   'neutral',
@@ -55,10 +48,6 @@ function inferKind(task: Task): TaskKind {
   if (n.includes('download') || n.includes('booru')) return 'download'
   if (n.includes('curate') || n.includes('filter')) return 'curate'
   return 'unknown'
-}
-
-const KIND_LABEL: Record<TaskKind, string> = {
-  train: '训练', tag: '打标', reg: '正则', download: '下载', curate: '筛选', unknown: '任务',
 }
 
 function fmtAgo(ts: number): string {
@@ -86,6 +75,7 @@ function fmtDurationShort(ms: number): string {
 }
 
 export default function QueuePage() {
+  const { t } = useTranslation()
   const [tasks, setTasks] = useState<Task[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -94,6 +84,19 @@ export default function QueuePage() {
   const { toast } = useToast()
   const { confirm } = useDialog()
   const navigate = useNavigate()
+
+  const STATUS_LABEL: Record<TaskStatus, string> = {
+    pending:   t('status.queued'),
+    running:   t('status.running'),
+    done:      t('status.done'),
+    failed:    t('status.failed'),
+    canceled:  t('status.canceled'),
+  }
+
+  const KIND_LABEL: Record<TaskKind, string> = {
+    train: t('nav.train'), tag: t('nav.tag'), reg: t('nav.reg'),
+    download: t('nav.download'), curate: t('nav.curate'), unknown: t('monitor.taskLabel'),
+  }
   const reload = useCallback(async () => {
     try { setTasks(await api.listQueue()); setError(null) }
     catch (e) { setError(String(e)) }
@@ -133,19 +136,6 @@ export default function QueuePage() {
   // 切换时 hook 自动清状态 + 重拉 /api/state 冷启动；不需要本组件再写清理逻辑。
   const { state: monitor } = useMonitorProgress(runningTaskId)
 
-  const clearDone = async () => {
-    const done = tasks.filter((t) => t.status === 'done')
-    if (done.length === 0) { toast('没有已完成的任务', 'success'); return }
-    if (!(await confirm(`删除 ${done.length} 个已完成任务？`, { tone: 'danger', okText: '删除' }))) return
-    setBusy(true)
-    try {
-      for (const t of done) await api.deleteTask(t.id)
-      toast(`已清理 ${done.length} 个任务`, 'success')
-      await reload()
-    } catch (e) { toast(String(e), 'error') }
-    finally { setBusy(false) }
-  }
-
   const sorted = useMemo(() => [...tasks].sort((a, b) => b.id - a.id), [tasks])
 
   const prevCount = useCallback((taskId: number): number => {
@@ -175,13 +165,13 @@ export default function QueuePage() {
     if (!runningTask) return
     const ok = await confirm(
       `取消当前任务 #${runningTask.id}？任务会在安全点停止，且无法恢复（重启训练会从 0 开始）。`,
-      { tone: 'warn', okText: '取消任务' },
+      { tone: 'warn', okText: t('queue.cancelCurrent') },
     )
     if (!ok) return
     setBusy(true)
     try {
       await api.cancelTask(runningTask.id)
-      toast('已发送取消信号', 'success')
+      toast(t('queueDetail.cancelSent'), 'success')
       await reload()
     } catch (e) {
       toast(String(e), 'error')
@@ -193,19 +183,18 @@ export default function QueuePage() {
   return (
     <StepShell
       idx={-1}
-      title="队列"
-      subtitle="同一时刻仅运行一个任务 · 完成后自动启动下一个"
+      title={t('queue.title')}
+      subtitle={t('queue.description')}
       actions={
         <>
-          <button onClick={clearDone} disabled={busy} className="btn btn-ghost btn-sm">清理已完成</button>
           {hasRunning && (
             <button
               onClick={() => void cancelRunning()}
               disabled={busy}
               className="btn btn-secondary btn-sm text-warn border-warn"
-              title="发送取消信号，让当前运行任务停止"
+              title={t('queue.cancelHint')}
             >
-              取消当前任务
+              {t('queue.cancelCurrent')}
             </button>
           )}
           <button
@@ -215,25 +204,26 @@ export default function QueuePage() {
               catch (e) { setError(String(e)) }
             }}
             className="btn btn-ghost btn-sm"
-          >导出</button>
+          >{t('common.export')}</button>
           <button
             disabled={busy}
             onClick={async () => {
               let payload: unknown
-              try { payload = await pickJsonFile() }
+              try { payload = await pickJsonFile(t('queue.jsonError')) }
               catch (e) { toast(String(e), 'error'); return }
               if (!payload) return
               setBusy(true)
               try {
                 const r = await api.importQueue(payload)
-                toast(`已导入 ${r.imported_count} 个任务${Object.keys(r.renamed).length ? `（${Object.keys(r.renamed).length} 个改名）` : ''}`, 'success')
+                const renamedCount = Object.keys(r.renamed).length
+                toast(t('queue.imported', { n: r.imported_count, renamed: renamedCount ? `（${renamedCount} 个改名）` : '' }), 'success')
                 await reload()
               } catch (e) { setError(String(e)) }
               finally { setBusy(false) }
             }}
             className="btn btn-ghost btn-sm"
-          >导入</button>
-          <button onClick={() => void reload()} className="btn btn-ghost btn-sm">刷新</button>
+          >{t('common.import')}</button>
+          <button onClick={() => void reload()} className="btn btn-ghost btn-sm">{t('common.refresh')}</button>
         </>
       }
     >
@@ -266,86 +256,80 @@ export default function QueuePage() {
         ) : tasks.length === 0 ? (
           <div className="rounded-lg border border-subtle bg-surface py-12 text-center">
             <div className="text-md font-semibold text-fg-secondary mb-1.5">
-              队列为空
+              {t('queue.empty')}
             </div>
             <div className="text-sm text-fg-tertiary">
-              从项目训练页入队任务即可
+              {t('queue.emptyHint')}
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {sorted.map((t) => {
-              const isRunning = t.status === 'running'
-              const isTerminal = ['done', 'failed', 'canceled'].includes(t.status)
-              const hasProject = !!(t.project_id && t.version_id)
-              const kind = inferKind(t)
-              const eta = estimateEta(t)
-              const tone = STATUS_TONE[t.status]
+            {sorted.map((task) => {
+              const isRunning = task.status === 'running'
+              const isTerminal = ['done', 'failed', 'canceled'].includes(task.status)
+              const hasProject = !!(task.project_id && task.version_id)
+              const kind = inferKind(task)
+              const eta = estimateEta(task)
+              const tone = STATUS_TONE[task.status]
 
               return (
                 <button
-                  key={t.id}
-                  onClick={() => navigate(`/queue/${t.id}`)}
+                  key={task.id}
+                  onClick={() => navigate(`/queue/${task.id}`)}
                   className={`card card-hover block overflow-hidden text-left p-0 ${isRunning ? 'cursor-pointer border border-accent bg-accent-soft' : 'cursor-default border border-subtle bg-surface'}`}
                 >
                   <div
                     className="px-[22px] py-4 grid gap-4 items-center"
                     style={{ gridTemplateColumns: '60px 1fr 110px 1fr 160px' }}
                   >
-                    {/* #ID */}
                     <span className={`font-mono text-sm ${isRunning ? 'text-accent font-semibold' : 'text-fg-tertiary font-normal'}`}>
-                      #{t.id}
+                      #{task.id}
                     </span>
 
-                    {/* 名称 + 种类 */}
                     <div style={{ minWidth: 0 }}>
                       <div className="font-semibold text-fg-primary text-sm overflow-hidden text-ellipsis whitespace-nowrap">
-                        {t.name}
+                        {task.name}
                       </div>
                       <div className="font-mono text-xs text-fg-tertiary mt-0.5 flex items-center gap-1.5">
                         <span>{KIND_LABEL[kind]}</span>
-                        <span>{t.config_name}</span>
+                        <span>{task.config_name}</span>
                         {hasProject && (
                           <Link
-                            to={`/projects/${t.project_id}/v/${t.version_id}/train`}
+                            to={`/projects/${task.project_id}/v/${task.version_id}/train`}
                             onClick={(e) => e.stopPropagation()}
                             className="text-accent text-xs no-underline hover:underline shrink-0"
                           >
-                            项目
+                            {t('queue.project')}
                           </Link>
                         )}
                       </div>
                     </div>
 
-                    {/* 状态 */}
                     <span className={`badge badge-${tone} text-xs text-center`}>
                       {isRunning && <span className="dot dot-running" />}
-                      {STATUS_LABEL[t.status]}
+                      {STATUS_LABEL[task.status]}
                     </span>
 
-                    {/* 进度 / 报错 */}
                     <div className="text-sm text-fg-secondary" style={{ minWidth: 0 }}>
                       {isRunning ? (
                         <div className="flex flex-col gap-0.5">
                           <span className="font-mono text-fg-tertiary text-xs">
                             {(() => {
-                              // monitor 在这一行任务上有 step/total → 显示 step；
-                              // 否则 fallback 时长（采样阶段或非训练任务）。
                               if (
-                                t.id === runningTaskId &&
+                                task.id === runningTaskId &&
                                 monitor?.step != null &&
                                 monitor.total_steps != null &&
                                 monitor.total_steps > 0
                               ) {
                                 return `step ${monitor.step.toLocaleString()} / ${monitor.total_steps.toLocaleString()}`
                               }
-                              return fmtDuration(t.started_at, null)
+                              return fmtDuration(task.started_at, null)
                             })()}
                           </span>
                           <div className="h-1 bg-overlay rounded-sm overflow-hidden">
                             {(() => {
                               const haveSteps =
-                                t.id === runningTaskId &&
+                                task.id === runningTaskId &&
                                 monitor?.step != null &&
                                 monitor.total_steps != null &&
                                 monitor.total_steps > 0
@@ -356,41 +340,38 @@ export default function QueuePage() {
                                 )
                                 return <div className="h-full bg-accent rounded-sm" style={{ width: `${pct}%` }} />
                               }
-                              // 没拿到 step（采样 baseline / 非训练 / 还没起来）→ 显示
-                              // 不定进度的细动画条，不假装百分比。
                               return <div className="h-full bg-accent/40 rounded-sm animate-pulse" style={{ width: '20%' }} />
                             })()}
                           </div>
                         </div>
-                      ) : t.error_msg ? (
+                      ) : task.error_msg ? (
                         <span className="text-err overflow-hidden text-ellipsis whitespace-nowrap block text-xs">
-                          {t.error_msg}
+                          {task.error_msg}
                         </span>
                       ) : isTerminal ? (
                         <span className="font-mono text-fg-tertiary text-xs">
-                          用时 {fmtDuration(t.started_at, t.finished_at)}
+                          {t('queue.duration', { time: fmtDuration(task.started_at, task.finished_at) })}
                         </span>
                       ) : (
                         <span className="text-fg-tertiary text-xs">—</span>
                       )}
                     </div>
 
-                    {/* ETA / 时间 */}
                     <span className="font-mono text-sm text-fg-tertiary text-right">
                       {isRunning ? (
                         <>
                           {eta && <span className="text-accent">{eta}</span>}
                           {eta && <br />}
-                          <span className="text-xs">{fmtAgo(t.started_at!)} 开始</span>
+                          <span className="text-xs">{fmtAgo(task.started_at!)} 开始</span>
                         </>
-                      ) : t.finished_at ? (
+                      ) : task.finished_at ? (
                         <>
-                          <span>{fmtAgo(t.finished_at)}</span>
+                          <span>{fmtAgo(task.finished_at)}</span>
                           <br />
-                          <span className="text-xs text-fg-tertiary">完成</span>
+                          <span className="text-xs text-fg-tertiary">{t('status.done')}</span>
                         </>
                       ) : (
-                        <span>前面 {prevCount(t.id)} 个</span>
+                        <span>{t('queue.ahead', { n: prevCount(task.id) })}</span>
                       )}
                     </span>
                   </div>

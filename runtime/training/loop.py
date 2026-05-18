@@ -119,12 +119,17 @@ def run(ctx: TrainingContext) -> None:
                     ctx.model, noisy, t.view(-1, 1), cross, pad_mask,
                     use_checkpoint=args.grad_checkpoint,
                 )
-                loss_per_sample = F.mse_loss(pred.float(), target.float(), reduction="none")
-                # 自适应采样器（如 InfoNoise）记录原始 per-sample MSE（加权前）；
+                # 训练 loss 通过 losses/ plugin registry 派发（mse / huber / ...）
+                loss_per_sample = ctx.loss_fn.compute(pred.float(), target.float(), t)
+                # 自适应采样器（如 InfoNoise）记录原始 per-sample MSE（不受 huber/loss_weighting 等
+                # 加工影响）；跟训练 loss 解耦保证 InfoNoise 论文一致性。
                 # baseline 采样器是 no-op，无需 if 守卫。
-                _raw_mse = loss_per_sample.detach().mean(
-                    dim=list(range(1, loss_per_sample.dim()))
-                )
+                # 用 no_grad 避免构造 autograd 元数据（比 .detach() 少一份 grad_fn 开销）。
+                with torch.no_grad():
+                    _raw_mse_per_sample = F.mse_loss(pred.float(), target.float(), reduction="none")
+                    _raw_mse = _raw_mse_per_sample.mean(
+                        dim=list(range(1, _raw_mse_per_sample.dim()))
+                    )
                 ctx.timestep_sampler.record(t.detach(), _raw_mse)
                 # 按样本加权（正则集可降低权重）
                 if "loss_weight" in batch:
@@ -138,6 +143,8 @@ def run(ctx: TrainingContext) -> None:
                         scheme=lw_scheme,
                         min_snr_gamma=float(getattr(args, "min_snr_gamma", 5.0) or 5.0),
                         weight_cap_ratio=float(getattr(args, "weight_cap_ratio", 0.0) or 0.0),
+                        detail_inv_t_min=float(getattr(args, "detail_inv_t_min", 1.0) or 1.0),
+                        detail_inv_t_max=float(getattr(args, "detail_inv_t_max", 5.0) or 5.0),
                     ).to(device=ctx.device, dtype=torch.float32)
                     loss_per_sample = loss_per_sample * lw.view(-1, *([1] * (loss_per_sample.dim() - 1)))
                 loss = loss_per_sample.mean()

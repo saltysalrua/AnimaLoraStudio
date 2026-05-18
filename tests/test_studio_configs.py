@@ -51,6 +51,15 @@ def test_schema_is_complete() -> None:
     assert "prodigy_plus_schedulefree" in getattr(optimizer_annotation, "__args__", ())
 
 
+def test_lokr_rank_allows_full_dimension_trigger() -> None:
+    payload = TrainingConfig().model_dump(mode="python")
+    payload["lora_type"] = "lokr"
+    payload["lora_rank"] = 50000
+    cfg = TrainingConfig.model_validate(payload)
+    assert cfg.lora_rank == 50000
+    assert "maximum" not in TrainingConfig.model_json_schema()["properties"]["lora_rank"]
+
+
 def test_schema_endpoint_returns_groups(client: TestClient) -> None:
     resp = client.get("/api/schema")
     assert resp.status_code == 200
@@ -99,6 +108,15 @@ def test_ppsf_accepts_none_scheduler() -> None:
     payload["lr_scheduler"] = "none"
     cfg = TrainingConfig.model_validate(payload)
     assert cfg.optimizer_type == "prodigy_plus_schedulefree"
+
+
+def test_prodigy_rejects_non_none_scheduler() -> None:
+    """普通 Prodigy 也固定常数学习率，不允许外部 scheduler。"""
+    payload = TrainingConfig().model_dump(mode="python")
+    payload["optimizer_type"] = "prodigy"
+    payload["lr_scheduler"] = "cosine"
+    with pytest.raises(Exception):
+        TrainingConfig.model_validate(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +183,95 @@ def test_yaml_on_disk_is_human_readable(client: TestClient, presets_dir: Path) -
     assert not text.startswith("{")
     parsed = yaml.safe_load(text)
     assert parsed["lora_type"] == "lokr"
+
+
+# ---------------------------------------------------------------------------
+# 端到端文件 I/O: /api/presets/{name}/download + /api/presets/import
+# ---------------------------------------------------------------------------
+
+
+def test_download_returns_raw_yaml(client: TestClient, presets_dir: Path) -> None:
+    """下载端点字节级一致：磁盘上 yaml 文件原封不动透传给客户端。"""
+    client.put("/api/presets/dl", json=_payload())
+    on_disk = (presets_dir / "dl.yaml").read_bytes()
+
+    resp = client.get("/api/presets/dl/download")
+    assert resp.status_code == 200
+    assert resp.content == on_disk
+    assert resp.headers["content-type"].startswith("application/yaml")
+    assert 'filename="dl.yaml"' in resp.headers["content-disposition"]
+
+
+def test_download_missing(client: TestClient) -> None:
+    assert client.get("/api/presets/ghost/download").status_code == 404
+
+
+def test_download_invalid_name(client: TestClient) -> None:
+    assert client.get("/api/presets/has..dot/download").status_code in (400, 422)
+
+
+def test_import_yaml_roundtrip(client: TestClient, presets_dir: Path) -> None:
+    """上传 yaml → 拿回 config + suggested_name；不写盘。"""
+    payload = _payload()
+    payload["epochs"] = 9
+    yaml_bytes = yaml.safe_dump(payload, allow_unicode=True).encode("utf-8")
+
+    resp = client.post(
+        "/api/presets/import",
+        files={"file": ("my-run.yaml", yaml_bytes, "application/yaml")},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["config"]["epochs"] == 9
+    assert body["suggested_name"] == "my-run"
+    # 不写盘：磁盘上不该多出 my-run.yaml
+    assert not (presets_dir / "my-run.yaml").exists()
+
+
+def test_import_json_also_works(client: TestClient) -> None:
+    """yaml.safe_load 是 JSON superset，旧的 .json 导出也能直接 import。"""
+    import json as json_mod
+    payload = _payload()
+    payload["epochs"] = 3
+    resp = client.post(
+        "/api/presets/import",
+        files={"file": ("legacy.json", json_mod.dumps(payload).encode(), "application/json")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["epochs"] == 3
+
+
+def test_import_rejects_unknown_field(client: TestClient) -> None:
+    bad = _payload()
+    bad["nonexistent_field"] = 123
+    yaml_bytes = yaml.safe_dump(bad).encode("utf-8")
+    resp = client.post(
+        "/api/presets/import",
+        files={"file": ("bad.yaml", yaml_bytes, "application/yaml")},
+    )
+    assert resp.status_code == 422
+
+
+def test_import_rejects_malformed_yaml(client: TestClient) -> None:
+    resp = client.post(
+        "/api/presets/import",
+        files={"file": ("trash.yaml", b"this: : not yaml\n  invalid", "application/yaml")},
+    )
+    assert resp.status_code in (400, 422)
+
+
+def test_import_sanitizes_suggested_name(client: TestClient) -> None:
+    """文件名带空格 / 中文 / 特殊字符 → suggested_name 走 [A-Za-z0-9_-] 白名单。"""
+    yaml_bytes = yaml.safe_dump(_payload()).encode("utf-8")
+    resp = client.post(
+        "/api/presets/import",
+        files={"file": ("我的 preset (v2).yaml", yaml_bytes, "application/yaml")},
+    )
+    assert resp.status_code == 200
+    suggested = resp.json()["suggested_name"]
+    # 白名单：[A-Za-z0-9_-]+，非匹配字符压成 '-'，首尾 strip
+    assert all(c.isalnum() or c in "_-" for c in suggested)
+    assert "v2" in suggested
 
 
 # ---------------------------------------------------------------------------

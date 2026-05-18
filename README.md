@@ -1,6 +1,6 @@
 # AnimaLoraStudio
 
-[![Version](https://img.shields.io/badge/version-0.7.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.2-blue)](CHANGELOG.md)
 
 **端到端流水线**：从 Booru 抓图 → 筛选 → 打标 → 正则集 → 训练 → 出图测试，全流程在一个浏览器面板里推进。专为 [Anima](https://huggingface.co/circlestone-labs/Anima)（Cosmos DiT 二次元特调）训练优化。
 
@@ -15,6 +15,8 @@
 - **🔁 Preset 双向流** — version 私有 config 和全局 preset 池可 fork / save_as_preset，参数实验不污染基线
 - **🔄 webui 一键自更新**（v0.7 新）— Settings → 系统 → 版本卡片里 git pull + 重启 + 回滚全套，不用回命令行；master / dev 双通道并排，CHANGELOG 嵌入 + 4 项 pre-flight 检查（详见 [ADR 0002](docs/adr/0002-webui-self-update.md)）
 - **🧩 训练栈可扩展**（v0.7 新）— `runtime/training/` 子包 + 4 个 plugin registry（adapters / optimizers / schedulers / inference_samplers）+ `AdapterProtocol` hook（on_step_begin / regularization_loss / excludes_weight_decay）；加新变体走 3 步（写 build 函数 + 字典加行 + schema Literal）不动 phases / loop（详见 [ADR 0003](docs/adr/0003-anima-train-refactor.md) + [`runtime/training/README.md`](runtime/training/README.md)）
+- **🖼️ 图片预处理流水线**（v0.8 新）— 流水线插入「② 预处理」step：ESRGAN / Real-ESRGAN 等多放大器预设 + ModelScope/HF 双源、智能流水（大图直接 resize 跳过放大模型）、SSE 实时进度。单 manifest 单 grid + 状态徽章（详见 [ADR 0004](docs/adr/0004-preprocess-manifest.md)）
+- **🎲 InfoNoise 自适应训练**（v0.8 新）— 基于 I-MMSE 等价的反 CDF 时间步采样器，把抽样集中在信息量大的噪声窗口；走 `timestep_samplers/` plugin registry，默认关，存量训练零侵入
 
 ![Studio 训练页](docs/images/studio-train.png)
 
@@ -25,15 +27,16 @@
 
 ### Studio Web 工作台 (`studio/`)
 
-七步流水线 + 工具页：
+八步流水线 + 工具页：
 
 1. **下载** — Booru 抓取（Gelbooru / Danbooru，凭据进 Settings）+ 本地 jpg/png/zip 上传
-2. **筛选** — download / train 双面板，多选复制 / 移除，子文件夹管理
-3. **打标** — WD14 / **CLTagger**（v0.5 新，本地 ONNX）/ LLM（OpenAI compatible，含 JoyCaption / OpenAI / Anthropic 等 preset）三选；GPU EP 自动 fallback
-4. **标签编辑** — 缓存模式 + 还原点，批量加 / 删 / 替换
-5. **正则集** — Booru 反向搜（自动 WD14 打标 + AR 聚类）/ **AI 先验生成**（v0.5 新，无 LoRA）
-6. **训练** — preset 双向流，入队即开始；config 编辑 600ms debounce 自动落盘
-7. **测试出图**（v0.5 新）— 单图 / XY 矩阵 / 推理 daemon；prompt 可从训练集拉
+2. **预处理**（v0.8 新，可选）— 图片放大流水线：ESRGAN / Real-ESRGAN 等预设 + ModelScope/HF 双源 + SSE 实时进度
+3. **筛选** — download / train 双面板，多选复制 / 移除，子文件夹管理
+4. **打标** — WD14 / **CLTagger**（v0.5 新，本地 ONNX）/ LLM（OpenAI compatible，含 JoyCaption / OpenAI / Anthropic 等 preset）三选；GPU EP 自动 fallback
+5. **标签编辑** — 缓存模式 + 还原点，批量加 / 删 / 替换；批量范围支持「当前筛选」（v0.8 新）
+6. **正则集**（可选）— Booru 反向搜（自动 WD14 打标 + AR 聚类）/ **AI 先验生成**（v0.5 新，无 LoRA）
+7. **训练** — preset 双向流，入队即开始；config 编辑 600ms debounce 自动落盘；Simple / Advanced 模式（v0.8 新）
+8. **测试出图**（v0.5 新）— 单图 / XY 矩阵 / 推理 daemon；prompt 可从训练集拉
 
 通用组件：
 - 队列 / 任务详情（日志 / 监控 / 输出下载 / 全量 zip）
@@ -102,7 +105,9 @@ python -m studio test         # pytest + vitest
 
 打开后先去 **设置（Settings）→ Models**，点按钮一键下载训练所需的全部权重 + tokenizer。
 
-下载源默认走 `hf-mirror.com`（国内反代，社区维护）—— 国内用户开箱即用。海外用户去 **Settings → 训练 → HuggingFace → endpoint** 切换到 `huggingface.co` 官方源（更快直连），或粘贴自建反代 URL。CLI 用户可以在 `python tools/download_models.py` 加 `--no-mirror` / `--endpoint URL` 显式覆盖。
+下载源默认走 `huggingface.co` 官方。国内用户如果直连慢，可以去 **Settings → 训练 → HuggingFace → endpoint** 切到「自定义 URL」粘贴自建反代，或者切到 **Settings → 训练 → 下载源 → ModelScope**（魔搭社区直连，需 `pip install modelscope`）。CLI 用户用 `python tools/download_models.py --endpoint URL` 或 `--modelscope` 覆盖。
+
+> 注：`hf-mirror.com` preset 暂从 UI 隐藏 —— 该社区反代服务端最近的改动让所有 `huggingface_hub` 版本都拿不到 `commit_hash`，导致下载失败（细节见 `docs/todo/hf-mirror-recheck.md`）。endpoint 字段本身仍接受任意 URL，恢复后我们会把 preset 加回来。
 
 下载内容（默认落到 `./models/`）：
 
@@ -116,8 +121,9 @@ python -m studio test         # pytest + vitest
 也可以走 CLI（与 UI 共用同一份代码）：
 
 ```bash
-python tools/download_models.py                   # 全量下
-python tools/download_models.py --no-mirror       # 走 HF 官方源
+python tools/download_models.py                   # 全量下（HF 官方源）
+python tools/download_models.py --endpoint URL    # 走自建反代
+python tools/download_models.py --modelscope      # 走魔搭社区
 python tools/download_models.py --variant preview3-base
 python tools/download_models.py --skip-main --skip-vae
 python tools/download_models.py --output /data/anima
@@ -225,6 +231,10 @@ AnimaLoraStudio/
 - [docs/architecture/studio-pipeline.md](docs/architecture/studio-pipeline.md) — Studio 跨步骤架构总览
 - [studio/README.md](studio/README.md) — Studio 内部模块结构
 
+**协作公约**
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 流程 / 分支 / commit / PR / release
+- [docs/AGENTS.md](docs/AGENTS.md) — 代码质量约定与 AI agent 协作
+
 **历史决策**（[`docs/adr/`](docs/adr/)）
 - 记录「为什么选 X 而不选 Y」，已落地的不删
 
@@ -235,7 +245,7 @@ AnimaLoraStudio/
 
 ## 版本
 
-当前版本 **0.7.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
+当前版本 **0.8.2**（见 [CHANGELOG.md](CHANGELOG.md)）。
 
 版本号唯一来源是 `studio/__init__.py:__version__`：
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { api, type BrowseResult } from '../api/client'
 
 interface Props {
@@ -9,16 +10,13 @@ interface Props {
   onClose: () => void
 }
 
-/**
- * 模态目录浏览器：通过 /api/browse 拉条目，点目录进入，点文件（或当前目录）选中。
- * 仅允许 REPO_ROOT 下浏览（后端强制）。
- */
 export default function PathPicker({
   initialPath,
   dirOnly = false,
   onPick,
   onClose,
 }: Props) {
+  const { t } = useTranslation()
   const [data, setData] = useState<BrowseResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [path, setPath] = useState(initialPath ?? '')
@@ -48,27 +46,20 @@ export default function PathPicker({
         className="bg-elevated border border-dim rounded-lg shadow-xl w-[640px] max-h-[80vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <header className="px-4 py-3 border-b border-subtle flex items-center gap-2 shrink-0">
           <h3 className="m-0 text-sm font-semibold flex-1 text-fg-primary">
-            选择路径
+            {t('pathPicker.title')}
           </h3>
-          <button
-            onClick={onClose}
-            className="btn btn-ghost btn-sm"
-          >
-            ✕
-          </button>
+          <button onClick={onClose} className="btn btn-ghost btn-sm">✕</button>
         </header>
 
-        {/* Path bar */}
         <div className="px-3 py-2 border-b border-subtle flex items-center gap-1.5 shrink-0 bg-sunken">
           {data?.parent && (
             <button
               onClick={() => void load(data.parent!)}
               className="btn btn-ghost btn-sm shrink-0"
             >
-              ← 上级
+              {t('pathPicker.parent')}
             </button>
           )}
           <input
@@ -83,18 +74,16 @@ export default function PathPicker({
             onClick={() => void load(path)}
             className="btn btn-secondary btn-sm shrink-0"
           >
-            前往
+            {t('pathPicker.go')}
           </button>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="px-3.5 py-2 text-err text-xs font-mono bg-err-soft border-b border-err shrink-0">
             {error}
           </div>
         )}
 
-        {/* File list */}
         <div className="flex-1 overflow-y-auto">
           {data?.entries.map((e) => {
             const childPath =
@@ -120,7 +109,7 @@ export default function PathPicker({
                       onClick={() => void load(childPath)}
                       className="btn btn-ghost btn-sm"
                     >
-                      打开
+                      {t('common.open')}
                     </button>
                   )}
                   {selectable && (
@@ -128,7 +117,7 @@ export default function PathPicker({
                       onClick={() => onPick(childPath)}
                       className="btn btn-primary btn-sm"
                     >
-                      选这个
+                      {t('pathPicker.selectThis')}
                     </button>
                   )}
                 </div>
@@ -137,11 +126,10 @@ export default function PathPicker({
           })}
         </div>
 
-        {/* Footer */}
         <footer className="px-3.5 py-2.5 border-t border-subtle flex justify-end gap-2 shrink-0 bg-surface">
-          <button onClick={onClose} className="btn btn-secondary btn-sm">取消</button>
+          <button onClick={onClose} className="btn btn-secondary btn-sm">{t('common.cancel')}</button>
           <button onClick={() => onPick(path)} className="btn btn-primary btn-sm">
-            选择当前目录
+            {t('pathPicker.selectCurrentDir')}
           </button>
         </footer>
       </div>

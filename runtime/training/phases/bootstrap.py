@@ -33,11 +33,13 @@ def run(ctx: TrainingContext) -> None:
 
     # PR-C：启动期校验所有 plugin 子包 schema 一致性，避免运行半天才发现配错
     from training.adapters import validate_schema_consistency as _validate_adapters
+    from training.losses import validate_schema_consistency as _validate_losses
     from training.optimizers import validate_schema_consistency as _validate_optimizers
     from training.schedulers import validate_schema_consistency as _validate_schedulers
     _validate_adapters()
     _validate_optimizers()
     _validate_schedulers()
+    _validate_losses()
 
     # 加载 YAML 配置文件
     if args.config:
@@ -77,6 +79,12 @@ def run(ctx: TrainingContext) -> None:
     ctx.sample_dir = ctx.output_dir / "samples"
     ctx.sample_dir.mkdir(exist_ok=True)
     ctx.wandb_monitor = init_wandb_monitor(args, ctx.output_dir, ctx.config_path)
+
+    # Loss 函数（mse / huber；通过 losses/ plugin registry 派发）
+    # 不依赖 total_steps，跟 timestep_sampler/scheduler 不同；放 bootstrap 而非
+    # optimizer phase 避免架构错位。
+    from training.losses import build_loss
+    ctx.loss_fn = build_loss(args)
 
     # 训练监控状态写入（PP6.1）：永远开启，文件路径优先来自 --monitor-state-file，
     # 否则落到 output_dir/monitor_state.json。Studio 前端通过 /api/state?task_id=

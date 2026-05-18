@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SchemaResponse, ConfigData } from '../api/client'
-import { evalShowWhen } from '../lib/schema'
+import { evalShowWhen, schemaAltDescription, schemaDisableHint, schemaDescription, schemaGroupLabel } from '../lib/schema'
 import Field from './Field'
 
 interface Props {
@@ -25,6 +26,7 @@ interface Props {
 export default function SchemaForm({
   schema, values, onChange, disabledFields, disabledHints, autoHints, advancedMode = false,
 }: Props) {
+  const { t } = useTranslation()
   const disabledSet = new Set(disabledFields ?? [])
   const dHints = disabledHints ?? {}
   const aHints = autoHints ?? {}
@@ -40,6 +42,15 @@ export default function SchemaForm({
     onChange({ ...values, [name]: v })
 
   const props = schema.schema.properties
+  const isProdigyOptimizer = values.optimizer_type === 'prodigy' || values.optimizer_type === 'prodigy_plus_schedulefree'
+  const shouldDisableField = (name: string, prop: typeof props[string]) => {
+    if (name === 'lr_scheduler' && isProdigyOptimizer) return true
+    return !!prop.disable_when && evalShowWhen(prop.disable_when, values)
+  }
+  const takeoverValueForField = (name: string, prop: typeof props[string]) => {
+    if (name === 'lr_scheduler' && isProdigyOptimizer) return 'none'
+    return prop.disable_value ?? prop.default
+  }
 
   // disable_when 触发时把字段值强制回到 default。避免「切换 optimizer 到
   // prodigy_plus_schedulefree 之后 lr_scheduler 还停在 cosine，保存时被 pydantic
@@ -48,11 +59,10 @@ export default function SchemaForm({
     let nextValues = values
     let changed = false
     for (const [name, prop] of Object.entries(props)) {
-      if (!prop.disable_when) continue
-      if (!evalShowWhen(prop.disable_when, values)) continue
-      const def = prop.default
-      if (def !== undefined && values[name] !== def) {
-        nextValues = { ...nextValues, [name]: def }
+      if (!shouldDisableField(name, prop)) continue
+      const takeoverValue = takeoverValueForField(name, prop)
+      if (takeoverValue !== undefined && values[name] !== takeoverValue) {
+        nextValues = { ...nextValues, [name]: takeoverValue }
         changed = true
       }
     }
@@ -76,6 +86,7 @@ export default function SchemaForm({
   return (
     <div className="space-y-3">
       {schema.groups.map(({ key, label }) => {
+        const groupLabel = schemaGroupLabel(key, label, t)
         const fields = buckets.get(key) ?? []
         if (fields.length === 0) return null
         const isCollapsed = collapsed[key]
@@ -91,9 +102,9 @@ export default function SchemaForm({
               }
               className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-fg-primary bg-transparent border-none cursor-pointer"
             >
-              <span>{label}</span>
+              <span>{groupLabel}</span>
               <span className="text-fg-tertiary text-xs">
-                {fields.length} 项 {isCollapsed ? '▸' : '▾'}
+                {t('schema.fieldCount', { n: fields.length })} {isCollapsed ? '▸' : '▾'}
               </span>
             </button>
             {!isCollapsed && (
@@ -101,24 +112,21 @@ export default function SchemaForm({
                 {fields.map((name) => {
                   const prop = props[name]
                   if (!evalShowWhen(prop.show_when, values)) return null
-                  // disable_when（schema 驱动条件 disable，如 PPSF → lr_scheduler）
+                  // disable_when（schema 驱动条件 disable，如 Prodigy → lr_scheduler）
                   // 优先级低于全局 disabledFields（项目预填）。
-                  const conditionallyDisabled =
-                    !!prop.disable_when &&
-                    evalShowWhen(prop.disable_when, values)
+                  const conditionallyDisabled = shouldDisableField(name, prop)
                   const isDisabled =
                     disabledSet.has(name) || conditionallyDisabled
                   const hint = disabledSet.has(name)
                     ? dHints[name]
                     : conditionallyDisabled
-                      ? prop.disable_hint
+                      ? schemaDisableHint(name, prop.disable_hint, t)
                       : aHints[name]
                   const descriptionOverride =
                     prop.alt_description_when &&
-                    prop.alt_description &&
                     evalShowWhen(prop.alt_description_when, values)
-                      ? prop.alt_description
-                      : undefined
+                      ? schemaAltDescription(name, prop.alt_description, t)
+                      : schemaDescription(name, prop.description, t)
                   return (
                     <Field
                       key={name}

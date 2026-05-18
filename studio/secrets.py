@@ -53,12 +53,15 @@ class DanbooruConfig(BaseModel):
 class HuggingFaceConfig(BaseModel):
     token: str = ""
     # PR-S3: HF 模型下载端点。`""` 走 huggingface_hub 默认（直连 huggingface.co）。
-    # 默认 `hf-mirror.com` —— 项目主战场是国内用户，海外用户 Settings 切换。
+    # 0.8.2 hotfix：默认从 `hf-mirror.com` 切回 `""`（HF 官方）。hf-mirror 当前
+    # 在所有 huggingface_hub 版本下均触发 `FileMetadataError`（commit_hash None），
+    # 国内用户走 ModelScope 或自建反代；hf-mirror preset 暂从 UI 隐藏，但 endpoint
+    # 字段仍接受任意 URL（用户可手动粘贴）。复查清单见 docs/todo/hf-mirror-recheck.md。
     # 自定义 URL 也支持（tencent / sjtug / 自建反代等）。
     # huggingface_hub>=0.20 起 hf_hub_download / snapshot_download 都支持 `endpoint=` kwarg，
     # 我们 per-call 传，不依赖 HF_ENDPOINT env var（env var 只在模块 import 时读，
     # runtime 改设置无效）。
-    endpoint: str = "https://hf-mirror.com"
+    endpoint: str = ""
 
 
 class WandBConfig(BaseModel):
@@ -403,14 +406,18 @@ class GenerateConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
-    """系统级偏好（ADR 0002 / PR-D）。
+    """系统级偏好（ADR 0002 / 0005）。
 
-    - `show_dev_channel`：Settings 高级里勾选"显示开发版更新"后变 True。
-      开启时 UI 暴露"手动检查 dev"+"更新到 dev"按钮；自动检查仍只 fetch
-      master，Topbar badge 永不亮 dev（避免开发者被 dev commit 持续骚扰）。
-      默认 False —— 绝大多数用户看到的是只 master 的简化界面。
+    - `update_channel`：用户订阅哪条更新轨道。"stable"（默认）= 只看稳定版
+      更新提示；"dev" = 看 dev 通道（最近 commit 时间线、可切到 dev HEAD）。
+      这是**用户视图偏好**，与 git 工作树状态解耦 —— 切 toggle 不触发任何
+      git 操作；真正"切到 dev HEAD" / "更新到 vX.Y.Z" 是单独按钮。
+    - `show_dev_channel`：deprecated，由 `_migrate_legacy_schema` 一次性迁移成
+      `update_channel`（true → "dev"，false → "stable"），保留字段以便旧
+      secrets.json 读取时 pydantic 不报错；新代码不要再用。
     """
-    show_dev_channel: bool = False
+    update_channel: str = "stable"  # "stable" / "dev"
+    show_dev_channel: bool = False  # deprecated, 仅作迁移源
 
 
 class Secrets(BaseModel):
@@ -528,9 +535,17 @@ def _migrate_legacy_schema(raw: dict[str, Any]) -> dict[str, Any]:
     4. JoyCaptionConfig.base_url / model / prompt_template → 写入 joycaption preset
        （base_url/model 直接覆盖；prompt_template 非默认时建 `user_joycaption`）
     5. 删 raw["joycaption"] 字段
+    6. system.show_dev_channel=true → system.update_channel="dev"（ADR 0005）
 
     幂等：新 schema（llm_tagger 含 current_preset / presets）直接返回。
     """
+    # 6. system 通道偏好一次性迁移（无论后面 llm_tagger path 怎么走都先做）
+    sys_raw = raw.get("system")
+    if isinstance(sys_raw, dict):
+        # 新字段已显式设过 → 不覆盖（幂等）
+        if "update_channel" not in sys_raw and sys_raw.get("show_dev_channel") is True:
+            sys_raw["update_channel"] = "dev"
+
     llm_old = raw.get("llm_tagger")
     if not isinstance(llm_old, dict):
         # 不存在 llm_tagger 字段：可能是更老的 secrets.json；交给 pydantic 用默认值

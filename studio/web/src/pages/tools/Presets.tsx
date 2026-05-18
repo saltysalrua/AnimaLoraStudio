@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   api,
   type ConfigData,
@@ -51,6 +52,7 @@ interface DraftSeed {
 }
 
 export default function PresetsPage() {
+  const { t } = useTranslation()
   const { toast } = useToast()
   const { confirm } = useDialog()
 
@@ -89,9 +91,9 @@ export default function PresetsPage() {
 
   // ── 加载 schema + 预设列表 ──
   useEffect(() => {
-    api.schema().then(setSchema).catch((e) => toast(`schema 加载失败: ${e}`, 'error'))
+    api.schema().then(setSchema).catch((e) => toast(t('presets.loadSchemaFailed', { error: e }), 'error'))
     refreshList()
-  }, [toast])
+  }, [t, toast])
 
   const refreshList = () => {
     api.listPresets().then(setPresets).catch(() => setPresets([]))
@@ -135,10 +137,10 @@ export default function PresetsPage() {
       setDescDraft(descriptions[selected] ?? '')
       setDescDirty(false)
     }).catch((e) => {
-      toast(`加载失败: ${e}`, 'error')
+      toast(t('presets.loadFailed', { error: e }), 'error')
       setSelected(null)
     })
-  }, [selected, schema, descriptions, toast])
+  }, [selected, schema, descriptions, t, toast])
 
   // ── 首次拿到列表后：自动选最近一个，省一次「切换」点击 ──
   const autoSelectedRef = useRef(false)
@@ -189,14 +191,14 @@ export default function PresetsPage() {
   const handleSave = async () => {
     const name = isNew ? newName.trim() : selected
     if (!name) {
-      setNewNameError('请输入名称')
+      setNewNameError(t('presets.nameRequired'))
       newNameInputRef.current?.focus()
       return
     }
     if (!config) return
     if (isNew) {
-      if (!PRESET_NAME_RE.test(name)) { setNewNameError('仅允许字母、数字、_、-'); return }
-      if (presets.find((p) => p.name === name)) { setNewNameError('名称已存在'); return }
+      if (!PRESET_NAME_RE.test(name)) { setNewNameError(t('presets.nameInvalid')); return }
+      if (presets.find((p) => p.name === name)) { setNewNameError(t('presets.nameExists')); return }
     }
     setBusy(true)
     try {
@@ -214,9 +216,9 @@ export default function PresetsPage() {
         setSelected(name)
         setNewName('')
         setNewNameError('')
-        toast(`已创建 ${name}`, 'success')
+        toast(t('presets.created', { name }), 'success')
       } else {
-        toast('已保存', 'success')
+        toast(t('presets.saved'), 'success')
       }
       refreshList()
     } catch (e) { toast(String(e), 'error') }
@@ -248,46 +250,35 @@ export default function PresetsPage() {
 
   const handleDelete = async () => {
     if (!selected) return
-    if (!(await confirm(`删除预设 ${selected}？`, { tone: 'danger', okText: '删除' }))) return
+    if (!(await confirm(t('presets.confirmDelete', { name: selected }), { tone: 'danger', okText: t('common.delete') }))) return
     setBusy(true)
     api.deletePreset(selected).then(() => {
       const { [selected]: _, ...rest } = descriptions
       setDescriptions(rest); savePresetDescriptions(rest)
       setSelected(null)
       refreshList()
-      toast('已删除', 'success')
+      toast(t('presets.deleted'), 'success')
     }).catch((e) => toast(String(e), 'error')).finally(() => setBusy(false))
   }
 
+  // 端到端文件 I/O：直接拿磁盘上的 `studio_data/presets/{name}.yaml` 流。
+  // 走 <a download> 而非 fetch + blob，让浏览器使用原生下载机制。
   const handleExport = () => {
-    if (!config || !selected) return
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
+    if (!selected) return
     const a = document.createElement('a')
-    a.href = url; a.download = `${selected}.json`; a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    a.href = `/api/presets/${encodeURIComponent(selected)}/download`
+    a.download = `${selected}.yaml`
+    a.click()
   }
 
-  // 「导入」：解析后切到新建模式预填，让用户在表单里改 + 输名字 + 看 schema 确认。
-  // 不再用 window.prompt 直接保存——跟新建走同一条路径。
+  // 「导入」：上传文件给后端做 yaml + pydantic 校验，拿回 config + suggested_name；
+  // 切到新建模式预填，让用户在表单里改 + 输名字 + 看 schema 确认。
   const handleImportFile = async (f: File) => {
     try {
-      const text = await f.text()
-      let data: ConfigData
-      if (f.name.endsWith('.json')) {
-        data = JSON.parse(text)
-      } else {
-        // 简单 YAML（仅 key: value 行）
-        data = {}
-        for (const line of text.split('\n')) {
-          const m = line.match(/^([a-zA-Z_]\w*)\s*:\s*(.+)/)
-          if (m) data[m[1]] = m[2].trim()
-        }
-      }
-      const suggested = f.name.replace(/\.(json|ya?ml)$/i, '').replace(/[^A-Za-z0-9_\-]/g, '-')
-      draftSeedRef.current = { config: data, desc: '', name: suggested }
+      const { config: data, suggested_name } = await api.importPreset(f)
+      draftSeedRef.current = { config: data, desc: '', name: suggested_name }
       setSelected(null)
-      toast('已加载，确认无误后点保存', 'success')
+      toast(t('presets.importLoaded'), 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 
@@ -320,13 +311,13 @@ export default function PresetsPage() {
               : 'border-dim bg-surface shadow-sm hover:border-bold',
             busy ? 'cursor-default' : 'cursor-pointer',
           ].join(' ')}
-          title="切换 / 新建预设"
+          title={t('presets.switchTitle')}
         >
           <span className="text-[10px] uppercase tracking-[0.08em] text-fg-tertiary font-semibold">
-            预设
+            {t('presets.label')}
           </span>
           <span className="font-mono text-md font-semibold text-fg-primary flex-1 text-left truncate">
-            {selected ?? (newName.trim() || '新建中')}
+            {selected ?? (newName.trim() || t('presets.creating'))}
           </span>
           <span className="text-fg-tertiary text-md">▾</span>
         </button>
@@ -338,7 +329,7 @@ export default function PresetsPage() {
             hasAnyChange ? 'bg-warn' : isNew ? 'bg-accent' : 'bg-ok',
           ].join(' ')} />
           <span className="text-sm text-fg-secondary whitespace-nowrap">
-            {isNew ? '新建中' : hasAnyChange ? '未保存' : '已保存'}
+            {isNew ? t('presets.creating') : hasAnyChange ? t('presets.unsaved') : t('presets.savedStatus')}
           </span>
         </div>
 
@@ -357,7 +348,7 @@ export default function PresetsPage() {
           }}
         />
         <button onClick={onImportClick} disabled={busy} className="btn btn-ghost btn-sm">
-          导入
+          {t('common.import')}
         </button>
 
         {/* 编辑模式下的预设级动作 */}
@@ -365,13 +356,13 @@ export default function PresetsPage() {
           <>
             <span style={{ width: 1, height: 22, background: 'var(--border-subtle)' }} />
             <button onClick={handleDuplicate} disabled={busy || !config} className="btn btn-ghost btn-sm">
-              复制副本
+              {t('presets.duplicate')}
             </button>
             <button onClick={handleExport} disabled={busy || !config} className="btn btn-ghost btn-sm">
-              导出 JSON
+{t('presets.exportYaml')}
             </button>
             <button onClick={handleDelete} disabled={busy} className="btn btn-ghost btn-sm" style={{ color: 'var(--err)' }}>
-              删除
+              {t('common.delete')}
             </button>
           </>
         )}
@@ -380,10 +371,10 @@ export default function PresetsPage() {
         <button
           onClick={handleSave}
           disabled={saveDisabled}
-          className="btn btn-primary btn-sm"
-          style={{ minWidth: 80 }}
+          className="btn btn-primary btn-sm inline-flex items-center justify-center"
+          style={{ minWidth: 0, paddingLeft: 12, paddingRight: 12 }}
         >
-          保存
+          {t('common.save')}
         </button>
 
         {/* popover */}
@@ -391,7 +382,7 @@ export default function PresetsPage() {
           <div
             ref={pickerPopRef}
             role="dialog"
-            aria-label="切换预设"
+            aria-label={t('presets.switchPreset')}
             style={{
               position: 'absolute', top: 'calc(100% - 1px)', left: 24,
               width: 480, maxHeight: 480, overflow: 'hidden',
@@ -415,7 +406,7 @@ export default function PresetsPage() {
                   <input
                     autoFocus
                     className="input"
-                    placeholder="筛选预设…"
+                    placeholder={t('presets.filterPlaceholder')}
                     value={pickerSearch}
                     onChange={(e) => setPickerSearch(e.target.value)}
                     style={{ width: '100%', paddingLeft: 28, fontSize: 'var(--t-sm)' }}
@@ -425,8 +416,8 @@ export default function PresetsPage() {
                   onClick={refreshList}
                   className="btn btn-ghost btn-sm"
                   style={{ fontSize: 'var(--t-xs)' }}
-                  title="刷新列表"
-                >刷新</button>
+                  title={t('presets.refreshList')}
+                >{t('common.refresh')}</button>
               </div>
 
               {/* grid */}
@@ -448,7 +439,7 @@ export default function PresetsPage() {
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent)'; (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)' }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-default)'; (e.currentTarget as HTMLElement).style.background = 'transparent' }}
                   >
-                    + 新建预设
+                    {t('presets.newPreset')}
                   </button>
                   {filteredPresets.map((p) => {
                     const active = p.name === selected
@@ -488,7 +479,7 @@ export default function PresetsPage() {
                     color: 'var(--fg-tertiary)', fontSize: 'var(--t-sm)',
                     textAlign: 'center', padding: '16px 0',
                   }}>
-                    没有匹配「{pickerSearch}」
+                    {t('presets.noMatch', { search: pickerSearch })}
                   </div>
                 )}
               </div>
@@ -505,7 +496,7 @@ export default function PresetsPage() {
             <div className="flex gap-2.5">
               {isNew ? (
                 <label className="flex-1 flex flex-col gap-1">
-                  <span className="text-sm font-medium text-fg-secondary">预设名称</span>
+                  <span className="text-sm font-medium text-fg-secondary">{t('presets.presetName')}</span>
                   <input
                     ref={newNameInputRef}
                     className="input input-mono font-mono"
@@ -520,15 +511,15 @@ export default function PresetsPage() {
                 </label>
               ) : (
                 <label className="flex-1 flex flex-col gap-1">
-                  <span className="text-sm font-medium text-fg-secondary">名称（只读）</span>
+                  <span className="text-sm font-medium text-fg-secondary">{t('presets.nameReadonly')}</span>
                   <div className="py-1.5 px-3 rounded-md border border-subtle bg-sunken font-mono text-sm text-fg-primary">{selected}</div>
                 </label>
               )}
               <label className="flex-[1.5] flex flex-col gap-1">
-                <span className="text-sm font-medium text-fg-secondary">描述 / 副标题</span>
+                <span className="text-sm font-medium text-fg-secondary">{t('presets.description')}</span>
                 <input
                   className="input"
-                  placeholder="用途描述，显示在训练页预设卡片上…"
+                  placeholder={t('presets.descPlaceholder')}
                   value={descDraft}
                   onChange={(e) => { setDescDraft(e.target.value); setDescDirty(true) }}
                   disabled={busy}
@@ -540,13 +531,13 @@ export default function PresetsPage() {
           {/* schema 表单 */}
           {!schema || !config ? (
             <div className="h-[200px] rounded-md border border-subtle bg-surface p-3.5">
-              <ConfigSkeleton variant="flat" label="加载预设配置中" />
+              <ConfigSkeleton variant="flat" label={t('presets.loadingConfig')} />
             </div>
           ) : (
             <section className="rounded-md border border-subtle bg-surface px-3.5 py-2.5">
               <div className="flex items-center gap-2 mb-2.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-fg-tertiary shrink-0" />
-                <span className="caption uppercase tracking-[0.06em] text-xs">训练参数</span>
+                <span className="caption uppercase tracking-[0.06em] text-xs">{t('presets.trainingParams')}</span>
                 <span className="flex-1" />
                 <div className="inline-flex rounded-md border border-subtle overflow-hidden text-xs">
                   <button
@@ -554,14 +545,14 @@ export default function PresetsPage() {
                     onClick={() => advancedMode && toggleAdvancedMode()}
                     className={`px-3 py-1 transition-colors ${!advancedMode ? 'bg-accent text-white' : 'bg-surface text-fg-secondary hover:bg-subtle'}`}
                   >
-                    简单
+                    {t('train.simpleMode')}
                   </button>
                   <button
                     type="button"
                     onClick={() => !advancedMode && toggleAdvancedMode()}
                     className={`px-3 py-1 transition-colors ${advancedMode ? 'bg-accent text-white' : 'bg-surface text-fg-secondary hover:bg-subtle'}`}
                   >
-                    高级
+                    {t('train.advancedMode')}
                   </button>
                 </div>
               </div>
@@ -583,9 +574,9 @@ export default function PresetsPage() {
                 className="w-full flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-left"
               >
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-info shrink-0" />
-                <span className="caption uppercase tracking-[0.06em] text-xs">TOML 预览</span>
+                <span className="caption uppercase tracking-[0.06em] text-xs">{t('presets.tomlPreview')}</span>
                 <span className="text-[10px] text-fg-tertiary">
-                  {tomlOpen ? 'sd-scripts 可读的配置文件' : '展开查看 / 复制'}
+                  {tomlOpen ? t('presets.tomlReadable') : t('presets.tomlCollapsed')}
                 </span>
                 <span className="flex-1" />
                 {tomlOpen && (
@@ -595,10 +586,10 @@ export default function PresetsPage() {
                       e.stopPropagation()
                       const toml = generateToml(config)
                       navigator.clipboard.writeText(toml)
-                        .then(() => toast('已复制到剪贴板', 'success'))
-                        .catch(() => toast('复制失败', 'error'))
+                        .then(() => toast(t('presets.copied'), 'success'))
+                        .catch(() => toast(t('presets.copyFailed'), 'error'))
                     }}
-                  >复制</button>
+                  >{t('common.copy')}</button>
                 )}
                 <span className="text-fg-tertiary">{tomlOpen ? '▾' : '▸'}</span>
               </button>
