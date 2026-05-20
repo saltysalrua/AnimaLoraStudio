@@ -35,12 +35,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            saltycocoa/animalorastudio
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: .ide/Dockerfile
           push: true
-          tags: |
-            saltycocoa/animalorastudio:latest
-            ghcr.io/saltysalrua/animalorastudio:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
