@@ -102,6 +102,13 @@ def download(
         raise ValueError(
             "gelbooru 需要 user_id + api_key（去 Settings 配置 secrets.gelbooru）"
         )
+    if opts.api_source == "danbooru" and not (opts.username and opts.api_key):
+        # hotfix: danbooru 挂 Cloudflare 后匿名 UA 已不可靠（即使我们带应用 UA，
+        # CF 仍可能随时收紧）；强制绑定账户让 UA 带 (by username)，CF 拦匿名
+        # 时不会一锅端，danbooru 端也按账户配速率限制（标准 2 req/s）。
+        raise ValueError(
+            "danbooru 需要 username + api_key（去 Settings 配置 secrets.danbooru）"
+        )
 
     # 没传 client 就建一个临时的（按 secrets.download.* 调速）；session 优先
     owns_client = False
@@ -212,6 +219,7 @@ def _download_with_client(
                         convert_to_png=opts.convert_to_png,
                         remove_alpha_channel=opts.remove_alpha_channel,
                         referer=referer,
+                        username=opts.username,
                     )
                     # 实时进度（worker 线程内）：每张拉完立即 emit，让 LogTailer
                     # 把 SSE 推到前端。否则 parallel_download 会一直阻塞，整段
@@ -280,8 +288,16 @@ def _download_with_client(
 
 
 def estimate(opts: DownloadOptions) -> int:
-    """轻量调用 API 估算 tag（含 exclude）命中量；失败返回 -1（未知）。"""
+    """轻量调用 API 估算 tag（含 exclude）命中量；失败返回 -1（未知）。
+
+    v0.5.2 hotfix 漏修：search_posts 已经走 booru_api 的 UA / Accept 头过 CF，
+    但 estimate 这条单独的"轻量"路径仍是裸 requests.get（默认 UA
+    python-requests/X.Y.Z）→ danbooru 的 CF 把它当 bot 拦掉 → 抛异常 →
+    永远返回 -1（未知）。修：复用 booru_api._api_headers 同款 UA；danbooru
+    端有 basic auth 时一并带上让 rate limit 按账户算。
+    """
     query = opts.effective_tag_query()
+    headers = booru_api._api_headers(opts.username)
     if opts.api_source == "gelbooru":
         try:
             params: dict[str, Any] = {
@@ -297,7 +313,8 @@ def estimate(opts: DownloadOptions) -> int:
                 params["api_key"] = opts.api_key
                 params["user_id"] = opts.user_id
             r = requests.get(
-                f"{opts.base_url()}/index.php", params=params, timeout=15
+                f"{opts.base_url()}/index.php",
+                params=params, headers=headers, timeout=15,
             )
             r.raise_for_status()
             data = r.json()
@@ -307,10 +324,11 @@ def estimate(opts: DownloadOptions) -> int:
             return -1
         return -1
     try:
+        auth = (opts.username, opts.api_key) if opts.username and opts.api_key else None
         r = requests.get(
             f"{opts.base_url()}/counts/posts.json",
             params={"tags": query},
-            timeout=15,
+            headers=headers, auth=auth, timeout=15,
         )
         r.raise_for_status()
         return int(r.json().get("counts", {}).get("posts", -1))

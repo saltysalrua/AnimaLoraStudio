@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from studio import db
+from studio import db, secrets
 from studio.supervisor import Supervisor
 
 
@@ -226,8 +226,10 @@ def test_cancel_running_returns_immediately(env) -> None:
         t0 = time.time()
         assert sup.cancel(tid) is True
         elapsed = time.time() - t0
-        # cancel 必须在 1s 内返回（远小于 grace）
-        assert elapsed < 1.0, f"cancel blocked for {elapsed:.1f}s"
+        # cancel 必须远小于 grace（3s）：Windows 上 _send_terminate_signal 同步走
+        # `taskkill /T /F` 子进程（~0.5-1.5s），不走 grace timer，所以阈值 2s
+        # 留出 buffer 仍然能验证「不阻塞 grace 期」的核心断言。
+        assert elapsed < 2.0, f"cancel blocked for {elapsed:.1f}s"
         # supervisor 主循环 poll 到进程退出后会把 status 改成 canceled。
         # grace 3s + 主循环 poll 0.05s + 容错 buffer
         assert _wait_for(
@@ -308,6 +310,43 @@ def test_default_cmd_builder_includes_monitor_flag() -> None:
     assert cmd[i + 1] == "/tmp/x/state.json"
 
 
+def test_popen_injects_wandb_env(env, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = secrets.Secrets()
+    cfg.wandb.enabled = True
+    cfg.wandb.api_key = "wandb-key"
+    cfg.wandb.project = "anima"
+    cfg.wandb.entity = "team"
+    cfg.wandb.base_url = "https://wandb.example"
+    cfg.wandb.mode = "offline"
+    cfg.wandb.log_samples = False
+    monkeypatch.setattr("studio.supervisor._secrets.load", lambda: cfg)
+    captured: dict[str, Any] = {}
+
+    class FakePopen:
+        pid = 123
+
+    def fake_popen(cmd, **kwargs):  # noqa: ANN001
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return FakePopen()
+
+    monkeypatch.setattr("studio.supervisor.subprocess.Popen", fake_popen)
+    sup = Supervisor(
+        db_path=env["db"], logs_dir=env["logs"], configs_dir=env["configs"],
+    )
+    log_path = tmp_path / "x.log"
+    with log_path.open("wb") as fp:
+        sup._popen([sys.executable, "-c", "pass"], fp)
+
+    assert captured["env"]["WANDB_ENABLED"] == "1"
+    assert captured["env"]["WANDB_API_KEY"] == "wandb-key"
+    assert captured["env"]["WANDB_PROJECT"] == "anima"
+    assert captured["env"]["WANDB_ENTITY"] == "team"
+    assert captured["env"]["WANDB_BASE_URL"] == "https://wandb.example"
+    assert captured["env"]["WANDB_MODE"] == "offline"
+    assert captured["env"]["WANDB_LOG_SAMPLES"] == "0"
+
+
 def test_config_path_takes_priority(env, tmp_path) -> None:
     """PP6.3：task.config_path 设了就用它，不再读 _configs_dir。"""
     captured: dict[str, Any] = {}
@@ -345,7 +384,6 @@ def test_finalize_version_writes_output_lora_path(env, tmp_path, monkeypatch) ->
     from studio import projects, versions
 
     monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path / "projects")
-    monkeypatch.setattr(projects, "TRASH_DIR", tmp_path / "_trash")
 
     # 建 project + version + 假 lora_final.safetensors
     with db.connection_for(env["db"]) as conn:

@@ -338,23 +338,27 @@ def _apply_axis(
     adapters: list[Any],
 ) -> tuple[int, float]:
     """处理纯数值/scale 轴。lora_ckpt 不在这处理（需要重新 inject，由
-    _run_xy 单独走 CACHE.apply_loras 路径）。"""
+    _run_xy 单独走 CACHE.apply_loras 路径）。
+
+    lora_scale 是**全局轴** —— 把所有 adapter 的 multiplier 都设成 cell 值；
+    原本不同 LoRA 的相对权重会消失，但 UI 上权重轴的语义就是「扫一个绝对值」
+    而非「扫某一条 LoRA 的相对值」。
+    """
     axis_type = axis["axis"]
     if axis_type == "steps":
         cur_steps = int(value)
     elif axis_type == "cfg_scale":
         cur_cfg_scale = float(value)
     elif axis_type == "lora_scale":
-        idx = int(axis.get("lora_index") or 0)
-        if idx < len(adapters):
-            _set_lora_multiplier(adapters[idx], float(value))
+        for ad in adapters:
+            _set_lora_multiplier(ad, float(value))
     return cur_steps, cur_cfg_scale
 
 
 def _setup_monitor(cfg: dict[str, Any]) -> Any:
     """初始化 train_monitor（每个 task 一份独立 monitor_state.json）。
 
-    前端通过 SSE monitor_state_updated 拿 samples + xy 元信息；图本身的
+    前端通过 SSE monitor_progress 拿 samples + xy 元信息；图本身的
     bytes 走协议 image_done 事件入 server 内存 cache（commit 10 起）。
     sample_path 字段写虚拟路径（前端只用 split+pop 拿 filename 来构建
     /api/generate/{tid}/sample/{fn} URL），磁盘上不会有这个文件。

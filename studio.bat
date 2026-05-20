@@ -2,11 +2,14 @@
 chcp 65001 >nul
 REM AnimaStudio Windows shortcut -- forwards to: python -m studio
 REM Usage:
-REM   .\studio.bat                same as: python -m studio run
-REM   .\studio.bat --reinstall    DELETE venv\ and rebuild (studio_data\ kept)
-REM   .\studio.bat dev            frontend + backend dev mode
-REM   .\studio.bat build          build frontend only
-REM   .\studio.bat test           run pytest + vitest
+REM   .\studio.bat                          same as: python -m studio run
+REM   .\studio.bat --reinstall              DELETE venv\ and rebuild (studio_data\ kept)
+REM   .\studio.bat --torch=cu128            force GPU torch (cu128/cu126/cu124/cu118/cpu)
+REM   .\studio.bat dev                      frontend + backend dev mode
+REM   .\studio.bat dev --fe-port 5174       Vite on port 5174
+REM   .\studio.bat dev --port 8766          backend on port 8766
+REM   .\studio.bat build                    build frontend only
+REM   .\studio.bat test                     run pytest + vitest
 REM
 REM Note: PowerShell needs the `.\` prefix; cmd.exe accepts either.
 REM
@@ -24,13 +27,21 @@ set PYTHONIOENCODING=utf-8
 
 REM Parse our flags; collect remaining args to forward to Python.
 set REINSTALL=0
+set TORCH_TAG=
 set PASSTHROUGH=
 :argloop
 if "%~1"=="" goto argdone
 if /i "%~1"=="--reinstall" (
     set REINSTALL=1
 ) else (
-    set PASSTHROUGH=!PASSTHROUGH! %1
+    REM Check for --torch=<tag> prefix
+    set _ARG=%~1
+    if "!_ARG:~0,8!"=="--torch=" (
+        set TORCH_TAG=!_ARG:~8!
+        set PASSTHROUGH=!PASSTHROUGH! --torch !TORCH_TAG!
+    ) else (
+        set PASSTHROUGH=!PASSTHROUGH! %1
+    )
 )
 shift
 goto argloop
@@ -95,19 +106,30 @@ if exist "venv\Scripts\python.exe" (
     echo [studio] No venv detected. Creating venv\ via `!BOOTSTRAP_PY!` -- first run may take a few minutes...
     !BOOTSTRAP_PY! -m venv venv || (echo studio.bat: failed to create venv 1>&2 & goto :fail)
     set PYTHON=venv\Scripts\python.exe
+
     !PYTHON! -m pip install --upgrade pip -i https://mirrors.cloud.tencent.com/pypi/simple/ || (echo studio.bat: failed to upgrade pip 1>&2 & goto :fail)
 
     REM GPU-aware torch first install (PR-S1a). Without this, requirements.txt's
     REM bare `torch>=2.0.0` makes pip pull the CPU wheel. Installing CUDA torch
     REM from PyTorch's index FIRST satisfies the constraint, pip won't replace.
-    set TORCH_INDEX=
-    for /f "delims=" %%i in ('!PYTHON! tools\select_torch_index.py 2^>nul') do set TORCH_INDEX=%%i
-    if defined TORCH_INDEX (
-        echo [studio] setup: NVIDIA GPU detected; installing torch from !TORCH_INDEX!
+    REM --torch=<tag> overrides auto-detection (useful on CPU-only rentals).
+    if defined TORCH_TAG (
+        set TORCH_INDEX=https://download.pytorch.org/whl/!TORCH_TAG!
+        echo [studio] setup: --torch=!TORCH_TAG! specified; installing torch from !TORCH_INDEX!
         !PYTHON! -m pip install torch torchvision --index-url !TORCH_INDEX!
         if errorlevel 1 (
-            echo [studio] setup: CUDA torch install failed; will fall back to PyPI default in requirements.txt
-            echo [studio] setup: you can fix manually later via Studio Settings ^> PyTorch ^> Reinstall
+            echo [studio] setup: forced torch install failed; will fall back to PyPI default in requirements.txt
+        )
+    ) else (
+        set TORCH_INDEX=
+        for /f "delims=" %%i in ('!PYTHON! tools\select_torch_index.py 2^>nul') do set TORCH_INDEX=%%i
+        if defined TORCH_INDEX (
+            echo [studio] setup: NVIDIA GPU detected; installing torch from !TORCH_INDEX!
+            !PYTHON! -m pip install torch torchvision --index-url !TORCH_INDEX!
+            if errorlevel 1 (
+                echo [studio] setup: CUDA torch install failed; will fall back to PyPI default in requirements.txt
+                echo [studio] setup: you can fix manually later via Studio Settings ^> PyTorch ^> Reinstall
+            )
         )
     )
 
@@ -141,8 +163,31 @@ if "!STALE!"=="stale" (
     )
 )
 
+REM Restart loop (PR-A): if cli.py exits but tmp\restart still present, loop
+REM back. cli.py's own inner loop handles the common case (server requests
+REM restart); this outer loop is the safety net.
+REM
+REM Special exit code 42 (PR-D, installer self-update): cli.py detected that
+REM cli.py / studio.sh / studio.bat itself was just replaced. cmd.exe has the
+REM .bat parsed in memory; if we keep looping, we risk running stale wrapper
+REM logic. So we `start` a fresh copy of ourselves and exit. Unlike POSIX
+REM `exec`, this spawns a new process (different PID) -- /b keeps the same
+REM console window, so the user-visible effect is the same. See ADR 0002.
+:run_loop
 !PYTHON! -m studio %PASSTHROUGH%
 set STUDIO_ERR=%ERRORLEVEL%
+if exist tmp\restart (
+    if !STUDIO_ERR! EQU 42 (
+        echo [studio] launcher updated, re-exec wrapper
+        del /q tmp\restart 2>nul
+        start "" /b "%~f0" %PASSTHROUGH%
+        exit /b 0
+    )
+    echo [studio] restart requested ^(wrapper loop^)
+    del /q tmp\restart 2>nul
+    goto run_loop
+)
+
 if %STUDIO_ERR% NEQ 0 (
     echo.
     echo [studio] Exit code %STUDIO_ERR%. Press any key to close...

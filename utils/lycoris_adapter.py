@@ -130,6 +130,15 @@ class AnimaLycorisAdapter:
 
         n = len(self.network.loras)
         logger.info(f"注入 {self.algo.upper()} 到 {n} 层（lycoris-lora）")
+        if self.use_lokr:
+            full_matrix = [lora for lora in self.network.loras if getattr(lora, "use_w2", False)]
+            if full_matrix:
+                logger.info(
+                    "LoKr dim/rank=%s 触发 LyCORIS full dimension：%s/%s 层的第二块不再分解，alpha 将被忽略。",
+                    self.rank,
+                    len(full_matrix),
+                    n,
+                )
         return {lora.lora_name: lora for lora in self.network.loras}
 
     # --------------------------------------------------------------- detach
@@ -267,3 +276,24 @@ class AnimaLycorisAdapter:
             f"加载 {len(sd)} 个权重张量，"
             f"missing={missing}, unexpected={unexpected}"
         )
+
+    # ─── ADR 0003 PR-C：AdapterProtocol 可选 hook 的 no-op 实现 ───
+    # 给 LyCORIS adapter 满足 runtime_checkable Protocol；论文级变体
+    # （T-LoRA / OFT / Ortho-Hydra）可在自己的 build wrapper 里 override。
+
+    def on_step_begin(self, ctx) -> None:
+        """每 micro-batch 前向之前调用；LoKr/LoRA/LoHa 无运行时结构调整。"""
+        return None
+
+    def regularization_loss(self, ctx):
+        """LoKr/LoRA/LoHa 无额外正则项。"""
+        return None
+
+    def excludes_weight_decay(self, param_name: str) -> bool:
+        """w1 系参数排除 weight_decay；其他不排除。
+
+        注：现有 get_param_groups 已经在内部按 "lokr_w1" 子串分组并把这些
+        param 的 weight_decay 设为 0，本方法只是 Protocol 接口暴露，给外
+        部 caller（如 phase log 决策）调。
+        """
+        return self.use_lokr and "lokr_w1" in param_name

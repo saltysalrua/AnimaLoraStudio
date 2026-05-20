@@ -4,8 +4,8 @@ Project 是 Pipeline 的最外层容器：每次 LoRA 训练对应一个 project
 包含 download/ 和若干 versions/。slug 一旦生成就不可改（路径锚点）；
 title 和 note 可改。
 
-软删：目录搬到 `studio_data/_trash/projects/{slug}/`，db 行真实删除
-（CASCADE 删 versions / project_jobs）。配 `empty_trash()` 物理清理。
+删除：直接 rmtree 项目目录 + DELETE db 行（CASCADE 清 versions /
+project_jobs）。无回收站、不可恢复 —— UI 层 confirm 提示用户。
 """
 from __future__ import annotations
 
@@ -20,10 +20,9 @@ from typing import Any, Iterable, Optional
 from .paths import STUDIO_DATA
 
 PROJECTS_DIR = STUDIO_DATA / "projects"
-TRASH_DIR = STUDIO_DATA / "_trash" / "projects"
 
 VALID_STAGES: frozenset[str] = frozenset({
-    "created", "downloading", "curating", "tagging",
+    "created", "downloading", "preprocessing", "curating", "tagging",
     "regularizing", "configured", "training", "done",
 })
 
@@ -107,6 +106,7 @@ def create_project(
     pid = int(cur.lastrowid)
     pdir = project_dir(pid, final_slug)
     (pdir / "download").mkdir(parents=True, exist_ok=True)
+    (pdir / "preprocess").mkdir(parents=True, exist_ok=True)
     (pdir / "versions").mkdir(parents=True, exist_ok=True)
     p = _must_get(conn, pid)
     _write_project_json(p)
@@ -162,33 +162,14 @@ def update_project(
     return p
 
 
-def soft_delete_project(conn: sqlite3.Connection, project_id: int) -> None:
-    """目录搬到 `_trash/`，db 行删除（CASCADE 清掉 versions/project_jobs）。"""
+def delete_project(conn: sqlite3.Connection, project_id: int) -> None:
+    """rmtree 项目目录 + DELETE db 行（CASCADE 清掉 versions/project_jobs）。不可恢复。"""
     p = _must_get(conn, project_id)
     src = project_dir(p["id"], p["slug"])
     if src.exists():
-        TRASH_DIR.mkdir(parents=True, exist_ok=True)
-        # 冲突时加时间戳后缀
-        dst = TRASH_DIR / f"{p['id']}-{p['slug']}"
-        if dst.exists():
-            dst = TRASH_DIR / f"{p['id']}-{p['slug']}-{int(time.time())}"
-        shutil.move(str(src), str(dst))
+        shutil.rmtree(src, ignore_errors=True)
     conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     conn.commit()
-
-
-def empty_trash() -> int:
-    """物理删除 `_trash/projects/` 下所有内容；返回删掉的项目目录数。"""
-    if not TRASH_DIR.exists():
-        return 0
-    n = 0
-    for child in list(TRASH_DIR.iterdir()):
-        if child.is_dir():
-            shutil.rmtree(child, ignore_errors=True)
-            n += 1
-        else:
-            child.unlink(missing_ok=True)
-    return n
 
 
 # ---------------------------------------------------------------------------
@@ -213,18 +194,23 @@ def advance_stage(
 
 
 def stats_for_project(p: dict[str, Any]) -> dict[str, Any]:
-    """轻量统计：download/ 下的图片数量。version 级统计在 versions.py。"""
+    """轻量统计：download/ 与 preprocess/ 下的图片数量。version 级统计在 versions.py。"""
     from .datasets import IMAGE_EXTS  # 复用既有扩展名集
 
     pdir = project_dir(p["id"], p["slug"])
-    download = pdir / "download"
-    if not download.exists():
-        return {"download_image_count": 0}
-    cnt = sum(
-        1 for f in download.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-    )
-    return {"download_image_count": cnt}
+
+    def _count(d: Path) -> int:
+        if not d.exists():
+            return 0
+        return sum(
+            1 for f in d.iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        )
+
+    return {
+        "download_image_count": _count(pdir / "download"),
+        "preprocess_image_count": _count(pdir / "preprocess"),
+    }
 
 
 def projects_with_stats(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

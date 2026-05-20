@@ -176,3 +176,91 @@ def test_training_config_help_does_not_crash() -> None:
     text = parser.format_help()
     assert "--lora-rank" in text
     assert "--no-cache-latents" in text  # bool 字段的反向 flag
+
+
+def test_training_config_cli_ppsf() -> None:
+    """ProdigyPlusScheduleFree CLI 字段都能解析出来。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args([
+        "--optimizer-type", "prodigy_plus_schedulefree",
+        "--ppsf-d-coef", "0.5",
+        "--ppsf-prodigy-steps", "500",
+        "--ppsf-beta2", "0.95",
+        "--ppsf-use-speed",
+        "--no-ppsf-split-groups-mean",
+    ])
+    assert ns.optimizer_type == "prodigy_plus_schedulefree"
+    assert ns.ppsf_d_coef == 0.5
+    assert ns.ppsf_prodigy_steps == 500
+    assert ns.ppsf_beta2 == 0.95
+    assert ns.ppsf_use_speed is True
+    assert ns.ppsf_split_groups_mean is False
+
+
+def test_training_config_yaml_ppsf() -> None:
+    """PPSF 字段能通过 YAML 合并到 namespace。"""
+    parser = bridge.build_parser(TrainingConfig)
+    args = parser.parse_args([])
+    yaml_data = {
+        "optimizer_type": "prodigy_plus_schedulefree",
+        "ppsf_d_coef": 0.3,
+        "ppsf_beta1": 0.9,
+        "ppsf_beta2": 0.99,
+        "ppsf_prodigy_steps": 1000,
+        "ppsf_use_stableadamw": True,
+    }
+    bridge.merge_yaml_into_namespace(args, yaml_data, TrainingConfig)
+    assert args.optimizer_type == "prodigy_plus_schedulefree"
+    assert args.ppsf_d_coef == 0.3
+    assert args.ppsf_beta1 == 0.9
+    assert args.ppsf_beta2 == 0.99
+    assert args.ppsf_prodigy_steps == 1000
+    assert args.ppsf_use_stableadamw is True
+
+
+# ---------------------------------------------------------------------------
+# SqrtZ3 三 PR 新增字段：bridge 自动生成 CLI flag 验证
+# ---------------------------------------------------------------------------
+
+
+def test_training_config_emits_detail_inv_t_flags() -> None:
+    """PR #72 引入 detail_inv_t_min/max；bridge 应自动生成 --detail-inv-t-min/--max。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args([
+        "--detail-inv-t-min", "1.5",
+        "--detail-inv-t-max", "8.0",
+    ])
+    assert ns.detail_inv_t_min == 1.5
+    assert ns.detail_inv_t_max == 8.0
+
+
+def test_training_config_emits_timestep_mix_low_prob_flag() -> None:
+    """PR #73 引入 timestep_mix_low_prob；bridge 应自动生成 --timestep-mix-low-prob。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args(["--timestep-mix-low-prob", "0.25"])
+    assert ns.timestep_mix_low_prob == 0.25
+
+
+def test_training_config_emits_timestep_schedule_shift_flag() -> None:
+    """PR #73 引入 timestep_schedule_shift（PR-A 重命名后名）；bridge 应自动生成
+    --timestep-schedule-shift。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args(["--timestep-schedule-shift", "1.5"])
+    assert ns.timestep_schedule_shift == 1.5
+
+
+def test_training_config_emits_mixed_uniform_modes() -> None:
+    """PR #73 引入两个新 mode；Literal choices 应被 bridge 接受。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns_low = parser.parse_args(["--timestep-sampling", "mixed_uniform_low"])
+    assert ns_low.timestep_sampling == "mixed_uniform_low"
+    ns_logit = parser.parse_args(["--timestep-sampling", "mixed_uniform_logit"])
+    assert ns_logit.timestep_sampling == "mixed_uniform_logit"
+
+
+def test_training_config_emits_loss_type_and_huber_flags() -> None:
+    """PR #75 引入 loss_type / huber_c；bridge 应自动生成 --loss-type / --huber-c。"""
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args(["--loss-type", "huber", "--huber-c", "0.2"])
+    assert ns.loss_type == "huber"
+    assert ns.huber_c == 0.2

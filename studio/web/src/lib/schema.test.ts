@@ -67,8 +67,29 @@ describe('evalShowWhen', () => {
     )
   })
 
+  it('handles || branches', () => {
+    const expr = 'optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree'
+    expect(evalShowWhen(expr, { optimizer_type: 'prodigy' })).toBe(true)
+    expect(evalShowWhen(expr, { optimizer_type: 'prodigy_plus_schedulefree' })).toBe(true)
+    expect(evalShowWhen(expr, { optimizer_type: 'adamw' })).toBe(false)
+  })
+
   it('returns true on unparseable expressions (failsafe)', () => {
     expect(evalShowWhen('garbage', {})).toBe(true)
+  })
+
+  // evalShowWhen 同时被 show_when 和 disable_when 复用（同一表达式语法）
+  it('works for PPSF disable_when use case', () => {
+    expect(
+      evalShowWhen('optimizer_type==prodigy_plus_schedulefree', {
+        optimizer_type: 'prodigy_plus_schedulefree',
+      })
+    ).toBe(true)
+    expect(
+      evalShowWhen('optimizer_type==prodigy_plus_schedulefree', {
+        optimizer_type: 'adamw',
+      })
+    ).toBe(false)
   })
 })
 

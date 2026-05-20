@@ -15,14 +15,44 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from .paths import USER_PRESETS_DIR
+from .paths import REPO_ROOT, USER_PRESETS_DIR
 from .schema import TrainingConfig
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# 全局模型路径字段。yaml 写盘 + UI 显示一律绝对路径；读老 yaml 时若是相对
+# 路径，由 _absolutize_model_paths 兜底转绝对（忠于历史 CWD=REPO_ROOT 的解析
+# 语义），下游可以无脑假定 4 字段是绝对路径。
+_MODEL_PATH_FIELDS = (
+    "transformer_path",
+    "vae_path",
+    "text_encoder_path",
+    "t5_tokenizer_path",
+)
+
 
 class PresetError(Exception):
     """预设 I/O 错误。"""
+
+
+def _absolutize_model_paths(data: dict[str, Any]) -> dict[str, Any]:
+    """规范化 4 个模型字段：相对路径 → REPO_ROOT 绝对；分隔符统一 POSIX `/`。
+
+    - 老 yaml 里相对路径（schema fallback）→ 转为基于 REPO_ROOT 的绝对路径
+      （忠于历史 supervisor cwd=REPO_ROOT 的解析语义）
+    - Windows 上 `str(Path)` 给反斜杠（`G:\\foo`），PathPicker 给 POSIX
+      （`G:/foo`），混存会让同一字段在不同来源下视觉不一致；统一 `as_posix()`
+      让 yaml 落盘 + UI 显示一律 `/`
+    不动 yaml 文件；下次保存自然落规范化后的形式。
+    """
+    for f in _MODEL_PATH_FIELDS:
+        v = data.get(f)
+        if isinstance(v, str) and v:
+            p = Path(v)
+            if not p.is_absolute():
+                p = (REPO_ROOT / p).resolve()
+            data[f] = p.as_posix()
+    return data
 
 
 def _validate_name(name: str) -> None:
@@ -33,6 +63,36 @@ def _validate_name(name: str) -> None:
 def _preset_path(name: str, base: Path | None = None) -> Path:
     _validate_name(name)
     return (base or USER_PRESETS_DIR) / f"{name}.yaml"
+
+
+def preset_path(name: str, base: Path | None = None) -> Path:
+    """公开版 `_preset_path`，给端到端文件下载用（server 不要碰 _ 私有 helper）。"""
+    return _preset_path(name, base)
+
+
+def parse_preset_bytes(raw: bytes, filename: str) -> tuple[dict[str, Any], str]:
+    """解析 .yaml/.yml/.json 上传内容 + pydantic 校验，返回 (config_dict, suggested_name)。
+
+    不写盘 —— caller 决定最终落盘名字（前端 confirm flow 让用户改名再保存）。
+    yaml.safe_load 是 JSON 的 superset，所以 .json 文件也能直接吃。
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PresetError(f"文件不是 UTF-8: {exc}") from exc
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise PresetError(f"YAML/JSON 解析失败: {exc}") from exc
+    if not isinstance(data, dict):
+        raise PresetError("预设格式错误（顶层不是 mapping）")
+    try:
+        cfg = TrainingConfig.model_validate(data)
+    except ValidationError as exc:
+        raise PresetError(f"预设校验失败: {exc}") from exc
+    stem = re.sub(r"\.(ya?ml|json)$", "", filename, flags=re.I)
+    suggested = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-") or "imported"
+    return _absolutize_model_paths(cfg.model_dump(mode="python")), suggested
 
 
 def list_presets(base: Path | None = None) -> list[dict[str, Any]]:
@@ -63,17 +123,21 @@ def read_preset(name: str, base: Path | None = None) -> dict[str, Any]:
         cfg = TrainingConfig.model_validate(raw)
     except ValidationError as exc:
         raise PresetError(f"预设校验失败: {exc}") from exc
-    return cfg.model_dump(mode="python")
+    return _absolutize_model_paths(cfg.model_dump(mode="python"))
 
 
 def write_preset(name: str, data: dict[str, Any], base: Path | None = None) -> Path:
-    """先校验后写盘；任何未知字段或类型不匹配都会拒绝。"""
+    """先校验后写盘；任何未知字段或类型不匹配都会拒绝。
+
+    保存前 normalize 4 个模型字段：相对路径 → 绝对（基于 REPO_ROOT）。
+    保证 yaml 落盘统一绝对路径，避免老格式（相对）和新格式（绝对）混存。
+    """
     path = _preset_path(name, base)
     try:
         cfg = TrainingConfig.model_validate(data)
     except ValidationError as exc:
         raise PresetError(f"预设校验失败: {exc}") from exc
-    dumped = cfg.model_dump(mode="python")
+    dumped = _absolutize_model_paths(cfg.model_dump(mode="python"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(dumped, allow_unicode=True, sort_keys=False, default_flow_style=False),

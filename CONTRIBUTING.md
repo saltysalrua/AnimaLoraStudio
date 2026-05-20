@@ -132,6 +132,11 @@ dev 攒到一组改动后，**看最重的改动**决定 bump 哪一位：
 >
 > 「feature 少」很正常——大多数 release 是 PATCH，攒到一个 feat 时再 bump MINOR。
 
+**对应 release_notes.yaml 的 `kind`**：本周期 entries 全是 `fixed` / `improved` /
+`removed` / `deprecated` → PATCH；含任一 `added` / `changed` → MINOR；纯
+`security` hotfix → PATCH（紧急 patch 即使含 `changed` 也走 PATCH，让用户
+敢升）。
+
 Pre-release 用 `-rc1` / `-beta1` 后缀（v0.6.0-rc1）。
 
 ### 2. 在 `dev` 上准备 release
@@ -141,18 +146,97 @@ git checkout dev
 git pull origin dev
 ```
 
-**bump version 三处必须同步**：
+**写 release notes（结构化 yaml，agent 友好）**
+
+source of truth 是 [`release_notes.yaml`](release_notes.yaml)；`CHANGELOG.md`
+由工具从 yaml 派生，**不要手改** CHANGELOG（下次 render 会被覆盖）。
+
+按 [`docs/release-notes-spec.md`](docs/release-notes-spec.md) 在 yaml 顶部
+插入新版本 block，每个 user-facing PR 一条 entry（纯 chore / docs / 内部
+refactor PR 跳过）：
+
+```yaml
+- version: "0.X.0"
+  date: "YYYY-MM-DD"
+  summary: "一句话总览"
+  entries:
+    - kind: added            # added/changed/improved/fixed/removed/deprecated/security
+      summary: "user-facing 一行，≤ 80 字符，结尾带 PR 号（#NN）"
+      pr_refs: [NN]
+      detail: |              # 可选，markdown 多行
+        markdown 多行细节
+```
+
+拉本周期所有 merge 的 PR（命令样例）：
+
+```bash
+gh pr list --state merged --base dev \
+  --search 'merged:>=<上次 release 日期>' \
+  --json number,title,body,labels,author,mergedAt --limit 100
+```
+
+详细 do/don't / kind 分类规则 / good vs bad 例子见 release-notes-spec.md。
+
+**`bump_version.py` 一键同步版本号 + 重写 CHANGELOG.md**
+
+```bash
+python tools/bump_version.py validate                 # 先校验 yaml schema
+python tools/bump_version.py bump --version 0.X.0     # 同步版本号 + 重写 CHANGELOG.md
+```
+
+工具自动改：
 
 1. `studio/__init__.py` — `__version__ = "0.X.0"`
 2. `studio/web/package.json` — `"version": "0.X.0"`
-3. `CHANGELOG.md` 顶部加新段（参考已有格式）
+3. `CHANGELOG.md` — 从 yaml 派生
 
-> 前端 Sidebar 的版本号是从 `/api/health` 拉的，**不要去 Sidebar.tsx 硬编码**。
+`bump` 跑前自动跑 `validate`，schema 错（kind 不在白名单 / summary > 80 字 /
+版本顺序错 / pr_refs 不是 int / etc.）会直接拒。
+
+**还需要手动改一处**：`README.md` 顶部 shields.io badge URL + 「## 版本」
+段「当前版本 **0.X.0**」（README 风格用户偏好强，工具暂不动）。
+
+> 前端 Sidebar 的版本号从 `/api/health` 拉，**不要去 Sidebar.tsx 硬编码**。
+
+跑 grep 兜底找漏（架构文档示意图、ADR 引用等）：
+
+```bash
+grep -rn "<旧版本号，例 0.5.0>" --include="*.md" --include="*.json" \
+  --include="*.py" --exclude-dir=node_modules --exclude-dir=venv
+```
+
+输出里属于「历史记录」的保留不动（CHANGELOG 历史段、ADR 引用上次发版
+的事实、release_notes.yaml 历史 entries）；属于「当前展示」的更新到新版本
+（README badge / docs 示意图 / 任何描述「当前版本」的句子）。
+
+**审阅 README + docs 全量内容**（不只是版本号 — 内容本身是否还对得上）：
+
+版本号是「指针」，指针对了内容也可能漂；release 是把内容跟当前实际功能
+重新对齐的窗口。本周期改了的地方，文档里相应的描述 / 示例 / 截图 / 数据
+模型 / 字段名 / UI 措辞都要顺手核对。
+
+- **README.md 通读一遍**：项目概览 / 特性列表 / 截图 / 流水线 7 步 / Studio
+  Web 工作台描述 / 快速开始 / 系统先决条件 / 项目结构 / 致谢，每一段对照
+  本周期 PR 看是否还成立（功能被删 / 改名 / 行为变了 / 新增大功能没提到）
+- **docs/ 通读**：
+  - `docs/user-guide/` — 用户向（标签格式 / 训练 tips / caption 格式 等）
+    本周期 schema / 默认值 / UI 流程改了的话，对应章节要同步
+  - `docs/architecture/` — 开发者向架构总览，**示意图里的版本号 / 模块路径
+    / 字段名**对照新代码看是否漂了（grep 抓不到结构性漂移）
+  - `docs/adr/` — 历史决策记录，**保留原状不改**（ADR 是 point-in-time 快照，
+    引用「当时的版本号」属于历史记录）。除非本周期落地了某个 ADR，可在那条
+    ADR 顶部 status 从 Proposed → Accepted
+- **截图 / GIF**：UI 大改的话（本周期如 Settings / 训练页 / 自更新面板）
+  README / docs 里的截图可能已陈旧，必要时重拍
+
+发现漂移**就在本 release commit 里一起改**，不要拖到下次。文档跟版本号
+脱钩的程度往往比想象的大。
 
 提一个 commit：
 
 ```bash
-git add studio/__init__.py studio/web/package.json CHANGELOG.md
+git add release_notes.yaml CHANGELOG.md \
+        studio/__init__.py studio/web/package.json README.md
 git commit -m "chore(release): v0.X.0"
 git push origin dev
 ```
@@ -207,7 +291,7 @@ git checkout -b hotfix/<topic>
 # 3. Squash and merge 进 master
 
 # 4. 按上面 release 流程的第 2 / 5 / 6 步：
-#    - bump PATCH（__init__.py + package.json + CHANGELOG.md）
+#    - bump PATCH（__init__.py + package.json + CHANGELOG.md + README.md）
 #    - 直接在 master 上 commit version bump（也算 hotfix 例外）
 #    - 打 v0.X.Y tag + 发 GitHub Release
 
@@ -269,12 +353,14 @@ tests/       后端 pytest + 前端 vitest（前端测试在 studio/web/src/**/*
 
 ## 给 AI agent 的额外说明
 
+**AI agent 接到本仓库任务时必读** [`docs/AGENTS.md`](docs/AGENTS.md) — 代码质量、一致性、可维护性、AI 协作的完整公约（含开工前对齐协议、单一权威源清单、陷阱清单、PR 自检）。本节是简版速查。
+
 如果你是 Claude Code / Cursor / 类似 agent 在帮 maintainer 或 contributor 干活：
 
 **遵守的**：
 
 - 一个 PR = 一个完整 unit of work，别把不相关的改动塞一起
-- 改 version 时**三处必须同步**：`studio/__init__.py` + `studio/web/package.json` + `CHANGELOG.md` 顶部新段
+- 改 version 时**四处必须同步**：`studio/__init__.py` + `studio/web/package.json` + `CHANGELOG.md` 顶部新段 + `README.md`（顶部 badge + 「## 版本」段当前版本句）
 - 修 bug 不要顺手 refactor 别的代码（除非 maintainer 明确要求）
 - 测试覆盖：bug fix → 加 regression test；feat → 新功能 test
 - 中文 commit message 和文档没问题（仓库已有惯例），但 conventional commits 的 `type(scope):` 前缀用英文

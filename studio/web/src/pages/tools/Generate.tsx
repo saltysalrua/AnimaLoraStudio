@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   api,
   type GenerateRequest,
   type LoraEntry,
-  type MonitorState,
   type Task,
   type XYMatrixSpec,
 } from '../../api/client'
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../components/Toast'
 import { useEventStream } from '../../lib/useEventStream'
+import { useMonitorProgress } from '../../lib/useMonitorProgress'
 import AspectChips, { aspectFromDimensions, type AspectName } from './generate/AspectChips'
 import DaemonControls from './generate/DaemonControls'
 import GenerateProgressBar, { type GenerateProgress } from './generate/GenerateProgress'
 import NumField from './generate/NumField'
 import PreviewCompare from './generate/PreviewCompare'
 import PreviewHistoryRail from './generate/PreviewHistoryRail'
-import PromptFromDatasetPicker from './generate/PromptFromDatasetPicker'
+import PromptFromDatasetPicker, { type DatasetPick } from './generate/PromptFromDatasetPicker'
 import { makeThumbnail, useGenerateHistory, type HistoryEntry } from './generate/useGenerateHistory'
 import PreviewXYGrid from './generate/PreviewXYGrid'
 import PromptList from './generate/PromptList'
@@ -30,6 +31,7 @@ import { useProjectLoras } from './generate/useProjectLoras'
 import { cellCount, draftToSpec, parseAxisValues, type XYAxisDraft } from './generate/xy'
 
 export default function GeneratePage() {
+  const { t } = useTranslation()
   const { toast } = useToast()
 
   const [mode, setMode] = useState<ViewMode>('single')
@@ -59,7 +61,10 @@ export default function GeneratePage() {
   // 没法重试也没法取消（status=failed 时 cancelable=false）
   const [submitting, setSubmitting] = useState(false)
   const [currentTask, setCurrentTask] = useState<Task | null>(null)
-  const [monitorState, setMonitorState] = useState<MonitorState | null>(null)
+  // monitor 走 useMonitorProgress hook (PR #37 增量协议)：currentTask 变 →
+  // hook 自动重拉快照 + 订阅 SSE delta 合并；本组件只用 samples 字段，其余
+  // 字段在这页生成场景下不需要。
+  const { state: monitorState } = useMonitorProgress(currentTask?.id ?? null)
   // commit 14：中间步预览（仅 single 模式有意义；XY/对比 cell 多预览意义小）
   const [previewStep, setPreviewStep] = useState<{ step: number; total: number; dataUrl: string } | null>(null)
   // 生成进度（image_started + preview_step 聚合）
@@ -67,6 +72,9 @@ export default function GeneratePage() {
     batchIdx: null, batchTotal: null, currentStep: null, totalSteps: null,
   })
   const [datasetPickerOpen, setDatasetPickerOpen] = useState(false)
+  // dataset picker 选中状态：picker 关掉再开都保留；不写进 prompts 数组，
+  // 而是在 handleGenerate 里把 tags 拼到每条 prompt 末尾再 enqueue。
+  const [datasetPick, setDatasetPick] = useState<DatasetPick | null>(null)
   // commit 16：图片历史栏。点击历史项 → 主预览替换为该项封面
   const history = useGenerateHistory()
   const [historyOverride, setHistoryOverride] = useState<HistoryEntry | null>(null)
@@ -123,12 +131,6 @@ export default function GeneratePage() {
           setProgress({ batchIdx: null, batchTotal: null, currentStep: null, totalSteps: null })
         }
       }).catch(() => { /* task 已清也走这里 */ })
-    } else if (
-      evt.type === 'monitor_state_updated'
-      && String(evt.task_id) === String(tid)
-      && evt.state
-    ) {
-      setMonitorState(evt.state as MonitorState)
     } else if (
       evt.type === 'generate_preview_step'
       && String(evt.task_id) === String(tid)
@@ -239,8 +241,11 @@ export default function GeneratePage() {
   }
 
   const handleGenerate = async () => {
-    if (!prompts.some((p) => p.trim())) {
-      toast('请输入至少一条提示词', 'error')
+    const datasetSuffix = datasetPick && datasetPick.tags.length > 0
+      ? datasetPick.tags.join(', ')
+      : ''
+    if (!prompts.some((p) => p.trim()) && !datasetSuffix) {
+      toast(t('generate.promptOrDatasetRequired'), 'error')
       return
     }
 
@@ -248,7 +253,7 @@ export default function GeneratePage() {
     if (mode === 'xy') {
       // schema 强制 prompts 单条 + count=1
       if (prompts.filter((p) => p.trim()).length > 1) {
-        toast('XY 模式只支持单条 prompt（多 prompt 与 XY 互斥）', 'error')
+        toast(t('generate.xySinglePromptOnly'), 'error')
         return
       }
       const filteredLoras = loras.filter((l) => l.path.trim())
@@ -265,12 +270,19 @@ export default function GeneratePage() {
 
     setSubmitting(true)
     setCurrentTask(null)
-    setMonitorState(null)
+    // monitorState 由 useMonitorProgress hook 自动随 currentTask 切 null → 清空
     setSelectedIndices([])  // 新一轮生成 — 旧选择已失效
     setProgress({ batchIdx: null, batchTotal: null, currentStep: null, totalSteps: null })
     try {
+      // 拼接顺序：手写正向在前，dataset tags 在后（与产品约定一致）
+      const baseTrimmed = prompts.map((p) => p.trim()).filter((p) => p)
+      const mergedPrompts = datasetSuffix
+        ? (baseTrimmed.length > 0
+            ? baseTrimmed.map((p) => `${p}, ${datasetSuffix}`)
+            : [datasetSuffix])
+        : baseTrimmed
       const body: GenerateRequest = {
-        prompts: prompts.filter((p) => p.trim()),
+        prompts: mergedPrompts,
         negative_prompt: negPrompt,
         width, height, steps,
         count: mode === 'xy' ? 1 : count,
@@ -280,13 +292,13 @@ export default function GeneratePage() {
         // attention_backend 不带：server 自动从 secrets.generate.attention_backend 读
         xy_matrix,
       }
-      const t = await api.enqueueGenerate(body)
+      const task = await api.enqueueGenerate(body)
       // 立即同步 ref，避免 supervisor 在 enqueue 返回 → setCurrentTask 渲染
       // 之间已经处理完任务并发了 task_state_changed 事件（config 缺失这种
       // 早期失败会马上发 SSE，handler 拿 taskIdRef 还是 null → 漏事件）
-      taskIdRef.current = t.id
-      setCurrentTask(t)
-      toast(`测试任务 #${t.id} 已入队`, 'success')
+      taskIdRef.current = task.id
+      setCurrentTask(task)
+      toast(t('generate.taskEnqueued', { id: task.id }), 'success')
     } catch (e) {
       toast(String(e), 'error')
     } finally {
@@ -298,7 +310,7 @@ export default function GeneratePage() {
     if (!currentTask) return
     try {
       await api.cancelTask(currentTask.id)
-      toast(`已请求取消 #${currentTask.id}`, 'info')
+      toast(t('generate.cancelRequested', { id: currentTask.id }), 'info')
     } catch (e) {
       toast(String(e), 'error')
     }
@@ -312,17 +324,16 @@ export default function GeneratePage() {
   const busy: boolean = submitting || Boolean(cancelable)
 
   const generateLabel = busy
-    ? '生成中…'
+    ? t('generate.generating')
     : mode === 'xy' && xyCellCount > 0
-      ? `开始生成 · ${xyCellCount} 张`
-      : '开始生成'
+      ? t('generate.startGenerateCount', { n: xyCellCount })
+      : t('generate.startGenerate')
 
   return (
     <div className="fade-in flex flex-col" style={{ height: '100%', overflow: 'hidden' }}>
       <PageHeader
-        eyebrow="工具"
-        title="测试"
-        subtitle="独立推理 · 单图 / XY 矩阵 / 双图对比（出图不保存，关页面即丢）"
+        title={t('generate.title')}
+        subtitle={t('generate.subtitle')}
         actions={<DaemonControls />}
       />
 
@@ -338,7 +349,7 @@ export default function GeneratePage() {
               <div className="card" style={{ padding: 18 }}>
                 <div className="flex items-baseline justify-between mb-3">
                   <h3 className="m-0 text-md font-semibold">LoRA</h3>
-                  <span className="text-xs text-fg-tertiary">从项目挑版本，权重单滑块调</span>
+                  <span className="text-xs text-fg-tertiary">{t('generate.loraHint')}</span>
                 </div>
                 <SidebarLoras loras={loras} onChange={setLoras} projectLoras={projectLoras} />
               </div>
@@ -358,33 +369,29 @@ export default function GeneratePage() {
 
             <div className="card" style={{ padding: 18 }}>
               <div className="flex items-baseline justify-between mb-3">
-                <h3 className="m-0 text-md font-semibold">提示词</h3>
+                <h3 className="m-0 text-md font-semibold">{t('generate.prompts')}</h3>
                 {!datasetPickerOpen && (
                   <button
                     onClick={() => setDatasetPickerOpen(true)}
                     className="btn btn-ghost text-xs text-fg-tertiary"
-                    title="从训练集选 caption 作为 prompt"
+                    title={t('generate.pickFromDatasetTitle')}
                   >
-                    + 从训练集选取
+                    {t('generate.pickFromDataset')}
                   </button>
                 )}
               </div>
               {datasetPickerOpen && (
                 <div className="mb-3">
                   <PromptFromDatasetPicker
-                    onAppend={(tags) => {
-                      const cur = (prompts[0] ?? '').trim()
-                      const next = cur ? `${cur}, ${tags.join(', ')}` : tags.join(', ')
-                      setPrompts([next])
-                    }}
-                    onReplace={(tags) => setPrompts([tags.join(', ')])}
+                    value={datasetPick}
+                    onChange={setDatasetPick}
                     onClose={() => setDatasetPickerOpen(false)}
                   />
                 </div>
               )}
-              <label className="caption block mb-1">正向</label>
+              <label className="caption block mb-1">{t('generate.positive')}</label>
               <PromptList prompts={prompts} onChange={setPrompts} />
-              <label className="caption block mb-1 mt-3">负向</label>
+              <label className="caption block mb-1 mt-3">{t('generate.negative')}</label>
               <textarea
                 className="input w-full font-mono text-xs resize-y"
                 rows={5}
@@ -394,10 +401,10 @@ export default function GeneratePage() {
             </div>
 
             <div className="card" style={{ padding: 18 }}>
-              <h3 className="m-0 text-md font-semibold mb-3">采样参数</h3>
+              <h3 className="m-0 text-md font-semibold mb-3">{t('generate.samplingParams')}</h3>
               <div className="flex flex-col gap-3">
                 <div>
-                  <label className="caption block mb-1.5">画幅</label>
+                  <label className="caption block mb-1.5">{t('generate.aspect')}</label>
                   <AspectChips
                     aspect={aspect}
                     onPick={(a, w, h) => {
@@ -407,8 +414,8 @@ export default function GeneratePage() {
                   />
                 </div>
                 <div className="flex gap-2 items-end">
-                  <NumField label="宽" value={width} onChange={(v) => { setWidth(v); setAspect(aspectFromDimensions(v, height)) }} min={256} max={4096} step={64} />
-                  <NumField label="高" value={height} onChange={(v) => { setHeight(v); setAspect(aspectFromDimensions(width, v)) }} min={256} max={4096} step={64} />
+                  <NumField label={t('generate.width')} value={width} onChange={(v) => { setWidth(v); setAspect(aspectFromDimensions(v, height)) }} min={256} max={4096} step={64} />
+                  <NumField label={t('generate.height')} value={height} onChange={(v) => { setHeight(v); setAspect(aspectFromDimensions(width, v)) }} min={256} max={4096} step={64} />
                   <button
                     type="button"
                     onClick={() => {
@@ -416,7 +423,7 @@ export default function GeneratePage() {
                       setWidth(newW); setHeight(newH)
                       setAspect(aspectFromDimensions(newW, newH))
                     }}
-                    title="交换宽高（横版 ↔ 竖版）"
+                    title={t('generate.swapSizeTitle')}
                     className="font-mono inline-flex items-center gap-1.5 shrink-0"
                     style={{
                       border: '1px solid var(--border-subtle)',
@@ -439,20 +446,20 @@ export default function GeneratePage() {
                   </button>
                 </div>
                 <div className="flex gap-2">
-                  <NumField label="步数" value={steps} onChange={setSteps} min={1} max={150} />
+                  <NumField label={t('generate.steps')} value={steps} onChange={setSteps} min={1} max={150} />
                   <NumField label="CFG" value={cfgScale} onChange={setCfgScale} min={0} max={20} step={0.5} />
                   {mode !== 'xy' && (
-                    <NumField label="每 prompt" value={count} onChange={setCount} min={1} max={32} />
+                    <NumField label={t('generate.perPrompt')} value={count} onChange={setCount} min={1} max={32} />
                   )}
                 </div>
                 <NumField
-                  label="种子（0 = 随机）"
+                  label={t('generate.seed')}
                   value={seed}
                   onChange={setSeed}
                   min={0}
                 />
                 <div className="text-2xs text-fg-tertiary font-mono" style={{ marginTop: -4 }}>
-                  填具体数字 → 固定可复现；0 → 每次随机
+                  {t('generate.seedHint')}
                 </div>
               </div>
             </div>
@@ -478,14 +485,14 @@ export default function GeneratePage() {
                 {generateLabel}
               </button>
               {cancelable && (
-                <button className="btn btn-ghost" onClick={handleCancel} title="取消当前任务">
-                  取消
+                <button className="btn btn-ghost" onClick={handleCancel} title={t('generate.cancelCurrentTitle')}>
+                  {t('common.cancel')}
                 </button>
               )}
               {!cancelable && (
                 <div className="font-mono text-xs text-fg-tertiary text-right" style={{ lineHeight: 1.3 }}>
                   <div>{width}×{height}</div>
-                  <div>{busy ? '生成中…' : '与训练共享 GPU'}</div>
+                  <div>{busy ? t('generate.generating') : t('generate.sharedGpu')}</div>
                 </div>
               )}
             </div>
@@ -496,7 +503,7 @@ export default function GeneratePage() {
             <div className="card flex-1 flex flex-col" style={{ padding: 18, minHeight: 0 }}>
               <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <span className="text-md font-semibold">生成结果</span>
+                  <span className="text-md font-semibold">{t('generate.results')}</span>
                   {currentTask && (
                     <>
                       <span className="caption">#{currentTask.id}</span>
@@ -559,7 +566,7 @@ export default function GeneratePage() {
                                 src={url}
                                 onError={(e) => {
                                   (e.currentTarget as HTMLImageElement).src = historyOverride.thumbnailDataUrl
-                                  ;(e.currentTarget as HTMLImageElement).title = '原图已释放，仅封面缩略可见'
+                                  ;(e.currentTarget as HTMLImageElement).title = t('generate.originalReleasedCoverOnly')
                                 }}
                                 alt={fn}
                                 className="block w-full h-auto"
@@ -583,7 +590,7 @@ export default function GeneratePage() {
                         src={api.generateSampleUrl(historyOverride.taskId, historyOverride.filenames[0] ?? '')}
                         onError={(e) => {
                           (e.currentTarget as HTMLImageElement).src = historyOverride.thumbnailDataUrl
-                          ;(e.currentTarget as HTMLImageElement).title = '原图已释放，仅缩略图可见'
+                          ;(e.currentTarget as HTMLImageElement).title = t('generate.originalReleasedThumbOnly')
                         }}
                         alt={`history #${historyOverride.taskId}`}
                         className="rounded-md object-contain"
@@ -592,22 +599,22 @@ export default function GeneratePage() {
                     </a>
                   )}
                   <div className="text-xs text-fg-tertiary shrink-0">
-                    历史 #{historyOverride.taskId}
+                    {t('generate.historyTask', { id: historyOverride.taskId })}
                     {historyOverride.badge ? ` · ${historyOverride.badge}` : ''}
                     {historyOverride.mode === 'xy' && historyOverride.filenames.length > 1
-                      ? ` · ${historyOverride.filenames.length} 张` : ''}
+                      ? ` · ${t('generate.imageCount', { n: historyOverride.filenames.length })}` : ''}
                     <button
                       className="btn btn-ghost text-xs ml-2"
                       style={{ padding: '2px 8px' }}
                       onClick={() => setHistoryOverride(null)}
                     >
-                      返回当前
+                      {t('generate.backToCurrent')}
                     </button>
                   </div>
                 </div>
               ) : !currentTask ? (
                 <div className="flex-1 grid place-items-center rounded-md border border-subtle bg-sunken text-fg-tertiary text-sm">
-                  填写参数后点击「开始生成」
+                  {t('generate.emptyHint')}
                 </div>
               ) : mode === 'xy' && showCompareView ? (
                 /* xy 内部 sub-view：选 2 张时切到 compare（不切顶部 mode） */
@@ -639,12 +646,12 @@ export default function GeneratePage() {
                     />
                   </div>
                   <div className="text-xs text-fg-tertiary shrink-0">
-                    采样 {previewStep.step} / {previewStep.total}（中间步预览）
+                    {t('generate.previewStep', { step: previewStep.step, total: previewStep.total })}
                   </div>
                 </div>
               ) : samples.length === 0 ? (
                 <div className="flex-1 grid place-items-center rounded-md border border-subtle bg-sunken text-fg-tertiary text-sm">
-                  {busy ? '等待生成图…' : '已结束（无图）'}
+                  {busy ? t('generate.waitingImages') : t('generate.finishedNoImages')}
                 </div>
               ) : (
                 <SampleGallery samples={samples} taskId={currentTask.id} />

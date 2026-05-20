@@ -42,7 +42,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db.init_db(dbfile)
     monkeypatch.setattr(db, "STUDIO_DB", dbfile)
     monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path / "projects")
-    monkeypatch.setattr(projects, "TRASH_DIR", tmp_path / "_trash")
     monkeypatch.setattr(project_jobs, "JOB_LOGS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(secrets, "SECRETS_FILE", tmp_path / "secrets.json")
 
@@ -158,3 +157,19 @@ def test_worker_skips_auto_tag_when_disabled(env) -> None:
     # 没 auto_tag → 不写 .txt
     txts = list((rdir / "1_data").glob("*.txt"))
     assert txts == []
+
+
+def test_worker_imports_onnxruntime_setup_at_module_level() -> None:
+    """worker 是独立 subprocess —— auto_tag 路径会 get_tagger("wd14")，必须
+    在任何 onnxruntime import 之前触发 onnxruntime_setup 顶层 preload。
+    """
+    import re
+    import sys
+    src = Path(reg_build_worker.__file__).read_text(encoding="utf-8")
+    assert "from studio.services import onnxruntime_setup" in src, (
+        "reg_build_worker.py 顶层必须 import onnxruntime_setup 触发 preload；"
+        "见 onnxruntime_setup.py 顶部 PP9.5 注释。"
+    )
+    bad = re.findall(r"^\s*(?:import onnxruntime|from onnxruntime\b)", src, re.MULTILINE)
+    assert not bad, f"worker 不应直接 import onnxruntime；命中: {bad}"
+    assert "studio.services.onnxruntime_setup" in sys.modules

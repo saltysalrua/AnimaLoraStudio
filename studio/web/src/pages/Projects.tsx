@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { api, type ProjectStage, type ProjectSummary } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import StageBadge from '../components/StageBadge'
+import { useDialog } from '../components/Dialog'
 import { useToast } from '../components/Toast'
 import { useEventStream } from '../lib/useEventStream'
 
@@ -26,6 +28,7 @@ const STAGE_STEP: Partial<Record<ProjectStage, string>> = {
 }
 
 export default function ProjectsPage() {
+  const { t } = useTranslation()
   const [items, setItems] = useState<ProjectSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -35,6 +38,7 @@ export default function ProjectsPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const navigate = useNavigate()
   const { toast } = useToast()
+  const { confirm } = useDialog()
 
   const refresh = async () => {
     try {
@@ -62,7 +66,7 @@ export default function ProjectsPage() {
         note: form.note || undefined,
         initial_version_label: form.initial_version_label || 'v1',
       })
-      toast(`已创建 ${p.title}`, 'success')
+      toast(t('projects.created', { title: p.title }), 'success')
       setCreating(false)
       navigate(`/projects/${p.id}`)
     } catch (e) {
@@ -75,10 +79,13 @@ export default function ProjectsPage() {
   const handleDelete = async (p: ProjectSummary, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!confirm(`移到回收站？\n${p.title} (${p.slug})`)) return
+    if (!(await confirm(
+      t('projects.deleteConfirm', { title: p.title, slug: p.slug }),
+      { tone: 'danger', okText: t('projects.deleteProject') },
+    ))) return
     try {
       await api.deleteProject(p.id)
-      toast(`已移到回收站: ${p.title}`, 'success')
+      toast(t('projects.deleted', { title: p.title }), 'success')
       await refresh()
     } catch (err) {
       toast(String(err), 'error')
@@ -91,25 +98,15 @@ export default function ProjectsPage() {
       const result = await api.importTrainProject(file)
       const stats = result.stats
       toast(
-        `已导入 ${result.project.title}（${stats.image_count} 张图，${stats.tagged_count} 已打标）`,
+        t('projects.imported', { title: result.project.title, image_count: stats.image_count, tagged_count: stats.tagged_count }),
         'success',
       )
       navigate(`/projects/${result.project.id}`)
     } catch (e) {
-      toast(`导入失败: ${e}`, 'error')
+      toast(t('projects.importFailed', { e }), 'error')
     } finally {
       setImporting(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
-    }
-  }
-
-  const handleEmptyTrash = async () => {
-    if (!confirm('物理删除所有回收站项目？此操作不可恢复。')) return
-    try {
-      const r = await api.emptyTrash()
-      toast(`清空了 ${r.removed} 个项目`, 'success')
-    } catch (e) {
-      toast(String(e), 'error')
     }
   }
 
@@ -120,18 +117,10 @@ export default function ProjectsPage() {
   return (
     <div className="fade-in">
       <PageHeader
-        eyebrow="工作台 · projects"
-        title="项目"
-        subtitle="每个项目对应一个 LoRA 训练目标 — 角色、风格或概念。新建一个项目开始流水线。"
+        title={t('projects.title')}
+        subtitle={t('projects.description')}
         actions={
           <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={handleEmptyTrash}
-              title="物理删除回收站"
-            >
-              清空回收站
-            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -146,15 +135,15 @@ export default function ProjectsPage() {
               className="btn btn-secondary btn-sm"
               onClick={() => fileInputRef.current?.click()}
               disabled={importing}
-              title={importing ? '上传 + 解压中...' : '上传训练集 zip → 自动新建项目'}
+              title={importing ? t('projects.uploadingZip') : t('projects.importZipHint')}
             >
-              {importing ? '导入中…' : '导入 zip'}
+              {importing ? t('projects.importing') : t('projects.importZip')}
             </button>
             <button className="btn btn-primary" onClick={() => setCreating(true)}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              <span>新建项目</span>
+              <span>{t('projects.newProject')}</span>
             </button>
           </>
         }
@@ -176,8 +165,8 @@ export default function ProjectsPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="mt-20 text-center text-fg-tertiary">
-            <div className="text-lg mb-2">还没有项目</div>
-            <div className="text-sm">点右上角「新建项目」开始一个新的 LoRA 训练</div>
+            <div className="text-lg mb-2">{t('projects.noProjects')}</div>
+            <div className="text-sm">{t('projects.noProjectsHint')}</div>
           </div>
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
@@ -213,6 +202,7 @@ function ProjectCard({
   onClick: () => void
   onDelete: (e: React.MouseEvent) => void
 }) {
+  const { t } = useTranslation()
   const [hovered, setHovered] = useState(false)
 
   const stepPath = p.stage in STAGE_STEP ? STAGE_STEP[p.stage] : undefined
@@ -225,7 +215,6 @@ function ProjectCard({
       className={`p-[18px] text-left rounded-lg cursor-pointer flex flex-col gap-3.5 relative w-full ${hovered ? 'border-dim shadow-sm bg-surface' : 'border border-subtle bg-surface'}`}
       style={{ transition: 'border-color 0.15s, box-shadow 0.15s' }}
     >
-      {/* header row */}
       <div className="flex justify-between items-start gap-2">
         <div className="flex-1 min-w-0">
           <div className="text-md font-semibold overflow-hidden text-ellipsis whitespace-nowrap" style={{ letterSpacing: '-0.01em' }}>
@@ -238,20 +227,18 @@ function ProjectCard({
         <StageBadge stage={p.stage} />
       </div>
 
-      {/* note */}
       {p.note && (
         <p className="m-0 text-sm text-fg-secondary overflow-hidden line-clamp-2">
           {p.note}
         </p>
       )}
 
-      {/* footer row */}
       <div className="flex gap-4 text-sm text-fg-secondary mt-auto items-center">
-        <StatPair label="下载" value={p.download_image_count ?? 0} />
+        <StatPair label={t('nav.download')} value={p.download_image_count ?? 0} />
         <span className="flex-1" />
         {stepPath && (
           <span className="text-xs text-accent font-mono">
-            继续 →
+            {t('projects.continueBtn')}
           </span>
         )}
         <span className="text-fg-tertiary text-xs">
@@ -260,7 +247,7 @@ function ProjectCard({
         <button
           onClick={onDelete}
           className="bg-transparent border-none px-1.5 py-0.5 rounded-sm text-fg-tertiary text-xs cursor-pointer"
-          title="移到回收站"
+          title={t('projects.deleteProjectTitle')}
         >
           ×
         </button>
@@ -295,6 +282,7 @@ function NewProjectDialog({
   onCancel: () => void
   onSubmit: (form: NewProjectForm) => void
 }) {
+  const { t } = useTranslation()
   const [form, setForm] = useState<NewProjectForm>({
     title: '',
     note: '',
@@ -318,46 +306,46 @@ function NewProjectDialog({
         className="bg-surface border border-dim rounded-xl p-7 flex flex-col gap-[18px] shadow-lg"
         style={{ width: '90%', maxWidth: 440 }}
       >
-        <h2 className="m-0 text-xl font-semibold">新建项目</h2>
+        <h2 className="m-0 text-xl font-semibold">{t('projects.newProject')}</h2>
 
-        <FieldLabel label="项目名称" hint="title">
+        <FieldLabel label={t('projects.newProjectTitle')} hint="title">
           <input
             autoFocus
             className="input"
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
-            placeholder="例：Cosmic Kaguya"
+            placeholder={t('projects.titlePlaceholder')}
           />
         </FieldLabel>
 
-        <FieldLabel label="初始版本标签" hint="initial_version_label">
+        <FieldLabel label={t('projects.versionLabel')} hint="initial_version_label">
           <input
             className="input input-mono"
             value={form.initial_version_label}
             onChange={(e) => setForm({ ...form, initial_version_label: e.target.value })}
-            placeholder="v1 / baseline / ..."
+            placeholder={t('projects.versionPlaceholder')}
           />
         </FieldLabel>
 
-        <FieldLabel label="备注" hint="note（可选）">
+        <FieldLabel label={t('common.notes')} hint="note（可选）">
           <textarea
             className="input"
             value={form.note}
             onChange={(e) => setForm({ ...form, note: e.target.value })}
-            placeholder="训练目标 / 备注"
+            placeholder={t('projects.notesPlaceholder')}
             rows={3}
             style={{ resize: 'vertical' }}
           />
         </FieldLabel>
 
         <div className="flex gap-2 justify-end">
-          <button type="button" className="btn btn-secondary" onClick={onCancel}>取消</button>
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>{t('common.cancel')}</button>
           <button
             type="submit"
             className="btn btn-primary"
             disabled={busy || !form.title.trim()}
           >
-            {busy ? '创建中…' : '创建'}
+            {busy ? t('projects.creating') : t('common.create')}
           </button>
         </div>
       </form>

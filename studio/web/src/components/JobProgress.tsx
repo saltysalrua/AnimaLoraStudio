@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { Job } from '../api/client'
 
 interface Props {
@@ -16,16 +17,24 @@ const STATUS_COLOR: Record<Job['status'], string> = {
 }
 
 export default function JobProgress({ job, logs, onCancel }: Props) {
+  const { t } = useTranslation()
   const logRef = useRef<HTMLPreElement>(null)
+  const [, setTick] = useState(0)
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [logs])
 
+  const isLive = job.status === 'running' || job.status === 'pending'
+  useEffect(() => {
+    if (!isLive) return
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [isLive])
+
   const elapsed =
     job.started_at && (job.finished_at ?? Date.now() / 1000) - job.started_at
-  const isLive = job.status === 'running' || job.status === 'pending'
 
   return (
     <section className="rounded-lg border border-subtle bg-surface overflow-hidden">
@@ -49,7 +58,7 @@ export default function JobProgress({ job, logs, onCancel }: Props) {
             onClick={onCancel}
             className="btn btn-ghost btn-sm text-err hover:bg-err-soft"
           >
-            取消
+            {t('common.cancel')}
           </button>
         )}
       </header>
@@ -57,7 +66,7 @@ export default function JobProgress({ job, logs, onCancel }: Props) {
         ref={logRef}
         className="p-3 text-[11px] font-mono text-fg-secondary bg-sunken max-h-72 overflow-y-auto whitespace-pre-wrap"
       >
-        {logs.length === 0 ? '(等待日志...)' : logs.slice(-1000).join('\n')}
+        {logs.length === 0 ? t('jobProgress.waitingLogs') : logs.slice(-1000).join('\n')}
       </pre>
     </section>
   )

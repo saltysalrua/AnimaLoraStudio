@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useProjectCtx } from '../context/ProjectContext'
-import { api, type MonitorState, type Task } from '../api/client'
+import { api, type Task } from '../api/client'
 import { useEventStream, type StudioEvent } from '../lib/useEventStream'
+import { useMonitorProgress } from '../lib/useMonitorProgress'
 import CommandPalette from './CommandPalette'
+import SystemStats from './SystemStats'
 
 const SearchIcon = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -22,59 +25,73 @@ const QueueIcon = (
 
 function formatETA(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
-  if (seconds < 3600) return `${Math.round(seconds / 60)}分`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
   const h = Math.floor(seconds / 3600)
   const m = Math.round((seconds % 3600) / 60)
-  return m > 0 ? `${h}时${m}分` : `${h}时`
+  return m > 0 ? `${h}h${m}m` : `${h}h`
 }
 
 function formatElapsed(from: number): string {
   const s = Math.max(0, (Date.now() / 1000) - from)
   if (s < 60) return `${Math.round(s)}s`
-  if (s < 3600) return `${Math.round(s / 60)}分`
+  if (s < 3600) return `${Math.round(s / 60)}m`
   const h = Math.floor(s / 3600)
   const m = Math.round((s % 3600) / 60)
-  return m > 0 ? `${h}时${m}分` : `${h}时`
+  return m > 0 ? `${h}h${m}m` : `${h}h`
 }
 
 // ── breadcrumb ──────────────────────────────────────────────────────────────
 
-interface Crumb { label: string; mono?: boolean }
+interface Crumb { label: string; mono?: boolean; to?: string }
 
 function useBreadcrumbs(): Crumb[] {
+  const { t } = useTranslation()
   const { pathname } = useLocation()
   const ctx = useProjectCtx()
   const parts = pathname.split('/').filter(Boolean)
 
-  if (parts.length === 0) return [{ label: '项目' }]
+  if (parts.length === 0) return [{ label: t('breadcrumb.projects'), to: '/' }]
 
   if (parts[0] === 'queue') {
-    if (parts.length === 1) return [{ label: '队列' }]
-    return [{ label: '队列' }, { label: `#${parts[1]}`, mono: true }]
+    if (parts.length === 1) return [{ label: t('breadcrumb.queue'), to: '/queue' }]
+    return [{ label: t('breadcrumb.queue'), to: '/queue' }, { label: `#${parts[1]}`, mono: true }]
   }
 
   if (parts[0] === 'tools') {
-    const labels: Record<string, string> = { presets: '预设', monitor: '监控', settings: '设置' }
+    const labels: Record<string, string> = {
+      presets: t('breadcrumb.presets'),
+      monitor: t('breadcrumb.monitor'),
+      settings: t('breadcrumb.settings'),
+      generate: t('breadcrumb.generate'),
+    }
     return [{ label: labels[parts[1]] ?? parts[1] }]
   }
 
   if (parts[0] === 'projects') {
-    const crumbs: Crumb[] = [{ label: '项目' }]
+    const crumbs: Crumb[] = [{ label: t('breadcrumb.projects'), to: '/' }]
 
     const projectLabel = ctx?.project?.title ?? (parts[1] ? `#${parts[1]}` : null)
-    if (projectLabel) crumbs.push({ label: projectLabel })
+    const projectId = parts[1]
+    if (projectLabel) crumbs.push({ label: projectLabel, to: projectId ? `/projects/${projectId}` : undefined })
 
     const vIdx = parts.indexOf('v')
     if (vIdx !== -1 && parts[vIdx + 1]) {
       const versionLabel = ctx?.activeVersion?.label ?? `v${parts[vIdx + 1]}`
+      const vid = parts[vIdx + 1]
       crumbs.push({ label: versionLabel, mono: true })
       const stepLabels: Record<string, string> = {
-        curate: '筛选', tag: '打标', edit: '标签编辑', reg: '正则集', train: '训练',
+        curate: t('breadcrumb.curate'),
+        tag: t('breadcrumb.tag'),
+        edit: t('breadcrumb.tagEdit'),
+        reg: t('breadcrumb.reg'),
+        train: t('breadcrumb.train'),
       }
       const step = parts[vIdx + 2]
-      if (step && stepLabels[step]) crumbs.push({ label: stepLabels[step] })
+      if (step && stepLabels[step]) {
+        crumbs.push({ label: stepLabels[step], to: `/projects/${projectId}/v/${vid}/${step}` })
+      }
     } else if (parts[2] === 'download') {
-      crumbs.push({ label: '下载' })
+      crumbs.push({ label: t('breadcrumb.download'), to: `/projects/${projectId}/download` })
     }
     return crumbs
   }
@@ -85,16 +102,29 @@ function useBreadcrumbs(): Crumb[] {
 // ── Topbar ──────────────────────────────────────────────────────────────────
 
 export default function Topbar() {
+  const { t } = useTranslation()
   const crumbs = useBreadcrumbs()
   const navigate = useNavigate()
   const ctx = useProjectCtx()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const searchBtnRef = useRef<HTMLButtonElement>(null)
 
-  // 队列详细状态
   const [runningTask, setRunningTask] = useState<Task | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
-  const [monitor, setMonitor] = useState<MonitorState | null>(null)
+
+  const [updateInfo, setUpdateInfo] = useState<{ has_update: boolean; latest_tag: string | null; latest_commit: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void api.checkSystemUpdate('master').then((r) => {
+      if (cancelled) return
+      if (r.has_update) {
+        setUpdateInfo({ has_update: true, latest_tag: r.latest_tag, latest_commit: r.latest_commit })
+      }
+    }).catch(() => { /* silent */ })
+    return () => { cancelled = true }
+  }, [])
+
+  const { state: monitor } = useMonitorProgress(runningTask?.id ?? null)
 
   const refreshQueue = useCallback(async () => {
     try {
@@ -102,51 +132,24 @@ export default function Topbar() {
         api.listQueue('running'),
         api.listQueue('pending'),
       ])
-      const firstRunning = running.length > 0 ? running[0] : null
-      setRunningTask(firstRunning)
+      setRunningTask(running.length > 0 ? running[0] : null)
       setPendingCount(pending.length)
-
-      if (firstRunning) {
-        try {
-          const ms = await api.getMonitorState(firstRunning.id)
-          setMonitor(ms)
-        } catch {
-          setMonitor(null)
-        }
-      } else {
-        setMonitor(null)
-      }
     } catch {
       // 忽略
     }
   }, [])
 
-  // 队列状态走 SSE：mount 拉一次冷启动，之后只在 task_state_changed /
-  // monitor_state_updated 事件来时更新。SSE 重连后 onOpen 也补一次冷启动
-  // 防漏事件。不再轮询（之前 3-10s setInterval 在 1 个 running task 下会
-  // 攒成每秒 7+ 请求的死循环 bug，根因是 useEffect deps 用了 Task 对象）。
   useEffect(() => {
     void refreshQueue()
   }, [refreshQueue])
 
   useEventStream(
     (evt: StudioEvent) => {
-      if (evt.type === 'task_state_changed') {
-        void refreshQueue()
-      } else if (
-        evt.type === 'monitor_state_updated' &&
-        runningTask &&
-        String(evt.task_id) === String(runningTask.id) &&
-        evt.state
-      ) {
-        // 后端 SSE 已经把 state 全量塞 payload 里，直接 setState，不再 fetch
-        setMonitor(evt.state as MonitorState)
-      }
+      if (evt.type === 'task_state_changed') void refreshQueue()
     },
     { onOpen: () => void refreshQueue() },
   )
 
-  // ⌘K / Ctrl+K
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -158,7 +161,6 @@ export default function Topbar() {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // ── 计算进度 ──
   const progress = (() => {
     if (!monitor || !runningTask) return null
 
@@ -179,13 +181,12 @@ export default function Topbar() {
 
     if (monitor.start_time) {
       const elapsed = formatElapsed(monitor.start_time)
-      return { currentUnit: `运行 ${elapsed}` } as const
+      return { currentUnit: t('topbar.running', { elapsed }) } as const
     }
 
     return null
   })()
 
-  // ── 训练胶囊文本 ──
   const projectLabel = (ctx && runningTask?.project_id != null && runningTask.project_id === ctx.project.id)
     ? ctx.project.title
     : null
@@ -193,7 +194,7 @@ export default function Topbar() {
   const taskLabel = projectLabel ? `${projectLabel} / ${configName}` : configName
 
   const progressSuffix = (() => {
-    if (!progress) return runningTask?.started_at ? ` · 运行 ${formatElapsed(runningTask.started_at)}` : ''
+    if (!progress) return runningTask?.started_at ? ` · ${t('topbar.running', { elapsed: formatElapsed(runningTask.started_at) })}` : ''
     if ('pct' in progress) {
       const p = progress as { current: number; total: number; unit: string; eta?: string }
       const nums = `${p.current.toLocaleString()} / ${p.total.toLocaleString()}`
@@ -203,63 +204,81 @@ export default function Topbar() {
     return ''
   })()
 
-  // ── 渲染 ──
   return (
     <>
       <header
         className="flex items-center gap-3 border-b border-subtle bg-canvas shrink-0 px-5"
         style={{ height: 'var(--topbar-h)' }}
       >
-        {/* breadcrumb */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          {crumbs.map((b, i) => (
-            <span key={i} className="flex items-center gap-2">
-              {i > 0 && <span className="text-fg-tertiary select-none">/</span>}
-              <span className={
-                `text-sm ${b.mono ? 'font-mono' : ''} ` +
-                (i === crumbs.length - 1 ? 'text-fg-primary font-semibold' : 'text-fg-secondary')
-              }>
-                {b.label}
+          {crumbs.map((b, i) => {
+            const isLast = i === crumbs.length - 1
+            const cls =
+              `text-sm ${b.mono ? 'font-mono' : ''} ` +
+              (isLast
+                ? 'text-fg-primary font-semibold'
+                : 'text-fg-secondary hover:text-fg-primary transition-colors')
+            return (
+              <span key={i} className="flex items-center gap-2">
+                {i > 0 && <span className="text-fg-tertiary select-none">/</span>}
+                {!isLast && b.to ? (
+                  <Link to={b.to} className={cls}>{b.label}</Link>
+                ) : (
+                  <span className={cls}>{b.label}</span>
+                )}
               </span>
-            </span>
-          ))}
+            )
+          })}
         </div>
 
-        {/* 搜索按钮 */}
-        <button
-          ref={searchBtnRef}
-          onClick={() => setPaletteOpen(true)}
-          className="flex items-center gap-2 text-fg-tertiary text-sm bg-surface border border-dim rounded-md cursor-pointer min-w-[200px] py-[5px] pl-3 pr-[10px] hover:border-bold transition-colors shrink-0"
-        >
-          {SearchIcon}
-          <span className="flex-1 text-left">跳转 / 搜索…</span>
-          <span className="kbd">⌘K</span>
-        </button>
+        <SystemStats />
 
-        {/* 运行中训练胶囊 */}
+        {updateInfo?.has_update && (
+          <button
+            onClick={() => {
+              try { localStorage.setItem('studio.settings.activeTab', 'system') } catch { /* ignore */ }
+              navigate('/tools/settings')
+            }}
+            title={t('topbar.newVersion', { tag: updateInfo.latest_tag ?? updateInfo.latest_commit.slice(0, 8) })}
+            className="flex items-center gap-1.5 px-2 py-[5px] rounded-md text-xs font-mono text-accent bg-accent-soft border border-accent cursor-pointer hover:bg-accent/10 transition-colors shrink-0"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+            <span>{updateInfo.latest_tag ?? t('topbar.newVersion', { tag: '' }).trim()}</span>
+          </button>
+        )}
+
         {runningTask && (
           <button
             onClick={() => navigate(`/queue/${runningTask.id}`)}
             className="flex items-center gap-2 px-3 py-[5px] rounded-md border border-warn bg-warn-soft cursor-pointer hover:bg-warn/10 transition-colors shrink-0 max-w-xs"
-            title={`任务 #${runningTask.id}`}
+            title={t('topbar.taskId', { id: runningTask.id })}
           >
             <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse shrink-0" />
             <span className="text-xs font-mono text-warn overflow-hidden text-ellipsis whitespace-nowrap">
-              训练中 · {taskLabel}{progressSuffix}
+              {t('topbar.trainingCapsule', { label: taskLabel, suffix: progressSuffix })}
             </span>
           </button>
         )}
 
-        {/* 排队（无运行中时） */}
         {!runningTask && pendingCount > 0 && (
           <button
             onClick={() => navigate('/queue')}
             className="flex items-center gap-1.5 px-2.5 py-[5px] rounded-md text-xs font-mono text-warn bg-warn-soft border border-warn cursor-pointer hover:bg-warn/10 transition-colors shrink-0"
           >
             {QueueIcon}
-            <span>{pendingCount} 排队中</span>
+            <span>{t('topbar.pendingCount', { n: pendingCount })}</span>
           </button>
         )}
+
+        <button
+          ref={searchBtnRef}
+          onClick={() => setPaletteOpen(true)}
+          title={t('topbar.search')}
+          aria-label={t('topbar.searchAriaLabel')}
+          className="flex items-center justify-center text-fg-tertiary bg-surface border border-dim rounded-md cursor-pointer w-8 h-8 hover:border-bold hover:text-fg-secondary transition-colors shrink-0"
+        >
+          {SearchIcon}
+        </button>
       </header>
 
       <CommandPalette

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useOutletContext } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { useOutletContext } from 'react-router-dom'
 import {
   api,
   type DownloadFile,
@@ -9,7 +10,9 @@ import {
   type Version,
 } from '../../../api/client'
 import ImageGrid, { applySelection } from '../../../components/ImageGrid'
+import ImagePreviewModal from '../../../components/ImagePreviewModal'
 import StepShell from '../../../components/StepShell'
+import { useDialog } from '../../../components/Dialog'
 import { useToast } from '../../../components/Toast'
 import { useEventStream } from '../../../lib/useEventStream'
 
@@ -41,14 +44,17 @@ const STATUS_COLOR: Record<Job['status'], string> = {
 
 // 信息密度优先：每个 panel 紧凑成单/双 inline 行；已下载 grid 占主区域。
 export default function DownloadPage() {
+  const { t } = useTranslation()
   const { project, reload } = useOutletContext<Ctx>()
   const { toast } = useToast()
+  const { confirm } = useDialog()
   const [job, setJob] = useState<Job | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [files, setFiles] = useState<DownloadFile[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [anchor, setAnchor] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
   const [tag, setTag] = useState('')
   const [apiSource, setApiSource] = useState<'gelbooru' | 'danbooru'>(
     'gelbooru'
@@ -108,7 +114,7 @@ export default function DownloadPage() {
 
   const doEstimate = async () => {
     if (!tag.trim()) {
-      toast('tag 不能为空', 'error')
+      toast(t('download.tagEmpty'), 'error')
       return
     }
     setBusy(true)
@@ -131,8 +137,8 @@ export default function DownloadPage() {
   const start = async () => {
     if (!estimate) return
     if (estimate.count === 0)
-      return toast('查询结果为 0，没有可下载的图', 'error')
-    if (count < 1) return toast('count 必须 >= 1', 'error')
+      return toast(t('download.noResults'), 'error')
+    if (count < 1) return toast(t('download.countMin'), 'error')
     setBusy(true)
     try {
       const j = await api.startDownload(project.id, {
@@ -142,7 +148,7 @@ export default function DownloadPage() {
       })
       setJob(j)
       setLogs([])
-      toast(`开始下载 #${j.id}`, 'success')
+      toast(t('download.started', { id: j.id }), 'success')
     } catch (e) {
       toast(String(e), 'error')
     } finally {
@@ -154,7 +160,7 @@ export default function DownloadPage() {
     if (!job) return
     try {
       await api.cancelJob(job.id)
-      toast('已取消', 'success')
+      toast(t('download.canceled'), 'success')
     } catch (e) {
       toast(String(e), 'error')
     }
@@ -166,13 +172,8 @@ export default function DownloadPage() {
   return (
     <StepShell
       idx={1}
-      title="下载图片"
-      subtitle="Booru 抓取 + 本地上传"
-      actions={
-        <Link to="/tools/settings" className="btn btn-ghost btn-sm">
-          设置
-        </Link>
-      }
+      title={t('steps.download.title')}
+      subtitle={t('steps.download.subtitle')}
     >
     <div className="flex flex-col h-full gap-3 min-h-0">
 
@@ -227,7 +228,7 @@ export default function DownloadPage() {
             </div>
           )}
 
-          {/* 已下载 grid — 占满剩余高度，支持多选 + 删除 */}
+          {/* 已下载 grid — 占满剩余高度，支持多选 + 删除 + 大图预览 */}
           <DownloadedGrid
             project={project}
             files={files}
@@ -245,6 +246,10 @@ export default function DownloadPage() {
               setSelected(r.next)
               setAnchor(r.anchor)
             }}
+            onPreview={(name) => {
+              const i = files.findIndex((f) => f.name === name)
+              if (i >= 0) setPreviewIdx(i)
+            }}
             onSelectAll={() => setSelected(new Set(files.map((f) => f.name)))}
             onClear={() => {
               setSelected(new Set())
@@ -252,12 +257,10 @@ export default function DownloadPage() {
             }}
             onDelete={async () => {
               if (selected.size === 0) return
-              if (
-                !window.confirm(
-                  `从 download/ 删除 ${selected.size} 张图片（含同名 caption metadata）？\n操作不可恢复。`
-                )
-              )
-                return
+              if (!(await confirm(
+                t('download.confirmDelete', { n: selected.size }),
+                { tone: 'danger', okText: t('common.delete') },
+              ))) return
               setDeleting(true)
               try {
                 const r = await api.deleteProjectFiles(
@@ -265,9 +268,8 @@ export default function DownloadPage() {
                   Array.from(selected)
                 )
                 toast(
-                  `已删除 ${r.deleted.length} 张${
-                    r.missing.length ? ` · 跳过 ${r.missing.length} 张（不存在）` : ''
-                  }`,
+                  t('download.deletedToast', { deleted: r.deleted.length }) +
+                    (r.missing.length ? t('download.deletedSkipped', { skipped: r.missing.length }) : ''),
                   'success'
                 )
                 setSelected(new Set())
@@ -287,6 +289,18 @@ export default function DownloadPage() {
         <DownloadStatsSidebar files={files} projectDownloadCount={project.download_image_count} />
       </div>
     </div>
+
+    {previewIdx !== null && files[previewIdx] && (
+      <ImagePreviewModal
+        src={api.projectThumbUrl(project.id, files[previewIdx].name, 'download', 1600)}
+        caption={files[previewIdx].name}
+        hasPrev={previewIdx > 0}
+        hasNext={previewIdx < files.length - 1}
+        onClose={() => setPreviewIdx(null)}
+        onPrev={() => previewIdx > 0 && setPreviewIdx(previewIdx - 1)}
+        onNext={() => previewIdx < files.length - 1 && setPreviewIdx(previewIdx + 1)}
+      />
+    )}
     </StepShell>
   )
 }
@@ -302,6 +316,7 @@ function DownloadedGrid({
   anchor,
   deleting,
   onSelect,
+  onPreview,
   onSelectAll,
   onClear,
   onDelete,
@@ -312,10 +327,12 @@ function DownloadedGrid({
   anchor: string | null
   deleting: boolean
   onSelect: (name: string, e: React.MouseEvent) => void
+  onPreview: (name: string) => void
   onSelectAll: () => void
   onClear: () => void
   onDelete: () => void | Promise<void>
 }) {
+  const { t } = useTranslation()
   // anchor 仅父组件用，这里不读但保留参数避免未来漂移
   void anchor
   const items = useMemo(
@@ -329,10 +346,10 @@ function DownloadedGrid({
   return (
     <section className="flex flex-col flex-1 min-h-0 rounded-md border border-subtle bg-surface overflow-hidden">
       <header className="flex items-center gap-2 shrink-0 px-2.5 py-1.5 border-b border-subtle text-sm">
-        <h3 className="font-semibold">已下载</h3>
-        <span className="text-fg-tertiary">{files.length} 张</span>
+        <h3 className="font-semibold">{t('download.sectionTitle')}</h3>
+        <span className="text-fg-tertiary">{t('download.imageCount', { n: files.length })}</span>
         {selected.size > 0 && (
-          <span className="text-accent">· 已选 {selected.size}</span>
+          <span className="text-accent">{t('download.selectedCount', { n: selected.size })}</span>
         )}
         <span className="flex-1" />
         <button
@@ -340,22 +357,22 @@ function DownloadedGrid({
           disabled={files.length === 0 || deleting}
           className="btn btn-ghost btn-sm"
         >
-          全选
+          {t('common.selectAll')}
         </button>
         <button
           onClick={onClear}
           disabled={selected.size === 0 || deleting}
           className="btn btn-ghost btn-sm"
         >
-          清空
+          {t('common.deselect')}
         </button>
         <button
           onClick={() => void onDelete()}
           disabled={selected.size === 0 || deleting}
           className="btn btn-sm bg-err-soft text-err"
-          title="删除选中的图片 + 同名 caption metadata"
+          title={t('download.deleteTitle')}
         >
-          {deleting ? '删除中...' : `🗑 删除 ${selected.size}`}
+          {deleting ? t('download.deleting') : t('download.deleteBtn', { n: selected.size })}
         </button>
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto p-2">
@@ -363,8 +380,11 @@ function DownloadedGrid({
           items={items}
           selected={selected}
           onSelect={onSelect}
+          onActivate={onPreview}
+          onPreview={onPreview}
+          clickMode="activate"
           ariaLabel="downloaded-grid"
-          emptyHint="还没有图片 — 用上方 Booru 抓取或本地上传"
+          emptyHint={t('download.emptyHint')}
         />
       </div>
     </section>
@@ -404,10 +424,11 @@ function BooruPanel({
   onEstimate,
   onStart,
 }: BooruPanelProps) {
+  const { t } = useTranslation()
   const disabled = busy || isLive
   return (
     <section className="flex flex-col gap-1.5 rounded-md border border-subtle bg-surface px-3 py-2.5">
-      <PanelTitle accent="cyan">Booru 抓取</PanelTitle>
+      <PanelTitle accent="cyan">{t('download.booruPanel')}</PanelTitle>
       <div className="flex items-center gap-1.5">
         <select
           value={apiSource}
@@ -428,7 +449,7 @@ function BooruPanel({
             if (e.key === 'Enter' && tag.trim() && !disabled) onEstimate()
           }}
           disabled={disabled}
-          placeholder="tag (如 character_x rating:safe)"
+          placeholder={t('download.tagPlaceholder')}
           className="input flex-1 text-sm"
           style={{ padding: '3px 8px' }}
         />
@@ -437,17 +458,17 @@ function BooruPanel({
           disabled={disabled || !tag.trim()}
           className="btn btn-secondary btn-sm"
         >
-          {busy && !estimate ? '查询中...' : '查询'}
+          {busy && !estimate ? t('download.querying') : t('download.query')}
         </button>
       </div>
       {estimate && (
         <div className="flex items-center gap-1.5 flex-wrap text-sm text-fg-secondary">
           <span>
-            匹配{' '}
+            {t('download.matches')}{' '}
             {estimate.count >= 0 ? (
               <strong className="text-accent">{estimate.count}</strong>
             ) : (
-              <strong className="text-warn">未知</strong>
+              <strong className="text-warn">{t('download.matchesUnknown')}</strong>
             )}
           </span>
           {estimate.count !== 0 && (
@@ -472,7 +493,7 @@ function BooruPanel({
                   disabled={disabled}
                   className="btn btn-ghost btn-sm"
                 >
-                  全部 {estimate.count}
+                  {t('download.allN', { n: estimate.count })}
                 </button>
               )}
               <button
@@ -480,7 +501,7 @@ function BooruPanel({
                 disabled={disabled || count < 1}
                 className="btn btn-primary btn-sm ml-auto"
               >
-                {isLive ? '下载中...' : `开始 ${count}`}
+                {isLive ? t('download.downloading') : t('download.startCount', { n: count })}
               </button>
             </>
           )}
@@ -513,6 +534,7 @@ function UploadPanel({
   pid: number
   onUploaded: (r: UploadResult) => void
 }) {
+  const { t } = useTranslation()
   const { toast } = useToast()
   const inputRef = useRef<HTMLInputElement>(null)
   const [picked, setPicked] = useState<File[]>([])
@@ -534,7 +556,8 @@ function UploadPanel({
       const r = await api.uploadProjectFiles(pid, picked)
       const skipped = r.skipped.length
       toast(
-        `已添加 ${r.added.length} 张${skipped ? ` · 跳过 ${skipped}` : ''}`,
+        t('download.uploadAdded', { n: r.added.length }) +
+          (skipped ? t('download.uploadSkippedSuffix', { skipped }) : ''),
         r.added.length > 0 ? 'success' : 'error'
       )
       reset()
@@ -556,7 +579,7 @@ function UploadPanel({
 
   return (
     <section className="flex flex-col gap-1.5 rounded-md border border-subtle bg-surface px-3 py-2.5">
-      <PanelTitle accent="emerald">本地上传</PanelTitle>
+      <PanelTitle accent="emerald">{t('download.uploadPanel')}</PanelTitle>
       <label
         onDragOver={(e) => {
           e.preventDefault()
@@ -578,14 +601,12 @@ function UploadPanel({
           disabled={uploading}
           className="hidden"
         />
-        <span className="font-medium">点击选择 / 拖入</span>
-        <span className="text-fg-tertiary">
-          · png / jpg / webp / bmp / gif / .zip(自动解压)
-        </span>
+        <span className="font-medium">{t('download.clickOrDrop')}</span>
+        <span className="text-fg-tertiary">{t('download.acceptedFormats')}</span>
         <span className="flex-1" />
         {picked.length > 0 && (
           <span className="text-ok">
-            已选 {picked.length} · {(totalBytes / 1024 / 1024).toFixed(1)} MB
+            {t('download.filesSelected', { n: picked.length, mb: (totalBytes / 1024 / 1024).toFixed(1) })}
           </span>
         )}
       </label>
@@ -596,14 +617,14 @@ function UploadPanel({
             disabled={uploading}
             className="btn btn-primary btn-sm"
           >
-            {uploading ? '上传中...' : `上传 ${picked.length}`}
+            {uploading ? t('download.uploading') : t('download.uploadCount', { n: picked.length })}
           </button>
           <button
             onClick={reset}
             disabled={uploading}
             className="btn btn-ghost btn-sm"
           >
-            清空
+            {t('common.cancel')}
           </button>
           <span
             className="truncate min-w-0 flex-1 ml-1 text-xs text-fg-tertiary"
@@ -630,6 +651,7 @@ function JobStrip({
   logs: string[]
   onCancel?: () => void
 }) {
+  const { t } = useTranslation()
   const elapsed =
     job.started_at && (job.finished_at ?? Date.now() / 1000) - job.started_at
   const isLive = job.status === 'running' || job.status === 'pending'
@@ -657,12 +679,12 @@ function JobStrip({
             }}
             className="btn btn-ghost btn-sm text-err"
           >
-            取消
+            {t('common.cancel')}
           </button>
         )}
       </summary>
       <pre className="px-3 py-2 text-xs font-mono text-fg-secondary bg-sunken max-h-[224px] overflow-auto whitespace-pre-wrap border-t border-subtle m-0">
-        {logs.length === 0 ? '(等待日志...)' : logs.slice(-1000).join('\n')}
+        {logs.length === 0 ? t('jobProgress.waitingLogs') : logs.slice(-1000).join('\n')}
       </pre>
     </details>
   )
@@ -675,6 +697,7 @@ function UploadResultStrip({
   result: UploadResult
   onDismiss: () => void
 }) {
+  const { t } = useTranslation()
   const skipped = result.skipped.length
   const ok = result.added.length
   return (
@@ -683,10 +706,10 @@ function UploadResultStrip({
         <span className="inline-block transition-transform group-open:rotate-90 text-fg-tertiary w-3">▸</span>
         <span className="badge badge-ok">upload</span>
         <span className="text-fg-secondary">
-          添加 <strong className="text-ok">{ok}</strong>
+          {t('download.added')} <strong className="text-ok">{ok}</strong>
           {skipped > 0 && (
             <>
-              {' · '}跳过 <strong className="text-warn">{skipped}</strong>
+              {' · '}{t('download.skipped')} <strong className="text-warn">{skipped}</strong>
             </>
           )}
         </span>
@@ -697,7 +720,7 @@ function UploadResultStrip({
             onDismiss()
           }}
           className="btn btn-ghost btn-sm"
-          title="关闭"
+          title={t('common.close')}
         >
           ×
         </button>
@@ -712,7 +735,7 @@ function UploadResultStrip({
         </ul>
       ) : (
         <p className="px-3 py-2 text-xs text-fg-tertiary border-t border-subtle m-0">
-          全部成功，无跳过。
+          {t('download.allSucceeded')}
         </p>
       )}
     </details>
@@ -749,6 +772,7 @@ function DownloadStatsSidebar({
   files: DownloadFile[]
   projectDownloadCount: number
 }) {
+  const { t } = useTranslation()
   // 按扩展名分组统计
   const extCounts = useMemo(() => {
     const m: Record<string, number> = {}
@@ -763,12 +787,12 @@ function DownloadStatsSidebar({
     <div className="flex flex-col gap-3 min-w-0">
       {/* 总量卡片 */}
       <div className="rounded-md border border-subtle bg-surface px-3 py-2.5">
-        <PanelTitle accent="cyan">下载统计</PanelTitle>
-        <StatRow label="总量" value={projectDownloadCount} />
-        <StatRow label="本页可见" value={files.length} />
+        <PanelTitle accent="cyan">{t('download.statsTitle')}</PanelTitle>
+        <StatRow label={t('download.statsTotal')} value={projectDownloadCount} />
+        <StatRow label={t('download.statsVisible')} value={files.length} />
         {files.length > 0 && (
           <StatRow
-            label="总大小"
+            label={t('download.statsTotalSize')}
             value={files.reduce((s, f) => s + f.size, 0)}
             format="bytes"
           />
@@ -777,10 +801,10 @@ function DownloadStatsSidebar({
 
       {/* 格式分布 */}
       <div className="rounded-md border border-subtle bg-surface px-3 py-2.5 flex-1 flex flex-col min-h-0">
-        <PanelTitle accent="emerald">格式分布</PanelTitle>
+        <PanelTitle accent="emerald">{t('download.formatTitle')}</PanelTitle>
         {files.length === 0 ? (
           <p className="text-xs text-fg-tertiary m-0 mt-1.5">
-            还没有图片
+            {t('common.noImages')}
           </p>
         ) : (
           <div className="flex flex-col gap-1.5 mt-1.5 flex-1 overflow-y-auto">

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
-  downloadBlob,
   type Task,
   type TaskOutputs,
   type TaskStatus,
 } from '../api/client'
+import { PauseProgressModal } from '../components/PauseProgressModal'
 import { useToast } from '../components/Toast'
 import { useEventStream } from '../lib/useEventStream'
 import MonitorDashboard from '../components/MonitorDashboard'
@@ -19,10 +20,7 @@ const STATUS_BADGE: Record<TaskStatus, string> = {
   done: 'badge badge-ok',
   failed: 'badge badge-err',
   canceled: 'badge badge-neutral',
-}
-
-const STATUS_LABEL: Record<TaskStatus, string> = {
-  pending: '待运行', running: '运行中', done: '完成', failed: '失败', canceled: '已取消',
+  paused: 'badge badge-warn',
 }
 
 const TERMINAL: ReadonlyArray<TaskStatus> = ['done', 'failed', 'canceled']
@@ -83,7 +81,9 @@ function StatCard({ label, value, sub, mono, large, tone }: {
 export default function QueueDetailPage() {
   const { id } = useParams<{ id: string }>()
   const taskId = Number(id)
+  const { t } = useTranslation()
   const navigate = useNavigate()
+  const location = useLocation()
   const { toast } = useToast()
 
   const [task, setTask] = useState<Task | null>(null)
@@ -95,13 +95,26 @@ export default function QueueDetailPage() {
     return (['overview', 'log', 'monitor', 'outputs'] as const).includes(v as Tab) ? (v as Tab) : 'overview'
   })
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [pauseModalOpen, setPauseModalOpen] = useState(false)
 
+  // tab → hash 写回（点 tab 按钮时同步 URL，replaceState 不触发 router 重渲）
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const h = `#${tab}`
       if (window.location.hash !== h) window.history.replaceState(null, '', h)
     }
   }, [tab])
+
+  // hash → tab 同步（用户已在本页 navigate 到同一 task 但换 hash 时切 tab）：
+  // 例如 Overview 的「查看输出」点击 navigate(`/queue/${id}#outputs`)。
+  // react-router 的 useLocation 会反映 navigate 改的 hash；上面的 replaceState
+  // 写回不会更新 router state，所以两条 effect 不会 ping-pong。
+  useEffect(() => {
+    const v = location.hash.replace(/^#/, '')
+    if ((['overview', 'log', 'monitor', 'outputs'] as const).includes(v as Tab)) {
+      setTab((prev) => (prev === v ? prev : (v as Tab)))
+    }
+  }, [location.hash])
 
   const reload = useCallback(async () => {
     if (!Number.isFinite(taskId)) return
@@ -121,7 +134,7 @@ export default function QueueDetailPage() {
     return () => window.clearInterval(tick)
   }, [task?.status])
 
-  if (!Number.isFinite(taskId)) return <p className="text-err">无效任务 ID</p>
+  if (!Number.isFinite(taskId)) return <p className="text-err">{t('queueDetail.invalidId')}</p>
 
   const status = task?.status
   const isLive = status === 'running' || status === 'pending'
@@ -130,7 +143,7 @@ export default function QueueDetailPage() {
   const cancel = async () => {
     if (!task) return
     setBusy(true)
-    try { await api.cancelTask(task.id); toast('已发送取消信号', 'success'); void reload() }
+    try { await api.cancelTask(task.id); toast(t('queueDetail.cancelSent'), 'success'); void reload() }
     catch (e) { toast(String(e), 'error') }
     finally { setBusy(false) }
   }
@@ -138,7 +151,7 @@ export default function QueueDetailPage() {
   const retry = async () => {
     if (!task) return
     setBusy(true)
-    try { const newTask = await api.retryTask(task.id); toast(`重试已入队 #${newTask.id}`, 'success'); navigate(`/queue/${newTask.id}`) }
+    try { const newTask = await api.retryTask(task.id); toast(t('queueDetail.retryQueued', { id: newTask.id }), 'success'); navigate(`/queue/${newTask.id}`) }
     catch (e) { toast(String(e), 'error'); setBusy(false) }
     finally { setBusy(true) }
   }
@@ -146,15 +159,53 @@ export default function QueueDetailPage() {
   const remove = async () => {
     if (!task) return
     setBusy(true)
-    try { await api.deleteTask(task.id); toast('已删除', 'success'); navigate('/queue') }
+    try { await api.deleteTask(task.id); toast(t('queueDetail.deleted'), 'success'); navigate('/queue') }
     catch (e) { toast(String(e), 'error'); setBusy(false); setConfirmDelete(false) }
   }
 
+  // ADR 0006 PR-4: 暂停 / 恢复 / 取消 paused 三连。
+  const pauseRunning = async () => {
+    if (!task) return
+    setPauseModalOpen(true)
+    try {
+      await api.pauseTask(task.id)
+      toast(t('queue.pauseSent'), 'success')
+    } catch (e) {
+      toast(t('queue.pauseFailed', { reason: String(e) }), 'error')
+      setPauseModalOpen(false)
+    }
+  }
+
+  const resumePaused = async () => {
+    if (!task) return
+    setBusy(true)
+    try {
+      await api.resumeTask(task.id)
+      toast(t('queue.resumeSent', { id: task.id }), 'success')
+      void reload()
+    } catch (e) {
+      const msg = String(e)
+      if (msg.toLowerCase().includes('missing')) toast(t('queue.resumeFailedMissing'), 'error')
+      else toast(t('queue.resumeFailed', { reason: msg }), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const STATUS_LABEL: Record<TaskStatus, string> = {
+    pending: t('status.pending'),
+    running: t('status.running'),
+    done: t('status.done'),
+    failed: t('status.failed'),
+    canceled: t('status.canceled'),
+    paused: t('status.paused'),
+  }
+
   const tabs: Array<{ key: Tab; label: string }> = [
-    { key: 'overview', label: '详情' },
-    { key: 'log',      label: '日志' },
-    { key: 'monitor',  label: '监控' },
-    { key: 'outputs',  label: '输出' },
+    { key: 'overview', label: t('queueDetail.tabOverview') },
+    { key: 'log',      label: t('queueDetail.tabLogs') },
+    { key: 'monitor',  label: t('queueDetail.tabMonitor') },
+    { key: 'outputs',  label: t('queueDetail.tabOutputs') },
   ]
 
   return (
@@ -163,7 +214,7 @@ export default function QueueDetailPage() {
       <header className="px-6 py-4 border-b border-subtle flex flex-col gap-2 shrink-0 bg-canvas">
         <div className="flex items-center gap-2.5 flex-wrap">
           <Link to="/queue" className="btn btn-ghost btn-sm no-underline"
-          >← 队列</Link>
+          >{t('queueDetail.backToQueue')}</Link>
           <span className="text-fg-tertiary">/</span>
           <h1 className="m-0 text-xl font-semibold font-mono">
             #{taskId}
@@ -181,16 +232,34 @@ export default function QueueDetailPage() {
             </span>
           )}
           <span className="flex-1" />
+          {isLive && status === 'running' && task?.is_pausable && (
+            <button onClick={pauseRunning} disabled={busy || pauseModalOpen} className="btn btn-sm"
+              data-testid="detail-pause-btn"
+              title={t('queue.pauseHint')}
+            >{t('queue.pause')}</button>
+          )}
           {isLive && (
             <button onClick={cancel} disabled={busy} className="btn btn-sm bg-warn-soft border border-warn text-warn"
-            >取消任务</button>
+            >{t('queueDetail.cancelTask')}</button>
+          )}
+          {status === 'paused' && (
+            <>
+              <button onClick={resumePaused} disabled={busy} className="btn btn-primary btn-sm"
+                data-testid="detail-resume-btn"
+                title={t('queue.resumeHint')}
+              >{t('queue.resume')}</button>
+              <button onClick={cancel} disabled={busy}
+                className="btn btn-sm bg-err-soft border border-err text-err"
+                title={t('queue.cancelPausedHint')}
+              >{t('queue.cancelPaused')}</button>
+            </>
           )}
           {isTerminal && (
             <>
-              <button onClick={retry} disabled={busy} className="btn btn-primary btn-sm">重试</button>
+              <button onClick={retry} disabled={busy} className="btn btn-primary btn-sm">{t('common.retry')}</button>
               <button onClick={() => setConfirmDelete(true)} disabled={busy}
                 className="btn btn-sm bg-err-soft border border-err text-err"
-              >删除记录</button>
+              >{t('queueDetail.deleteRecord')}</button>
             </>
           )}
         </div>
@@ -204,8 +273,8 @@ export default function QueueDetailPage() {
         {/* Stat cards for running tasks */}
         {task && task.status === 'running' && (
           <div className="grid grid-cols-4 gap-2.5 mt-1">
-            <StatCard label="运行时长" value={fmtDuration(task.started_at, null)} mono large tone="accent" />
-            <StatCard label="开始时间" value={fmtTime(task.started_at)} mono />
+            <StatCard label={t('queueDetail.duration')} value={fmtDuration(task.started_at, null)} mono large tone="accent" />
+            <StatCard label={t('queueDetail.startTime')} value={fmtTime(task.started_at)} mono />
             <StatCard label="Config" value={task.config_name} mono />
             <StatCard label="PID" value={task.pid ? String(task.pid) : '—'} mono />
           </div>
@@ -230,34 +299,42 @@ export default function QueueDetailPage() {
         {tab === 'overview' && task && <OverviewTab task={task} />}
         {tab === 'overview' && !task && (
           <div className="p-6 text-center text-fg-tertiary text-sm">
-            加载中...
+            {t('common.loading')}
           </div>
         )}
         {tab === 'log' && <LogTab taskId={taskId} />}
         {tab === 'monitor' && <MonitorTab taskId={taskId} />}
-        {tab === 'outputs' && <OutputsTab taskId={taskId} taskName={task?.name ?? ''} />}
+        {tab === 'outputs' && <OutputsTab taskId={taskId} />}
       </div>
 
 
       {confirmDelete && task && (
         <ConfirmDialog
-          title="删除任务记录"
+          title={t('queueDetail.deleteTitle')}
           message={
             <>
-              将永久删除任务{' '}
+              {t('queueDetail.deleteDesc')}{' '}
               <code className="text-fg-primary font-mono">#{task.id} {task.name}</code>{' '}
-              的数据库记录。
               <br />
               <span className="text-fg-tertiary text-xs">
-                LoRA / 训练日志 / 监控状态文件不会被删，仍在磁盘上。
+                {t('queueDetail.deleteNote')}
               </span>
             </>
           }
-          confirmLabel="删除"
+          confirmLabel={t('common.delete')}
           danger
           onConfirm={remove}
           onCancel={() => setConfirmDelete(false)}
           busy={busy}
+        />
+      )}
+
+      {/* ADR §4.3 暂停过程 modal — 跟 Queue.tsx 同组件，UI 锁屏让用户看进度。 */}
+      {pauseModalOpen && task && (
+        <PauseProgressModal
+          taskId={task.id}
+          taskName={task.name}
+          onClose={() => setPauseModalOpen(false)}
         />
       )}
     </div>
@@ -267,38 +344,43 @@ export default function QueueDetailPage() {
 // ── OverviewTab ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ task }: { task: Task }) {
+  const { t } = useTranslation()
+  const statusLabel: Record<string, string> = {
+    pending: t('status.pending'), running: t('status.running'), done: t('status.done'),
+    failed: t('status.failed'), canceled: t('status.canceled'), paused: t('status.paused'),
+  }
   const items: Array<{ label: string; value: React.ReactNode; mono?: boolean }> = [
     { label: 'ID',     value: <code className="font-mono">{task.id}</code> },
-    { label: '名称',   value: task.name },
+    { label: t('common.name'), value: task.name },
     { label: 'Config', value: <code className="font-mono">{task.config_name}.yaml</code> },
-    { label: '状态',   value: <span className={STATUS_BADGE[task.status]}>{task.status === 'running' && <span className="dot dot-running" />}{STATUS_LABEL[task.status]}</span> },
-    { label: '优先级', value: task.priority, mono: true },
-    { label: '入队时间', value: fmtTime(task.created_at) },
-    { label: '开始时间', value: fmtTime(task.started_at) },
-    { label: '结束时间', value: fmtTime(task.finished_at) },
-    { label: '运行时长', value: fmtDuration(task.started_at, task.finished_at), mono: true },
-    { label: '退出码',   value: task.exit_code ?? '—', mono: true },
+    { label: t('common.status'), value: <span className={STATUS_BADGE[task.status]}>{task.status === 'running' && <span className="dot dot-running" />}{statusLabel[task.status]}</span> },
+    { label: t('queueDetail.priority'), value: task.priority, mono: true },
+    { label: t('queueDetail.enqueuedAt'), value: fmtTime(task.created_at) },
+    { label: t('queueDetail.startedAt'), value: fmtTime(task.started_at) },
+    { label: t('queueDetail.finishedAt'), value: fmtTime(task.finished_at) },
+    { label: t('queueDetail.duration'), value: fmtDuration(task.started_at, task.finished_at), mono: true },
+    { label: t('queueDetail.exitCode'),   value: task.exit_code ?? '—', mono: true },
     { label: 'PID',     value: task.pid ?? '—', mono: true },
   ]
 
   if (task.project_id || task.version_id) {
     items.push({
-      label: '来源',
+      label: t('queueDetail.source'),
       value: task.project_id && task.version_id ? (
         <Link to={`/projects/${task.project_id}/v/${task.version_id}/train`}
           className="text-accent font-mono text-sm"
-        >项目 #{task.project_id} / v#{task.version_id}</Link>
+        >{t('queueDetail.sourceLink', { projectId: task.project_id, versionId: task.version_id })}</Link>
       ) : '—',
     })
   }
   if (task.config_path) {
-    items.push({ label: 'Config 路径', value: <code className="font-mono text-xs break-all">{task.config_path}</code> })
+    items.push({ label: t('queueDetail.configPath'), value: <code className="font-mono text-xs break-all">{task.config_path}</code> })
   }
   if (task.monitor_state_path) {
-    items.push({ label: '监控文件', value: <code className="font-mono text-xs break-all">{task.monitor_state_path}</code> })
+    items.push({ label: t('queueDetail.monitorFile'), value: <code className="font-mono text-xs break-all">{task.monitor_state_path}</code> })
   }
   if (task.error_msg) {
-    items.push({ label: '错误', value: <code className="font-mono text-xs break-all text-err">{task.error_msg}</code> })
+    items.push({ label: t('common.error'), value: <code className="font-mono text-xs break-all text-err">{task.error_msg}</code> })
   }
 
   return (
@@ -326,6 +408,7 @@ function OverviewTab({ task }: { task: Task }) {
 // ── LogTab ──────────────────────────────────────────────────────────────────
 
 function LogTab({ taskId }: { taskId: number }) {
+  const { t } = useTranslation()
   const [content, setContent] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -363,16 +446,16 @@ function LogTab({ taskId }: { taskId: number }) {
         <label className="text-fg-tertiary flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)}
             style={{ width: 14, height: 14, accentColor: 'var(--accent)' }} />
-          自动滚动
+          {t('queueDetail.autoScroll')}
         </label>
         <span className="flex-1" />
-        <button onClick={() => void refresh()} className="btn btn-ghost btn-sm">刷新</button>
+        <button onClick={() => void refresh()} className="btn btn-ghost btn-sm">{t('common.refresh')}</button>
       </div>
       {error && (
         <div className="mb-2.5 p-2.5 rounded-md bg-err-soft border border-err text-err text-xs font-mono">{error}</div>
       )}
       <pre ref={preRef} className="flex-1 min-h-0 overflow-auto bg-sunken border border-subtle rounded-md p-3.5 text-xs font-mono text-fg-secondary whitespace-pre-wrap break-all m-0" style={{ lineHeight: 1.6 }}>
-        {content || <span className="text-fg-tertiary">（尚无日志）</span>}
+        {content || <span className="text-fg-tertiary">{t('queueDetail.noLogs')}</span>}
       </pre>
     </div>
   )
@@ -390,13 +473,16 @@ function MonitorTab({ taskId }: { taskId: number }) {
 
 // ── OutputsTab ──────────────────────────────────────────────────────────────
 
-function OutputsTab({ taskId, taskName }: { taskId: number; taskName: string }) {
+function OutputsTab({ taskId }: { taskId: number }) {
+  const { t } = useTranslation()
   const { toast } = useToast()
   const [data, setData] = useState<TaskOutputs | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [zipping, setZipping] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
     let alive = true
@@ -404,56 +490,169 @@ function OutputsTab({ taskId, taskName }: { taskId: number; taskName: string }) 
     return () => { alive = false }
   }, [taskId, refreshKey])
 
-  const sortedFiles = useMemo(() => data ? [...data.files].sort((a, b) => b.mtime - a.mtime) : [], [data])
+  // 压缩中状态：点 "下载全部 / 下载所选" 时 setZipping(true)，浏览器直链接管下载，
+  // 后端打包完 publish task_outputs_zip_ready → SSE 清状态。
+  // 60s 兜底防止事件丢失 / 后端失败时按钮卡死。
+  useEventStream((evt) => {
+    if (evt.task_id !== taskId) return
+    if (evt.type === 'task_outputs_zip_ready') {
+      setZipping(false)
+    } else if (evt.type === 'task_outputs_zip_failed') {
+      setZipping(false)
+      toast(t('queueDetail.compressionFailed', { error: typeof evt.error === 'string' ? evt.error : '?' }), 'error')
+    }
+  })
+
+  useEffect(() => {
+    if (!zipping) return
+    const tid = window.setTimeout(() => {
+      setZipping(false)
+      toast(t('queueDetail.compressionTimeout'), 'info')
+    }, 60_000)
+    return () => window.clearTimeout(tid)
+  }, [zipping, toast, t])
+
+  // 列排序：默认按 mtime desc（最新的在上，和之前行为一致）。点表头同 key
+  // 切方向，换 key 切到该 key 的默认方向（name=asc / size,mtime=desc）。
+  type SortKey = 'name' | 'size' | 'mtime'
+  const [sortKey, setSortKey] = useState<SortKey>('mtime')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const sortedFiles = useMemo(() => {
+    if (!data) return []
+    const sign = sortDir === 'asc' ? 1 : -1
+    return [...data.files].sort((a, b) => {
+      if (sortKey === 'name') {
+        // numeric: true 让 ep_002 排在 ep_010 之前，避免字典序的 ep_10 < ep_2
+        return a.name.localeCompare(b.name, undefined, { numeric: true }) * sign
+      }
+      if (sortKey === 'size') return (a.size - b.size) * sign
+      return (a.mtime - b.mtime) * sign
+    })
+  }, [data, sortKey, sortDir])
+
+  const onHeaderClick = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir(key === 'name' ? 'asc' : 'desc')
+    }
+  }
+  const sortArrow = (key: SortKey) =>
+    sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+
+  // 刷新后剔除选中里已不存在的文件名（比如有人手动删了 ep_001.safetensors）
+  useEffect(() => {
+    if (selected.size === 0) return
+    const names = new Set(sortedFiles.map((f) => f.name))
+    let dropped = false
+    const next = new Set<string>()
+    for (const n of selected) {
+      if (names.has(n)) next.add(n); else dropped = true
+    }
+    if (dropped) setSelected(next)
+  }, [sortedFiles, selected])
+
+  const selectedSize = useMemo(() => {
+    let total = 0
+    for (const f of sortedFiles) if (selected.has(f.name)) total += f.size
+    return total
+  }, [sortedFiles, selected])
+
+  const allSelected = sortedFiles.length > 0 && selected.size === sortedFiles.length
+  const noneSelected = selected.size === 0
+  const partialSelected = !allSelected && !noneSelected
+
+  const toggleSelectAll = () => {
+    setSelected(allSelected ? new Set() : new Set(sortedFiles.map((f) => f.name)))
+  }
+  const toggleOne = (name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name); else next.add(name)
+      return next
+    })
+  }
+  const toggleSelectMode = () => {
+    setSelectMode((m) => {
+      if (m) setSelected(new Set())  // 退出批量时清空选中
+      return !m
+    })
+  }
 
   const openFolder = async () => {
     setBusy(true)
-    try { const r = await api.openTaskFolder(taskId); toast(`已打开 ${r.opened}`, 'success') }
+    try { const r = await api.openTaskFolder(taskId); toast(t('queueDetail.folderOpened', { path: r.opened }), 'success') }
     catch (e) { toast(String(e), 'error') }
     finally { setBusy(false) }
   }
 
-  const handleDownloadZip = async () => {
+  const handleDownloadZip = () => {
     if (zipping) return
+    const partial = selectMode && selected.size > 0
+    if (selectMode && !partial) return  // 批量模式下没选任何文件，按钮应已 disabled
     setZipping(true)
-    try {
-      const safe = taskName && /^[A-Za-z0-9_.-]+$/.test(taskName)
-      const zipName = safe ? `${taskName}_outputs.zip` : `task_${taskId}_outputs.zip`
-      await downloadBlob(api.taskOutputsZipUrl(taskId), zipName)
-    } catch (e) { toast(`下载失败: ${e}`, 'error') }
-    finally { setZipping(false) }
+    // 优先用后端给的 archive_basename ({slug}-{label})，老任务没 project/version
+    // 时 fallback task_{id}。download 属性是兜底 —— 浏览器优先用响应头
+    // Content-Disposition.filename，所以最终下载名以后端为准。
+    const baseName = data?.archive_basename ?? `task_${taskId}`
+    const zipName = partial ? `${baseName}_outputs_selected.zip` : `${baseName}_outputs.zip`
+    const files = partial ? Array.from(selected) : undefined
+    const a = document.createElement('a')
+    a.href = api.taskOutputsZipUrl(taskId, files)
+    a.download = zipName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
   }
 
   const copyPath = async () => {
     if (!data?.output_dir) return
-    try { await navigator.clipboard.writeText(data.output_dir); toast('路径已复制', 'success') }
-    catch { toast('复制失败（浏览器拒绝）', 'error') }
+    try { await navigator.clipboard.writeText(data.output_dir); toast(t('queueDetail.pathCopied'), 'success') }
+    catch { toast(t('queueDetail.copyFailed'), 'error') }
   }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 p-4 gap-2.5">
       {data?.output_dir ? (
         <div className="flex items-center gap-2 text-xs shrink-0 border-b border-subtle pb-2.5">
-          <span className="text-fg-tertiary shrink-0">目录</span>
+          <span className="text-fg-tertiary shrink-0">{t('common.directory')}</span>
           <code className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-fg-primary font-mono">{data.output_dir}</code>
-          <button onClick={copyPath} className="btn btn-ghost btn-sm">复制</button>
+          <button onClick={copyPath} className="btn btn-ghost btn-sm">{t('common.copy')}</button>
           {data.supports_open_folder ? (
             <button onClick={openFolder} disabled={busy || !data.exists}
               className="btn btn-secondary btn-sm"
-            >打开</button>
+            >{t('common.open')}</button>
           ) : (
-            <span className="text-xs text-fg-tertiary shrink-0">（远程）</span>
+            <span className="text-xs text-fg-tertiary shrink-0">{t('common.remote')}</span>
           )}
-          <button onClick={() => setRefreshKey((k) => k + 1)} className="btn btn-ghost btn-sm">刷新</button>
+          <button onClick={() => setRefreshKey((k) => k + 1)} className="btn btn-ghost btn-sm">{t('common.refresh')}</button>
           {data.exists && data.files.length > 0 && (
-            <button onClick={handleDownloadZip} disabled={zipping} className="btn btn-primary btn-sm">
-              {zipping ? '打包中...' : '下载全部'}
-            </button>
+            <>
+              <button
+                onClick={toggleSelectMode}
+                className={selectMode ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm'}
+              >
+                {selectMode ? t('queueDetail.exitBatchMode') : t('queueDetail.batchMode')}
+              </button>
+              <button
+                onClick={handleDownloadZip}
+                disabled={zipping || (selectMode && noneSelected)}
+                className="btn btn-primary btn-sm"
+              >
+                {zipping
+                  ? t('queueDetail.compressing')
+                  : selectMode
+                    ? (noneSelected ? t('queueDetail.downloadSelectedEmpty') : t('queueDetail.downloadSelected', { n: selected.size, size: fmtBytes(selectedSize) }))
+                    : t('queueDetail.downloadAll')}
+              </button>
+            </>
           )}
         </div>
       ) : data && !data.output_dir ? (
         <div className="text-fg-tertiary text-sm shrink-0 py-2">
-          该任务没有 project / version 关联，找不到输出目录
+          {t('queueDetail.noProjectAssoc')}
         </div>
       ) : null}
 
@@ -461,26 +660,49 @@ function OutputsTab({ taskId, taskName }: { taskId: number; taskName: string }) 
         {error ? (
           <div className="p-2.5 rounded-md bg-err-soft border border-err text-err font-mono text-xs">{error}</div>
         ) : !data ? (
-          <div className="text-fg-tertiary text-sm text-center p-5">加载中...</div>
+          <div className="text-fg-tertiary text-sm text-center p-5">{t('common.loading')}</div>
         ) : !data.exists ? (
-          <div className="text-warn text-sm text-center p-5">目录不存在</div>
+          <div className="text-warn text-sm text-center p-5">{t('queueDetail.dirNotExist')}</div>
         ) : sortedFiles.length === 0 ? (
-          <div className="text-fg-tertiary text-sm text-center p-5">目录为空</div>
+          <div className="text-fg-tertiary text-sm text-center p-5">{t('queueDetail.dirEmpty')}</div>
         ) : (
           <div className="card overflow-hidden p-0">
             <div
               className="grid gap-2 px-4 py-2 text-xs text-fg-tertiary border-b border-subtle font-mono"
               style={{ gridTemplateColumns: '1fr 100px 160px 80px' }}
             >
-              <span>文件</span>
-              <span className="text-right">大小</span>
-              <span className="text-right">修改时间</span>
-              <span className="text-right"></span>
+              <button
+                onClick={() => onHeaderClick('name')}
+                className="text-left bg-transparent border-0 p-0 text-xs font-mono text-fg-tertiary hover:text-fg-primary cursor-pointer"
+              >{t('common.file')}{sortArrow('name')}</button>
+              <button
+                onClick={() => onHeaderClick('size')}
+                className="text-right bg-transparent border-0 p-0 text-xs font-mono text-fg-tertiary hover:text-fg-primary cursor-pointer"
+              >{t('common.size')}{sortArrow('size')}</button>
+              <button
+                onClick={() => onHeaderClick('mtime')}
+                className="text-right bg-transparent border-0 p-0 text-xs font-mono text-fg-tertiary hover:text-fg-primary cursor-pointer"
+              >{t('queueDetail.modifiedTime')}{sortArrow('mtime')}</button>
+              <span className="text-right">
+                {selectMode ? (
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = partialSelected }}
+                    onChange={toggleSelectAll}
+                    style={{ width: 14, height: 14, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                    aria-label={t('common.selectAll')}
+                  />
+                ) : null}
+              </span>
             </div>
-            {sortedFiles.map((f) => (
+            {sortedFiles.map((f) => {
+              const isSel = selected.has(f.name)
+              return (
               <div
                 key={f.name}
-                className="grid gap-2 px-4 py-2 items-center border-b border-subtle text-xs hover:bg-overlay transition-colors"
+                onClick={selectMode ? () => toggleOne(f.name) : undefined}
+                className={`grid gap-2 px-4 py-2 items-center border-b border-subtle text-xs transition-colors ${selectMode ? `cursor-pointer ${isSel ? 'bg-accent-soft' : 'hover:bg-overlay'}` : 'hover:bg-overlay'}`}
                 style={{ gridTemplateColumns: '1fr 100px 160px 80px' }}
               >
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -490,12 +712,24 @@ function OutputsTab({ taskId, taskName }: { taskId: number; taskName: string }) 
                 <span className="text-right font-mono text-fg-tertiary">{fmtBytes(f.size)}</span>
                 <span className="text-right font-mono text-fg-tertiary">{fmtTime(f.mtime)}</span>
                 <span className="text-right">
-                  <a href={api.taskOutputDownloadUrl(taskId, f.name)} download={f.name}
-                    className="text-accent no-underline hover:underline text-xs"
-                  >下载</a>
+                  {selectMode ? (
+                    <input
+                      type="checkbox"
+                      checked={isSel}
+                      onChange={() => toggleOne(f.name)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ width: 14, height: 14, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                      aria-label={`${t('common.select')} ${f.name}`}
+                    />
+                  ) : (
+                    <a href={api.taskOutputDownloadUrl(taskId, f.name)} download={f.name}
+                      className="text-accent no-underline hover:underline text-xs"
+                    >{t('queueDetail.downloadFile')}</a>
+                  )}
                 </span>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

@@ -34,7 +34,10 @@ def test_defaults_when_file_missing(secrets_file: Path) -> None:
     assert s.gelbooru.user_id == ""
     assert s.gelbooru.api_key == ""
     assert s.wd14.threshold_general == pytest.approx(0.35)
-    assert s.joycaption.base_url.startswith("http://")
+    # joycaption 已合并为 llm_tagger 的 builtin preset
+    joy = next(p for p in s.llm_tagger.presets if p.id == "joycaption")
+    assert joy.base_url.startswith("http://")
+    assert s.wandb.project == "AnimaLoraStudio"
 
 
 def test_load_corrupt_json_returns_defaults(secrets_file: Path) -> None:
@@ -56,6 +59,63 @@ def test_cltagger_defaults_use_1_02(secrets_file: Path) -> None:
     assert s.cltagger.model_path == "cl_tagger_1_02/model.onnx"
     assert s.cltagger.tag_mapping_path == "cl_tagger_1_02/tag_mapping.json"
     assert s.cltagger.threshold_character == pytest.approx(0.6)
+
+
+def test_llm_tagger_defaults(secrets_file: Path) -> None:
+    s = secrets.load()
+    assert s.llm_tagger.current_preset == "style_json"
+    assert [p.id for p in s.llm_tagger.presets] == [
+        "style_json",
+        "general_json",
+        "txt_tags",
+        "joycaption",
+    ]
+    assert all(p.builtin for p in s.llm_tagger.presets)
+    # joycaption builtin preset 预填了 vLLM 推荐配置
+    joy = next(p for p in s.llm_tagger.presets if p.id == "joycaption")
+    assert joy.base_url == "http://localhost:8000/v1"
+    assert joy.model.endswith("joycaption-beta-one-hf-llava")
+    assert joy.endpoint == "chat_completions"
+    assert joy.output_format == "text"
+    assert joy.temperature == pytest.approx(0.6)
+    assert joy.max_tokens == 300
+    assert joy.concurrency == 1
+    assert joy.requests_per_second == pytest.approx(0.0)
+    assert joy.max_requests_per_minute == 0
+
+
+def test_llm_preset_normalizes_request_pool_settings(secrets_file: Path) -> None:
+    s = secrets.update(
+        {
+            "llm_tagger": {
+                "presets": [
+                    {
+                        "id": "style_json",
+                        "concurrency": 99,
+                        "requests_per_second": -5,
+                        "max_requests_per_minute": 9999,
+                    }
+                ]
+            }
+        }
+    )
+    style = next(p for p in s.llm_tagger.presets if p.id == "style_json")
+    assert style.concurrency == 8
+    assert style.requests_per_second == pytest.approx(0.0)
+    assert style.max_requests_per_minute == 3600
+
+
+def test_llm_preset_keeps_model_in_model_ids(secrets_file: Path) -> None:
+    s = secrets.update(
+        {
+            "llm_tagger": {
+                "presets": [{"id": "joycaption", "model": "vision-a", "model_ids": []}]
+            }
+        }
+    )
+    joy = next(p for p in s.llm_tagger.presets if p.id == "joycaption")
+    assert joy.model == "vision-a"
+    assert joy.model_ids == ["vision-a"]
 
 
 def test_wd14_legacy_file_without_model_ids_gets_defaults(
@@ -139,10 +199,16 @@ def test_find_anima_main_picks_latest(secrets_file: Path, tmp_path: Path) -> Non
     (dm / "anima-preview2.safetensors").write_bytes(b"x")
     assert model_downloader.find_anima_main().name == "anima-preview2.safetensors"
 
-    # preview3-base 装上 → latest 优先返回 preview3-base
+    # preview3-base 装上 → latest 优先返回 preview3-base（preview3-base 在 1.0 缺席时是次新）
     (dm / "anima-preview3-base.safetensors").write_bytes(b"y")
     assert (
         model_downloader.find_anima_main().name == "anima-preview3-base.safetensors"
+    )
+
+    # 1.0 装上 → latest 优先返回 1.0
+    (dm / "anima-base-v1.0.safetensors").write_bytes(b"z")
+    assert (
+        model_downloader.find_anima_main().name == "anima-base-v1.0.safetensors"
     )
 
 
@@ -193,12 +259,20 @@ def test_to_masked_dict_replaces_sensitive(secrets_file: Path) -> None:
         {
             "gelbooru": {"user_id": "alice", "api_key": "secret"},
             "huggingface": {"token": "hf_secret"},
+            "wandb": {"api_key": "wandb_secret"},
+            "llm_tagger": {
+                "presets": [{"id": "joycaption", "api_key": "llm_secret"}]
+            },
         }
     )
     masked = secrets.to_masked_dict(secrets.load())
     assert masked["gelbooru"]["user_id"] == "alice"  # 非敏感字段保留
     assert masked["gelbooru"]["api_key"] == secrets.MASK
     assert masked["huggingface"]["token"] == secrets.MASK
+    assert masked["wandb"]["api_key"] == secrets.MASK
+    # llm_tagger.presets.*.api_key 通配
+    joy_masked = next(p for p in masked["llm_tagger"]["presets"] if p["id"] == "joycaption")
+    assert joy_masked["api_key"] == secrets.MASK
 
 
 def test_to_masked_dict_keeps_empty_sensitive_empty(secrets_file: Path) -> None:
@@ -206,6 +280,62 @@ def test_to_masked_dict_keeps_empty_sensitive_empty(secrets_file: Path) -> None:
     masked = secrets.to_masked_dict(secrets.load())
     assert masked["gelbooru"]["api_key"] == ""
     assert masked["huggingface"]["token"] == ""
+    assert masked["wandb"]["api_key"] == ""
+    for preset in masked["llm_tagger"]["presets"]:
+        assert preset["api_key"] == ""
+
+
+def test_llm_tagger_legacy_schema_migration(secrets_file: Path) -> None:
+    """老 secrets.json (PR #18 schema) → preset-unified 自动迁移。"""
+    secrets_file.write_text(
+        json.dumps(
+            {
+                "joycaption": {
+                    "base_url": "http://my-vllm:9000/v1",
+                    "model": "my-custom-joycaption",
+                    "prompt_template": "My custom prompt",
+                },
+                "llm_tagger": {
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "sk-xxx",
+                    "model": "gpt-4o-mini",
+                    "model_ids": ["gpt-4o-mini", "gpt-4o"],
+                    "endpoint": "chat_completions",
+                    "prompt_preset": "style_json",
+                    "prompt_presets": [
+                        {"id": "style_json", "label": "画风", "prompt": "P1", "builtin": True, "output_format": "json"},
+                    ],
+                    "custom_prompt": "",
+                    "temperature": 0.3,
+                    "max_tokens": 800,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = secrets.load()
+    # 顶层 endpoint+生成参数下沉到每个 preset
+    style = next(p for p in s.llm_tagger.presets if p.id == "style_json")
+    assert style.base_url == "https://api.openai.com/v1"
+    assert style.api_key == "sk-xxx"
+    assert style.model == "gpt-4o-mini"
+    assert style.endpoint == "chat_completions"
+    assert style.temperature == pytest.approx(0.3)
+    assert style.max_tokens == 800
+    assert style.concurrency == 1
+    assert style.requests_per_second == pytest.approx(0.0)
+    assert style.max_requests_per_minute == 0
+    # JoyCaption 卡片字段写到 joycaption preset
+    joy = next(p for p in s.llm_tagger.presets if p.id == "joycaption")
+    assert joy.base_url == "http://my-vllm:9000/v1"
+    assert joy.model == "my-custom-joycaption"
+    # 用户自定义 prompt_template 单独建一个 user_joycaption preset
+    user_joy = next(p for p in s.llm_tagger.presets if p.id == "user_joycaption")
+    assert user_joy.messages[0].type == "text"
+    assert user_joy.messages[0].role == "system"
+    assert user_joy.messages[0].content == "My custom prompt"
+    assert user_joy.messages[-1].type == "image"
+    assert user_joy.output_format == "text"
 
 
 # ---------------------------------------------------------------------------
@@ -263,3 +393,66 @@ def test_has_gelbooru_credentials(secrets_file: Path) -> None:
     assert secrets.has_gelbooru_credentials() is False
     secrets.update({"gelbooru": {"user_id": "u", "api_key": "k"}})
     assert secrets.has_gelbooru_credentials() is True
+
+
+# ---------------------------------------------------------------------------
+# PR-D / ADR 0005 — system.update_channel（用户视图偏好持久化）
+# ---------------------------------------------------------------------------
+
+
+def test_system_defaults_update_channel_stable(secrets_file: Path) -> None:
+    """新装默认通道偏好 = stable，绝大多数用户只看稳定版。"""
+    s = secrets.load()
+    assert s.system.update_channel == "stable"
+    assert s.system.show_dev_channel is False  # legacy 字段默认也是 False
+
+
+def test_system_update_channel_round_trip(secrets_file: Path) -> None:
+    """update + load 持久化（webui 切 toggle 后刷页应保留）。"""
+    secrets.update({"system": {"update_channel": "dev"}})
+    assert secrets.load().system.update_channel == "dev"
+    secrets.update({"system": {"update_channel": "stable"}})
+    assert secrets.load().system.update_channel == "stable"
+
+
+def test_system_legacy_file_without_system_field(secrets_file: Path) -> None:
+    """老 secrets.json 没有 system 字段时，加载用默认值 stable。"""
+    secrets_file.write_text(
+        json.dumps({"gelbooru": {"user_id": "alice"}}),
+        encoding="utf-8",
+    )
+    s = secrets.load()
+    assert s.system.update_channel == "stable"
+    assert s.gelbooru.user_id == "alice"  # 其它字段不受影响
+
+
+def test_system_update_channel_in_masked_dict(secrets_file: Path) -> None:
+    """update_channel 不是敏感字段，掩码后应保留原值。"""
+    secrets.update({"system": {"update_channel": "dev"}})
+    masked = secrets.to_masked_dict(secrets.load())
+    assert masked["system"]["update_channel"] == "dev"
+
+
+def test_system_show_dev_channel_migrated_to_update_channel(
+    secrets_file: Path,
+) -> None:
+    """ADR 0005：老 secrets.json 里 show_dev_channel=true 一次性迁移成
+    update_channel='dev'，让升级用户保留之前的 dev 视图偏好。"""
+    secrets_file.write_text(
+        json.dumps({"system": {"show_dev_channel": True}}),
+        encoding="utf-8",
+    )
+    s = secrets.load()
+    assert s.system.update_channel == "dev"
+
+
+def test_system_show_dev_channel_migration_does_not_overwrite_explicit_pref(
+    secrets_file: Path,
+) -> None:
+    """update_channel 已显式设过 → 迁移函数不覆盖（幂等）。"""
+    secrets_file.write_text(
+        json.dumps({"system": {"show_dev_channel": True, "update_channel": "stable"}}),
+        encoding="utf-8",
+    )
+    s = secrets.load()
+    assert s.system.update_channel == "stable"  # 显式设过不被 legacy 覆盖

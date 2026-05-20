@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate, useOutletContext } from 'react-router-dom'
-import { api, type ProjectDetail, type Version } from '../../api/client'
+import { api, type ProjectDetail, type Task, type Version } from '../../api/client'
 import PageHeader from '../../components/PageHeader'
 import StageBadge from '../../components/StageBadge'
 import { useToast } from '../../components/Toast'
@@ -9,6 +10,8 @@ interface Ctx {
   project: ProjectDetail
   activeVersion: Version | null
   reload: () => Promise<void>
+  onCreateVersion: () => void
+  creatingVersionBusy: boolean
 }
 
 // ── StatCard ────────────────────────────────────────────────────
@@ -37,15 +40,9 @@ function StatCard({
       <div className="caption mb-2.5">{label}</div>
       <div
         className={`text-2xl ${colorCls} ${mono ? 'font-mono' : ''}`}
-        style={{
-          fontWeight: 600,
-          letterSpacing: '-0.02em',
-          lineHeight: 1.05,
-        }}
+        style={{ fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.05 }}
       >{value}</div>
-      {sub && (
-        <div className="mt-1.5 text-sm text-fg-tertiary">{sub}</div>
-      )}
+      {sub && <div className="mt-1.5 text-sm text-fg-tertiary">{sub}</div>}
     </div>
   )
 }
@@ -61,50 +58,62 @@ interface PipelineStep {
   meta: string
 }
 
-function deriveTimeline(project: ProjectDetail, activeVersion: Version | null): PipelineStep[] {
+function deriveTimeline(
+  project: ProjectDetail,
+  activeVersion: Version | null,
+  t: (k: string, o?: Record<string, unknown>) => string,
+): PipelineStep[] {
   const stage = activeVersion?.stage ?? project.stage
-  const stageOrder = ['downloading', 'curating', 'tagging', 'regularizing', 'configured', 'training', 'done']
+  const stageOrder = ['downloading', 'preprocessing', 'curating', 'tagging', 'regularizing', 'configured', 'training', 'done']
   const stageIdx = stageOrder.indexOf(stage)
 
   const steps: Array<{ label: string; stages: string[]; meta: () => string }> = [
     {
-      label: '下载',
+      label: t('overview.stepDownload'),
       stages: ['downloading'],
-      meta: () => `${project.download_image_count ?? 0} 张`,
+      meta: () => t('overview.nImages', { n: project.download_image_count ?? 0 }),
     },
     {
-      label: '筛选',
+      label: t('overview.stepPreprocess'),
+      stages: ['preprocessing'],
+      meta: () => {
+        const n = project.preprocess_image_count ?? 0
+        return n > 0 ? t('overview.nImages', { n }) : '—'
+      },
+    },
+    {
+      label: t('overview.stepCurate'),
       stages: ['curating'],
       meta: () => {
         const n = activeVersion?.stats?.train_image_count ?? 0
-        return n > 0 ? `${n} 张` : '—'
+        return n > 0 ? t('overview.nImages', { n }) : '—'
       },
     },
     {
-      label: '打标',
+      label: t('overview.stepTag'),
       stages: ['tagging'],
       meta: () => {
         const n = activeVersion?.stats?.train_image_count ?? 0
-        return n > 0 ? `${n} 张` : '—'
+        return n > 0 ? t('overview.nImages', { n }) : '—'
       },
     },
     {
-      label: '标签编辑',
+      label: t('overview.stepTagEdit'),
       stages: ['regularizing'],
       meta: () => '—',
     },
     {
-      label: '正则集',
+      label: t('overview.stepReg'),
       stages: ['configured'],
       meta: () => {
         const n = activeVersion?.stats?.reg_image_count ?? 0
-        return n > 0 ? `${n} 张` : '—'
+        return n > 0 ? t('overview.nImages', { n }) : '—'
       },
     },
     {
-      label: '训练',
+      label: t('overview.stepTrain'),
       stages: ['training', 'done'],
-      meta: () => activeVersion?.stats?.has_output ? '已出模型' : '—',
+      meta: () => activeVersion?.stats?.has_output ? t('overview.hasOutput') : '—',
     },
   ]
 
@@ -126,14 +135,12 @@ function PipelineTimeline({ steps }: { steps: PipelineStep[] }) {
     <div className="grid" style={{ gridTemplateColumns: `repeat(${steps.length}, 1fr)` }}>
       {steps.map((s, i) => (
         <div key={i} className="relative px-1 min-w-0">
-          {/* left connector */}
           {i > 0 && (
             <div
               className={`absolute top-[15px] left-0 h-0.5 ${s.status !== 'pending' ? 'bg-ok' : 'bg-border-subtle'}`}
               style={{ width: 'calc(50% - 15px)' }}
             />
           )}
-          {/* right connector */}
           {i < steps.length - 1 && (
             <div
               className={`absolute top-[15px] right-0 h-0.5 ${s.status === 'done' ? 'bg-ok' : 'bg-border-subtle'}`}
@@ -141,7 +148,6 @@ function PipelineTimeline({ steps }: { steps: PipelineStep[] }) {
             />
           )}
           <div className="flex flex-col items-center text-center relative min-w-0">
-            {/* 步骤圆点 */}
             <div
               className={`w-[30px] h-[30px] rounded-full grid place-items-center font-mono font-bold text-xs shrink-0 ${
                 s.status === 'done'   ? 'bg-ok text-fg-inverse'
@@ -151,13 +157,11 @@ function PipelineTimeline({ steps }: { steps: PipelineStep[] }) {
             >
               {s.status === 'done' ? '✓' : s.idx}
             </div>
-            {/* 步骤标签 */}
             <div className={`mt-2 text-sm font-medium leading-tight max-w-full overflow-hidden text-ellipsis whitespace-nowrap ${
               s.status === 'pending' ? 'text-fg-tertiary' : 'text-fg-primary'
             }`}>
               {s.label}
             </div>
-            {/* 元信息 */}
             <div className={`text-xs mt-0.5 max-w-full overflow-hidden text-ellipsis whitespace-nowrap ${
               s.meta === '—' ? 'text-fg-disabled' : 'text-fg-tertiary'
             }`}>
@@ -173,33 +177,34 @@ function PipelineTimeline({ steps }: { steps: PipelineStep[] }) {
 // ── Overview ─────────────────────────────────────────────────────
 
 export default function ProjectOverview() {
-  const { project, activeVersion, reload } = useOutletContext<Ctx>()
+  const { t } = useTranslation()
+  const { project, activeVersion, reload, onCreateVersion, creatingVersionBusy } = useOutletContext<Ctx>()
   const navigate = useNavigate()
   const { toast } = useToast()
-  const [newVersionBusy, setNewVersionBusy] = useState(false)
+  const [relatedTasks, setRelatedTasks] = useState<Task[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    void api.listQueue('done', { includeGenerate: true })
+      .then((items) => {
+        if (cancelled) return
+        setRelatedTasks(items.filter(
+          (t) => t.project_id === project.id && t.config_name === 'generate',
+        ))
+      })
+      .catch(() => {
+        if (!cancelled) setRelatedTasks([])
+      })
+    return () => { cancelled = true }
+  }, [project.id])
 
   const handleActivate = async (v: Version) => {
     try {
       await api.activateVersion(project.id, v.id)
       await reload()
-      navigate(`/projects/${project.id}/v/${v.id}/curate`)
+      navigate(`/projects/${project.id}/download`)
     } catch (e) {
       toast(String(e), 'error')
-    }
-  }
-
-  const handleNewVersion = async () => {
-    const label = prompt('版本标签', `v${project.versions.length + 1}`)
-    if (!label) return
-    setNewVersionBusy(true)
-    try {
-      await api.createVersion(project.id, { label })
-      await reload()
-      toast(`已创建版本 ${label}`, 'success')
-    } catch (e) {
-      toast(String(e), 'error')
-    } finally {
-      setNewVersionBusy(false)
     }
   }
 
@@ -207,54 +212,65 @@ export default function ProjectOverview() {
     {
       label: 'download images',
       value: project.download_image_count ?? 0,
-      sub: '总下载量',
+      sub: t('overview.totalDownload'),
     },
     {
       label: 'train images',
       value: activeVersion?.stats?.train_image_count ?? 0,
-      sub: `当前版本: ${activeVersion?.label ?? '—'}`,
+      sub: t('overview.currentVersion', { label: activeVersion?.label ?? '—' }),
     },
     {
       label: 'reg images',
       value: activeVersion?.stats?.reg_image_count ?? 0,
-      sub: activeVersion?.stats?.has_output ? '✓ 已出 checkpoint' : '尚未训练',
+      sub: activeVersion?.stats?.has_output ? t('overview.hasCkpt') : t('overview.noTrained'),
       tone: activeVersion?.stats?.has_output ? 'ok' as const : undefined,
     },
     {
-      label: '版本数',
+      label: t('overview.versionCount'),
       value: project.versions.length,
-      sub: `活跃: ${activeVersion?.label ?? '—'}`,
+      sub: t('overview.activeVersion', { label: activeVersion?.label ?? '—' }),
       tone: 'accent' as const,
       mono: false,
     },
   ]
 
-  const steps = deriveTimeline(project, activeVersion)
+  const steps = deriveTimeline(project, activeVersion, t)
+
+  const latestOutputTaskByVersion = useMemo(() => {
+    const out = new Map<number, Task>()
+    const byFinished = [...relatedTasks].sort(
+      (a, b) => (b.finished_at ?? 0) - (a.finished_at ?? 0),
+    )
+    for (const task of byFinished) {
+      if (task.version_id == null) continue
+      if (!out.has(task.version_id)) out.set(task.version_id, task)
+    }
+    return out
+  }, [relatedTasks])
 
   const nextStep = steps.find(s => s.status === 'active')
   const nextStepPaths: Record<string, string> = {
-    '下载': 'download',
-    '筛选': `v/${activeVersion?.id}/curate`,
-    '打标': `v/${activeVersion?.id}/tag`,
-    '标签编辑': `v/${activeVersion?.id}/edit`,
-    '正则集': `v/${activeVersion?.id}/reg`,
-    '训练': `v/${activeVersion?.id}/train`,
+    [t('overview.stepDownload')]:  'download',
+    [t('overview.stepCurate')]:    `v/${activeVersion?.id}/curate`,
+    [t('overview.stepTag')]:       `v/${activeVersion?.id}/tag`,
+    [t('overview.stepTagEdit')]:   `v/${activeVersion?.id}/edit`,
+    [t('overview.stepReg')]:       `v/${activeVersion?.id}/reg`,
+    [t('overview.stepTrain')]:     `v/${activeVersion?.id}/train`,
   }
   const nextPath = nextStep ? nextStepPaths[nextStep.label] : undefined
 
   return (
     <div className="fade-in">
       <PageHeader
-        eyebrow={`项目 · ${project.slug}`}
         title={project.title}
-        subtitle={project.note || `${project.download_image_count ?? 0} 张下载 · ${project.versions.length} 个版本`}
+        subtitle={project.note || t('overview.subtitle', { n: project.download_image_count ?? 0, v: project.versions.length })}
         actions={
           nextPath ? (
             <button
               className="btn btn-primary"
               onClick={() => navigate(`/projects/${project.id}/${nextPath}`)}
             >
-              继续 → {nextStep?.label}
+              {t('overview.continueStep', { label: nextStep?.label })}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
@@ -264,37 +280,34 @@ export default function ProjectOverview() {
       />
 
       <div className="p-6 flex flex-col gap-5">
-        {/* Stat cards */}
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
           {stats.map((s, i) => (
             <StatCard key={i} {...s} />
           ))}
         </div>
 
-        {/* Pipeline timeline */}
-        <div className="card p-0 overflow-hidden">
-          <div className="px-4.5 py-3.5 border-b border-subtle flex items-center justify-between">
-            <h2 className="text-md font-semibold" style={{ margin: 0 }}>流水线进度</h2>
-            <span className="caption">stages</span>
+        <div className="card" style={{ padding: 18 }}>
+          <div className="flex items-center mb-3.5">
+            <h2 className="text-md font-semibold flex-1" style={{ margin: 0 }}>{t('overview.pipelineProgress')}</h2>
+            <span className="caption">{t('overview.stages')}</span>
           </div>
-          <div style={{ padding: 18 }}>
+          <div>
             <PipelineTimeline steps={steps} />
           </div>
         </div>
 
-        {/* Versions panel */}
         <div className="card" style={{ padding: 18 }}>
           <div className="flex items-center mb-3.5">
-            <h2 className="text-md font-semibold flex-1" style={{ margin: 0 }}>版本</h2>
+            <h2 className="text-md font-semibold flex-1" style={{ margin: 0 }}>{t('overview.versions')}</h2>
             <button
               className="btn btn-ghost btn-sm border border-dashed border-dim"
-              onClick={handleNewVersion}
-              disabled={newVersionBusy}
+              onClick={onCreateVersion}
+              disabled={creatingVersionBusy}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              {newVersionBusy ? '创建中…' : '新版本'}
+              {creatingVersionBusy ? t('overview.creating') : t('overview.newVersion')}
             </button>
           </div>
 
@@ -313,10 +326,10 @@ export default function ProjectOverview() {
                     <StageBadge stage={v.stage} />
                   </div>
                   <div className="mt-1.5 flex gap-3.5 text-sm text-fg-secondary">
-                    <span>{v.stats?.train_image_count ?? 0} 训练图</span>
-                    <span>{v.stats?.reg_image_count ?? 0} 正则图</span>
+                    <span>{t('overview.trainImages', { n: v.stats?.train_image_count ?? 0 })}</span>
+                    <span>{t('overview.regImages', { n: v.stats?.reg_image_count ?? 0 })}</span>
                     {v.stats?.has_output && (
-                      <span className="text-ok">✓ 已训练</span>
+                      <span className="text-ok">{t('overview.trained')}</span>
                     )}
                   </div>
                   {v.note && (
@@ -327,8 +340,17 @@ export default function ProjectOverview() {
                       className="btn btn-secondary btn-sm"
                       onClick={() => handleActivate(v)}
                     >
-                      {isActive ? '打开' : '激活并打开'}
+                      {isActive ? t('overview.open') : t('overview.activateAndOpen')}
                     </button>
+                    {latestOutputTaskByVersion.has(v.id) && (
+                      <button
+                        className="btn btn-ghost btn-sm ml-2"
+                        onClick={() => navigate(`/queue/${latestOutputTaskByVersion.get(v.id)!.id}#outputs`)}
+                        title={t('overview.viewOutput')}
+                      >
+                        {t('overview.viewOutput')}
+                      </button>
+                    )}
                   </div>
                 </div>
               )

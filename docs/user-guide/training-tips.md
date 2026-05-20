@@ -59,6 +59,194 @@
 | LoRA | 简单稳定，兼容性好 | 表达力有限 | 单角色、简单画风 |
 | LoKr | 表达力强，参数高效 | 需要调参 | 多角色、复杂画风 |
 
+### 优化器选择
+
+| 优化器 | 何时用 | 关键参数 |
+|--------|--------|---------|
+| `adamw` | 默认。手调 lr 不嫌烦、想稳定可预期的训练 | `learning_rate` 1e-4 起步 |
+| `prodigy` | 不想调 lr。**注意**：扩散 LoRA 上易出"风格突变 ep" | `prodigy_d_coef` 小数据集设 0.5 |
+| `prodigy_plus_schedulefree` | **DiT LoRA 推荐**。在 Prodigy 基础上加 Schedule-Free averaged weights，sample/save 走 averaged 权重，**风格突变现象基本消失** | 见下方说明 |
+
+#### ProdigyPlusScheduleFree (PPSF) 使用要点
+
+Anima 是 Cosmos DiT + Flow Matching，跟 Flux/Qwen-Image 同型问题。这些社区已经把 PPSF
+作为 LoRA 训练事实默认，原因是 Prodigy 在 timestep 随机性 + 小数据集场景下 `d` 估计抖动，
+表现为某些 epoch 的 sample 风格突变。PPSF 通过维护 averaged weights 平滑了这个观感。
+
+- **学习率**：固定 `1.0`（PPSF 内部估计真实步长，外部 lr 只是缩放系数；UI 会强制）
+- **lr_scheduler**：**必须 `none`**（Schedule-Free 自带调度，叠 cosine 会破坏 averaged
+  weights 的收敛保证；UI 自动 disable，pydantic 也会拦下）
+- **ppsf_d_coef**：小数据集（<50 张）建议 `0.5`；正常 `1.0`；过拟合可试 `2.0`
+- **ppsf_prodigy_steps**：建议设为总步数的 1/4 到 1/2（如总 2000 步设 500-1000），后期
+  冻结 `d`、防跳档；不确定就留 `0`（不冻结）
+- **ppsf_fused_back_pass**：显存吃紧时开
+- **save / sample 行为**：训练代码自动在 sample 和 save 前调 `optimizer.eval()` 切到
+  averaged weights、事后切回。保存的 LoRA 是 averaged 状态，直接可用
+
+#### 怎么知道 Prodigy → PPSF 是不是真的能解决我的"突变 ep"问题
+
+切换后再训一遍同样的 dataset，对比相邻 ep 的 sample：
+- 之前：某些 ep 风格突然偏离，下一个 ep 又回来或漂到新位置
+- PPSF 后：sample 应该平滑过渡，没有"跳档"的视觉断层
+
+如果 PPSF 之后仍有跳档，多半是 `ppsf_d_coef` 过大或数据集本身太小 — 降到 `0.5` 或
+`0.3` 再试。
+
+### Timestep 采样分布
+
+Flow Matching 训练里每个 step 要从 `(0, 1)` 区间采一个 `t` 来构造 noisy latent。不同
+分布对训练效果影响很大：
+
+| 模式 | 描述 | 何时用 |
+|------|------|--------|
+| `logit_normal` | SD3/Anima 默认，偏向中间 `t`；`shift>1` 推向高噪声端 | 大部分情况、不知道选什么 |
+| `uniform` | 均匀采样，覆盖结构端到细节端 | 想让模型对所有 noise level 同样关注 |
+| `logit_normal_low` | logit-normal 反向 shift，偏向低噪声/细节端 | 细节强化、风格 LoRA |
+| `mode` | SD3 mode-distribution，集中在某个 sigma 附近 | 论文实验复现 |
+| `mixed_uniform_low` | 每样本独立按 `timestep_mix_low_prob` 概率走 `logit_normal_low`，其余走 uniform | 想细节强化但保留 uniform 覆盖度 |
+| `mixed_uniform_logit` | 同上但偏置端走 `logit_normal` | 想轻度推高噪声但保留 uniform 覆盖度 |
+
+**`timestep_shift`**：仅 `logit_normal` / `mode` 用。`>1` 偏向高噪声（结构端），`<1` 偏向
+细节端。默认 `3.0` 是 SD3 经验值。
+
+**`timestep_mix_low_prob`**：仅 `mixed_uniform_*` 用，其他 mode 忽略。`0` = 全 uniform，
+`1` = 全偏置端；典型 `0.15-0.30`。
+
+**`timestep_schedule_shift`**：作用于**最终 t**（采样完成后再做一次 SD3/FLUX shifted
+schedule 偏移，公式 `t' = (t·s) / (1 + (s-1)·t)`，Möbius 变换）；跟 `timestep_shift`
+不同：后者作用于 logit-normal 内部的 sigmoid 后 u 值。默认 `1.0` 是恒等。`>1` 整体
+推向高噪声端；`<1` 偏低噪声端。可跟任意 mode 叠加。
+
+### Loss Weighting（损失加权）
+
+加权策略改变模型在不同 noise level 上的关注度。**只有 `min_snr` 是经过广泛验证的**，其他
+都是实验性的：
+
+| 模式 | 适用 | 关键参数 |
+|------|------|----------|
+| `none` | 默认，纯 MSE | — |
+| `min_snr` | **强烈推荐**。SD3 论文方案，缓解 t→1 端的 loss 主导 | `min_snr_gamma` 默认 5.0，可在 3.0~7.0 调 |
+| `detail_inv_t` | 细节强化，损失 ∝ 1/(t+ε)，clamp 到 `[detail_inv_t_min, detail_inv_t_max]` | 默认 `[1, 5]` 跟历史一致；雾蒙蒙/低饱和画风建议 `max=3`，激进细节 `max=8` |
+| `cosmap` | SD3 风格 cosine mapping | 实验性 |
+
+**`detail_inv_t_min` / `detail_inv_t_max`**：detail_inv_t 加权曲线的下/上限（默认 `1` / `5`）。
+- `detail_inv_t_min` 必须 ≥ `1.0`——因为 `1/t` 在 `t∈(0,1)` 时恒 > 1，下限 < 1.0 是配置死区。
+- `detail_inv_t_min > detail_inv_t_max` 时启动期 schema 校验直接报错（fail-fast）。
+- 升 `max` 让低 t（细节端）权重更激进，但 Prodigy 用户注意：单样本权重过大易主导 `d` 估计，
+  建议同时开 `weight_cap_ratio=5`。
+
+### Loss 函数（0.8.x 新增）
+
+`loss_type` 默认 `mse`（与历史 bit-for-bit 一致）。可选 `huber`：
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `loss_type` | `mse` | 选 `huber` 对 outlier 鲁棒，缓解极端 sample 的梯度爆炸 |
+| `huber_c` | `0.15` | huber δ 系数（仅 `loss_type=huber`）；典型 `0.1–0.3`，控制 quad/linear 转折点 |
+
+**何时用 huber**：训练时偶发 NaN / loss 跳变剧烈、或数据集有少量极端 sample 时。
+EDM/Karras 论文里 δ=0.15 是常用经验值。
+
+**注意**：启用 huber 后 InfoNoise 仍收到纯 MSE（解耦设计），所以两者可同时开。
+
+### InfoNoise 自适应采样器（0.7.1 新增）
+
+**InfoNoise 是基于 I-MMSE 信息论的自适应 timestep 采样器**（论文 arxiv 2602.18647）：训练
+过程中动态估计每个 noise 区间的"信息量"，把采样集中在有效区间，跳过极高/极低噪声的低效
+段。理论上能加快收敛。
+
+**何时开**：长训练（>2000 步）+ 你确定 baseline 已经稳定收敛后想再压榨效率。短训练 / 实验
+阶段保持默认关闭即可。
+
+**关键字段**（高级模式下可见）：
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `infonoise_enabled` | `false` | 启用开关 |
+| `infonoise_N_warm` | `0` | 热身步数（=0 自动取总步数的 1/5，最少 200）。热身期走 `timestep_sampling` 选择的 baseline 分布；之后切自适应 |
+| `infonoise_K` | `64` | log-σ 空间分 bin 数；高 K = 更细 |
+| `infonoise_M` | `100` | 每 M 步刷新一次采样分布 |
+| `infonoise_B` | `256` | 每 bin 的 FIFO buffer 大小 |
+| `infonoise_beta` | `0.9` | EMA 新值权重（论文 Algorithm 1）。FIFO 已做一轮平均，β 偏高合理 |
+| `infonoise_N_min` | `50` | 触发刷新所需的每 bin 最小样本数 |
+
+**观察是否生效**：训练时 wandb 面板会有两个指标
+- `infonoise/cdf_ready`：1 = 自适应 CDF 已就绪，0 = 还在 baseline
+- `infonoise/refresh_degraded_count`：每次刷新失败次数。如果一直 0 但 cdf_ready 也是 0，
+  说明你的 loss 在 log-σ 上太均匀（已收敛模型），InfoNoise 没加速空间 — 关掉即可
+
+**注意**：InfoNoise 启用后 `timestep_sampling` 字段仅用于热身期。正式阶段由自适应 CDF 接管。
+
+### 噪声增强
+
+| 字段 | 默认 | 用途 |
+|------|------|------|
+| `noise_offset` | `0.0` | 给噪声加常数偏置；`0.05~0.1` 能改善超暗 / 超亮场景的对比度 |
+| `pyramid_noise_iters` | `0` | 金字塔噪声层数；`>0` 在多尺度叠加噪声，纹理多样性更好 |
+| `pyramid_noise_discount` | `0.35` | 金字塔每层衰减系数（仅 `pyramid_noise_iters>0` 用） |
+
+`pyramid_noise` 来自 Mistoline / Diffusion 社区实验，画风 LoRA 受益明显，角色 LoRA 一般。
+
+---
+
+## Schema 简单/高级模式 与 字段位置（0.7.1 改动）
+
+0.7.1 引入了 Train 页和 Presets 页的 **简单/高级** 切换：
+
+- **简单模式**：只显示常用字段（学习率、rank、optimizer、采样间隔等），约 30 个字段
+- **高级模式**：显示全部字段（约 65 个），包含 dropout、scheduler tuning、PPSF 细节、噪声
+  schedule、InfoNoise 等
+
+两个页面共享同一个 toggle 状态（localStorage），打开任一页面切换都会同步到另一个。
+
+### 字段位置变化（0.7.0 → 0.8.0）
+
+以下字段移动了所属分组，但 yaml/TOML preset key 名没变，老 preset 仍兼容加载：
+
+| 字段 | 旧分组 | 新分组 |
+|------|--------|--------|
+| `kv_trim` | training | **system** |
+| `mixed_precision` | training | **system** |
+| `attention_backend` | training | **system** |
+| `num_workers` | training | **system** |
+| `grad_checkpoint` | system | **training**（紧贴 `grad_accum`） |
+| `noise_offset` / `pyramid_noise_*` / `timestep_*` / `infonoise_*` / `loss_weighting` 等 | training | **noise_schedule**（新增分组） |
+
+`lora` 分组的 UI 标签从 "LoRA / LoKr" 改为 "网络设置"（key 仍是 `lora`）。
+
+### 默认值变化（0.7.0 → 0.8.0）
+
+以下字段默认值改了。**老 preset 显式写过值不受影响**；走默认的需要注意节奏变化：
+
+| 字段 | 旧默认 | 新默认 | 影响 |
+|------|--------|--------|------|
+| `save_every` | 0 | **2** | 每 2 epoch 保存 LoRA |
+| `save_every_steps` | 500 | **0** | step-based save 默认关 |
+| `save_state_every` | 1000 | **0** | step-based state save 默认关 |
+| `sample_every` | 5 | **2** | epoch 采样频率翻倍 |
+| `sample_max_side` | 1024 | **1216** | 采样图分辨率提升 |
+
+`save_every` 和 `save_state_every`（epoch 版）/ `save_every_steps` 和 `save_state_every_epochs`
+是双轨设计：step 版写 `..._step{N}.{ext}`，epoch 版写 `..._epoch{N}.{ext}`，文件名互不
+覆盖，可同时启用。
+
+---
+
+## CLI 与启动
+
+### `--torch=<tag>` 强制指定 PyTorch CUDA 版本
+
+`./studio.sh --torch=cu128`（也支持 `--torch=cu126 / cu124 / cu118 / cpu`）
+
+适合场景：**CPU-only 租赁机预装 GPU torch**，方便后续切到 GPU 实例时不用再装。Ctrl+C 可
+跳过本次安装；marker 文件保留到下次启动重试。
+
+若想永久跳过 pending 重试，删 `studio_data/.pending-pip-install.json` 即可。
+
+### `dev` 子命令的 `--fe-port`
+
+`./studio.sh dev --fe-port 5174` —— Vite dev server 默认 5173 与其他服务冲突时用这个改端口。
+
 ---
 
 ## 常见问题
@@ -244,7 +432,7 @@ grad_accum: 2
 resolution: 1024
 grad_checkpoint: true
 mixed_precision: "bf16"
-xformers: false  # 用 PyTorch SDPA
+attention_backend: "none"  # 用 PyTorch SDPA（也可选 "xformers" / "flash_attn"）
 cache_latents: true
 ```
 
