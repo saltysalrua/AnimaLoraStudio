@@ -43,4 +43,4 @@ jobs:
           push: true
           tags: |
             saltycocoa/animalorastudio:latest
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/saltysalrua/animalorastudio:latest
