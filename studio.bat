@@ -143,6 +143,7 @@ if exist "venv\Scripts\python.exe" (
     ) else (
         echo studio.bat: requirements.txt not found, skipping dependency install 1>&2
     )
+    !PYTHON! tools\ensure_lycoris_tlora.py || (echo studio.bat: failed to install LyCORIS T-LoRA support 1>&2 & goto :fail)
     REM PR-S1b: write hash marker after fresh install
     !PYTHON! tools\check_requirements_changed.py --marker %REQ_MARKER% --update-marker >nul 2>nul
 )
@@ -158,9 +159,16 @@ if "!STALE!"=="stale" (
         echo [studio] WARNING: dep sync failed; existing venv still works but may miss new deps 1>&2
         echo [studio] try studio.bat --reinstall if errors persist 1>&2
     ) else (
+        !PYTHON! tools\ensure_lycoris_tlora.py || (
+            echo [studio] WARNING: LyCORIS T-LoRA install failed; try studio.bat --reinstall if errors persist 1>&2
+        )
         !PYTHON! tools\check_requirements_changed.py --marker %REQ_MARKER% --update-marker >nul 2>nul
         echo [studio] dep sync complete
     )
+)
+
+!PYTHON! tools\ensure_lycoris_tlora.py || (
+    echo [studio] WARNING: LyCORIS T-LoRA support is unavailable; try studio.bat --reinstall if T-LoRA errors persist 1>&2
 )
 
 REM Restart loop (PR-A): if cli.py exits but tmp\restart still present, loop

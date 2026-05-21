@@ -36,9 +36,9 @@ def AnimaLycorisAdapter():
 # ---------------------------------------------------------------------------
 
 
-def test_adapter_builders_dict_has_lokr_loha_lora() -> None:
+def test_adapter_builders_dict_has_lokr_loha_lora_tlora() -> None:
     from training.adapters import BUILDERS
-    assert set(BUILDERS) == {"lokr", "loha", "lora"}
+    assert set(BUILDERS) == {"lokr", "loha", "lora", "tlora"}
 
 
 def test_optimizer_builders_dict_has_3_variants() -> None:
@@ -84,7 +84,6 @@ def test_build_scheduler_returns_none_when_lr_scheduler_is_none() -> None:
 
 def test_adapter_schema_consistency_passes_on_clean_dev() -> None:
     from training.adapters import validate_schema_consistency
-    # dev 上 schema.lora_type == {"lora","lokr","loha"} == BUILDERS keys
     validate_schema_consistency()  # 不抛即 pass
 
 
@@ -115,7 +114,7 @@ def test_schema_consistency_raises_when_builder_missing(monkeypatch) -> None:
     try:
         # 用 typing.Literal 重建一个含 "tlora" 的 annotation
         from typing import Literal
-        field.annotation = Literal["lora", "lokr", "loha", "tlora"]  # type: ignore[assignment]
+        field.annotation = Literal["lora", "lokr", "loha", "tlora", "missing_variant"]  # type: ignore[assignment]
         with pytest.raises(RuntimeError, match="不同步"):
             adapters.validate_schema_consistency()
     finally:
@@ -135,13 +134,10 @@ def test_animalycoris_satisfies_adapter_protocol(AnimaLycorisAdapter) -> None:
     assert isinstance(adapter, AdapterProtocol)
 
 
-def test_animalycoris_hooks_are_noop(AnimaLycorisAdapter) -> None:
-    """LyCORIS 路径下 3 个 hook 必须 default no-op；
-    on_step_begin 返回 None；regularization_loss 返回 None。"""
+def test_animalycoris_non_tlora_hooks_are_noop(AnimaLycorisAdapter) -> None:
     from training.adapters.protocol import StepContext
     adapter = AnimaLycorisAdapter(algo="lokr")
 
-    # 用极简 StepContext —— sigma_t 在 lyc 路径下不会被读
     import torch
     step_ctx = StepContext(
         global_step=0,
@@ -153,6 +149,34 @@ def test_animalycoris_hooks_are_noop(AnimaLycorisAdapter) -> None:
 
     assert adapter.on_step_begin(step_ctx) is None
     assert adapter.regularization_loss(step_ctx) is None
+
+
+def test_animalycoris_tlora_sets_timestep_mask(AnimaLycorisAdapter) -> None:
+    pytest.importorskip("lycoris.modules.tlora")
+    from lycoris.modules.tlora import get_timestep_mask, clear_timestep_mask
+    from training.adapters.protocol import StepContext
+    import torch
+
+    clear_timestep_mask()
+    adapter = AnimaLycorisAdapter(
+        algo="tlora",
+        rank=8,
+        tlora_min_rank=2,
+        tlora_rank_alpha=1.0,
+    )
+    step_ctx = StepContext(
+        global_step=0,
+        total_steps=100,
+        epoch=0,
+        sigma_t=torch.tensor([0.5]),
+        args=argparse.Namespace(),
+    )
+
+    assert adapter.on_step_begin(step_ctx) is None
+    mask = get_timestep_mask()
+    assert mask.shape == (1, 8)
+    assert mask.sum().item() == 5.0
+    clear_timestep_mask()
 
 
 def test_animalycoris_lokr_excludes_weight_decay_for_w1(AnimaLycorisAdapter) -> None:

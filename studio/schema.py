@@ -169,9 +169,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
         "lokr",
-        description="适配器算法（lora/lokr/loha）",
+        description="适配器算法（lora/lokr/loha/tlora）",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -213,6 +213,21 @@ class TrainingConfig(BaseModel):
         0.0, ge=0.0, le=1.0,
         description="层级 stochastic depth（整层级别随机跳过）",
         json_schema_extra=_meta("lora", advanced=True),
+    )
+    tlora_sig_type: Literal["principal", "last", "middle"] = Field(
+        "principal",
+        description="T-LoRA SVD 奇异方向选择（principal=主方向，last=尾部方向，middle=中间方向）",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_min_rank: int = Field(
+        1, ge=1,
+        description="T-LoRA 高噪声阶段保留的最小 active rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_rank_alpha: float = Field(
+        1.0, gt=0.0,
+        description="T-LoRA timestep rank mask 曲线指数（越大越偏向高噪声低 rank）",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
 
     # ------------------------------------------------------------------ 训练

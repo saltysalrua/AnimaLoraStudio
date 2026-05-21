@@ -48,6 +48,9 @@ class AnimaLycorisAdapter:
         module_dropout: float = 0.0,
         weight_decompose: bool = False,
         rs_lora: bool = False,
+        tlora_sig_type: str = "principal",
+        tlora_min_rank: int = 1,
+        tlora_rank_alpha: float = 1.0,
     ):
         self.algo = algo
         self.rank = rank
@@ -58,6 +61,9 @@ class AnimaLycorisAdapter:
         self.module_dropout = module_dropout
         self.weight_decompose = weight_decompose
         self.rs_lora = rs_lora
+        self.tlora_sig_type = tlora_sig_type
+        self.tlora_min_rank = tlora_min_rank
+        self.tlora_rank_alpha = tlora_rank_alpha
 
         # use_lokr 是原 LoRAInjector 的字段，anima_train.py 多处用它做分支判断；
         # 保留此字段以避免改动太多调用点。
@@ -84,6 +90,8 @@ class AnimaLycorisAdapter:
         extra: dict[str, Any] = {}
         if self.algo == "lokr":
             extra["factor"] = self.factor
+        if self.algo == "tlora":
+            extra["sig_type"] = self.tlora_sig_type
         if self.weight_decompose:
             extra["weight_decompose"] = True
         if self.rs_lora:
@@ -252,6 +260,9 @@ class AnimaLycorisAdapter:
                 "module_dropout": self.module_dropout,
                 "weight_decompose": self.weight_decompose,
                 "rs_lora": self.rs_lora,
+                "tlora_sig_type": self.tlora_sig_type,
+                "tlora_min_rank": self.tlora_min_rank,
+                "tlora_rank_alpha": self.tlora_rank_alpha,
             }),
         }
         save_file(sd, str(path), metadata=meta)
@@ -282,7 +293,24 @@ class AnimaLycorisAdapter:
     # （T-LoRA / OFT / Ortho-Hydra）可在自己的 build wrapper 里 override。
 
     def on_step_begin(self, ctx) -> None:
-        """每 micro-batch 前向之前调用；LoKr/LoRA/LoHa 无运行时结构调整。"""
+        """每 micro-batch 前向之前调用；T-LoRA 在这里更新 timestep rank mask。"""
+        if self.algo != "tlora":
+            return None
+        try:
+            from lycoris.modules.tlora import compute_timestep_mask, set_timestep_mask
+        except Exception as exc:
+            raise RuntimeError("当前 lycoris-lora 不包含 T-LoRA；请安装 requirements.txt 中锁定的 Git 版本") from exc
+
+        sigma_t = torch.as_tensor(ctx.sigma_t).detach().float().clamp(0.0, 1.0)
+        timestep = int((sigma_t.mean() * 1000.0).round().item())
+        mask = compute_timestep_mask(
+            timestep=timestep,
+            max_timestep=1000,
+            max_rank=self.rank,
+            min_rank=min(self.tlora_min_rank, self.rank),
+            alpha=self.tlora_rank_alpha,
+        )
+        set_timestep_mask(mask, group_id=0)
         return None
 
     def regularization_loss(self, ctx):

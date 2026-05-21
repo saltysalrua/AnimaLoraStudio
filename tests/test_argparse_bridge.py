@@ -264,3 +264,17 @@ def test_training_config_emits_loss_type_and_huber_flags() -> None:
     ns = parser.parse_args(["--loss-type", "huber", "--huber-c", "0.2"])
     assert ns.loss_type == "huber"
     assert ns.huber_c == 0.2
+
+
+def test_training_config_emits_tlora_flags() -> None:
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args([
+        "--lora-type", "tlora",
+        "--tlora-sig-type", "middle",
+        "--tlora-min-rank", "2",
+        "--tlora-rank-alpha", "1.5",
+    ])
+    assert ns.lora_type == "tlora"
+    assert ns.tlora_sig_type == "middle"
+    assert ns.tlora_min_rank == 2
+    assert ns.tlora_rank_alpha == 1.5
