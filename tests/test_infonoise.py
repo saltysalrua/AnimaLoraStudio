@@ -84,6 +84,34 @@ def test_refresh_status_mse_collapsed():
     assert s._refresh_degraded_count == 1
 
 
+def test_pivot_c_uses_high_sigma_boundary():
+    """pivot c 必须取 above 区域的最大 σ 边界，而不是最小 σ（argmax 的错误行为）。
+
+    连续数据的 entropy rate 在 σ→0 单调上升（论文附录 B Figure 11），
+    所以 above 形如 [True, True, True, False, ...]，c_onset 在右端（高 σ 切换边界）。
+    - 正确（indices_above[-1]）：c = sigma_centers[2]
+    - 错误（argmax）         ：c = sigma_centers[0]，gate 形同虚设
+    """
+    K = 8
+    s = InfoNoiseScheduler(K=K, N_warm=1, M=1, B=2, N_min=1, beta=1.0, p_onset=0.01, n_gate=3)
+    sigma = s._sigma_centers
+    # r_hat[0..2] = 1.0（above），r_hat[3..] ≈ 0（below）
+    target_r = np.array([1.0, 1.0, 1.0, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001])
+    s._mse_ema = target_r * (sigma ** 3)
+    for k in range(K):
+        s._fifo[k].append(s._mse_ema[k])
+        s._n_count[k] = 1
+
+    s._refresh()
+
+    assert s._last_refresh_status == "ok", s._last_refresh_status
+    # _last_pivot_c 必须等于 sigma_centers[2]（最后一个 True 的 σ），不是 sigma_centers[0]
+    assert s._last_pivot_c == pytest.approx(float(sigma[2])), (
+        f"pivot c={s._last_pivot_c:.6f} 应等于 sigma_centers[2]={float(sigma[2]):.6f}，"
+        f"而不是 sigma_centers[0]={float(sigma[0]):.6f}（argmax 错误结果）"
+    )
+
+
 def test_refresh_status_ok_path():
     """正常 mse 应该走完整条 pipeline，标 ok 并写 _cdf_values。"""
     s = InfoNoiseScheduler(K=8, N_warm=1, M=1, B=2, N_min=1, beta=0.5)

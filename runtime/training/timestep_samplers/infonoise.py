@@ -74,6 +74,7 @@ class InfoNoiseScheduler:
         # 可观测性（P1-1 反方/正方都标了"InfoNoise 静默退化是 trust killer"）：
         # last_refresh_status 暴露 _refresh 上一次的退出原因；refresh_attempts 计退化次数；
         # warned_cold_start 防 logger 刷屏。
+        self._last_pivot_c: float = float("nan")
         self._last_refresh_status: str = "not_refreshed_yet"
         self._refresh_attempts: int = 0
         self._refresh_degraded_count: int = 0
@@ -207,7 +208,10 @@ class InfoNoiseScheduler:
         # Step C: entropy rate r̂_k = mse_k / σ_k³
         r_hat = self._mse_ema / (self._sigma_centers ** 3 + 1e-30)
 
-        # Step D: 找 gate pivot c（从低 σ 向高 σ 扫，取第一个超过 p_onset 的前一个 bin）
+        # Step D: 找 gate pivot c（论文公式 18：从高 σ 向低 σ 扫，取 above 区域最大 σ 边界）
+        # 连续数据的 entropy rate 在 σ→0 时单调上升（论文附录 B Figure 11），
+        # 所以 above 数组形如 [True,...,True,False,...]，c_onset 在右端（高 σ 切换边界）。
+        # argmax() 会返回第一个 True（低 σ 端），导致 c≈σ_min，gate 几乎恒等于 1，形同虚设。
         r_max = float(r_hat.max())
         if r_max < 1e-30:
             self._last_refresh_status = "mse_collapsed"
@@ -215,12 +219,14 @@ class InfoNoiseScheduler:
             return
         r_norm = r_hat / r_max
         above = r_norm >= self.p_onset
-        if not any(above):
+        indices_above = np.flatnonzero(above)
+        if indices_above.size == 0:
             self._last_refresh_status = "gate_empty"
             self._refresh_degraded_count += 1
             return
-        first_above = int(above.argmax())
-        c = float(self._sigma_centers[max(0, first_above - 1)])
+        last_above_idx = int(indices_above[-1])
+        c = float(self._sigma_centers[last_above_idx])
+        self._last_pivot_c = c
 
         # Step E: gate g(σ) = σⁿ / (σⁿ + cⁿ)
         sn = self._sigma_centers ** self.n_gate
