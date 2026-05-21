@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from ..presets_io import _absolutize_model_paths
+from ..presets_io import _absolutize_model_paths, migrate_legacy_fields
 from ..schema import TrainingConfig
 from ..versions import version_dir
 from .. import projects as _projects
@@ -108,6 +108,7 @@ def read_version_config(
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise VersionConfigError("config.yaml 顶层不是 mapping")
+    migrate_legacy_fields(raw)
     try:
         cfg = TrainingConfig.model_validate(raw)
     except ValidationError as exc:
@@ -127,6 +128,7 @@ def write_version_config(
     payload = dict(data)
     if force_project_overrides:
         payload.update(project_specific_overrides(project, version))
+    migrate_legacy_fields(payload)
     try:
         cfg = TrainingConfig.model_validate(payload)
     except ValidationError as exc:

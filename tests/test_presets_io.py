@@ -194,6 +194,83 @@ def test_read_preset_normalizes_to_posix(presets_dir: Path) -> None:
     assert got["transformer_path"] == Path(abs_path).as_posix()
 
 
+# ---------------------------------------------------------------------------
+# 旧版字段迁移（PR #85/#86 删改字段后老预设兼容）
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_schedule_shift_renamed(presets_dir: Path) -> None:
+    """旧字段 schedule_shift 在读取时自动迁移到 timestep_schedule_shift。
+
+    老预设 yaml 里只有 schedule_shift，没有 timestep_schedule_shift（尚未命名时写盘的）。
+    """
+    import yaml
+    raw = TrainingConfig().model_dump()
+    raw.pop("timestep_schedule_shift", None)  # 模拟旧预设：新字段不存在
+    raw["schedule_shift"] = 2.5              # 只有旧字段
+    (presets_dir / "legacy_shift.yaml").write_text(
+        yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8"
+    )
+    got = presets_io.read_preset("legacy_shift")
+    assert "schedule_shift" not in got
+    assert got["timestep_schedule_shift"] == pytest.approx(2.5)
+
+
+def test_migrate_huber_schedule_dropped(presets_dir: Path) -> None:
+    """旧字段 huber_schedule 在读取时静默移除（无对应新字段）。"""
+    import yaml
+    raw = TrainingConfig().model_dump()
+    raw["huber_schedule"] = "constant"  # 旧字段，PR #86 已删
+    (presets_dir / "legacy_huber.yaml").write_text(
+        yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8"
+    )
+    got = presets_io.read_preset("legacy_huber")
+    assert "huber_schedule" not in got
+
+
+def test_migrate_both_legacy_fields_together(presets_dir: Path) -> None:
+    """同时含两个旧字段的预设可以正常加载。"""
+    import yaml
+    raw = TrainingConfig().model_dump()
+    raw.pop("timestep_schedule_shift", None)  # 模拟旧预设
+    raw["schedule_shift"] = 1.0
+    raw["huber_schedule"] = "constant"
+    (presets_dir / "legacy_both.yaml").write_text(
+        yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8"
+    )
+    got = presets_io.read_preset("legacy_both")
+    assert "schedule_shift" not in got
+    assert "huber_schedule" not in got
+    assert got["timestep_schedule_shift"] == pytest.approx(1.0)
+
+
+def test_migrate_schedule_shift_does_not_overwrite_new_field(presets_dir: Path) -> None:
+    """若新字段已存在，旧字段的值不覆盖新字段（新名优先）。"""
+    import yaml
+    raw = TrainingConfig().model_dump()
+    raw["schedule_shift"] = 2.0        # 旧字段
+    raw["timestep_schedule_shift"] = 3.0  # 新字段已设置
+    (presets_dir / "legacy_no_overwrite.yaml").write_text(
+        yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8"
+    )
+    got = presets_io.read_preset("legacy_no_overwrite")
+    assert got["timestep_schedule_shift"] == pytest.approx(3.0)
+
+
+def test_migrate_via_parse_preset_bytes() -> None:
+    """parse_preset_bytes 路径也触发迁移。"""
+    import yaml
+    raw = TrainingConfig().model_dump()
+    raw.pop("timestep_schedule_shift", None)  # 模拟旧预设
+    raw["schedule_shift"] = 1.5
+    raw["huber_schedule"] = "constant"
+    data = yaml.safe_dump(raw, allow_unicode=True).encode("utf-8")
+    config, _ = presets_io.parse_preset_bytes(data, "old_preset.yaml")
+    assert "schedule_shift" not in config
+    assert "huber_schedule" not in config
+    assert config["timestep_schedule_shift"] == pytest.approx(1.5)
+
+
 def test_write_preset_absolutizes_relative_paths(presets_dir: Path) -> None:
     """写预设时相对路径会被规范化为绝对 POSIX 落盘 → yaml 文件本身统一格式。"""
     import yaml

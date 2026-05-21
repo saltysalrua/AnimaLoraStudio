@@ -20,6 +20,26 @@ from .schema import TrainingConfig
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# 已删除或改名的字段映射表：旧名 → 新名（None 表示直接丢弃）
+_FIELD_MIGRATIONS: dict[str, str | None] = {
+    "schedule_shift": "timestep_schedule_shift",  # PR #85 重命名
+    "huber_schedule": None,                        # PR #86 删除（无论文依据）
+}
+
+
+def migrate_legacy_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """把旧版预设字段迁移到当前 schema，就地修改并返回同一个 dict。
+
+    - 改名字段：若新名不在 data 中，把旧名的值搬过去；否则旧值直接丢弃（新名优先）。
+    - 已删字段：静默移除。
+    """
+    for old, new in _FIELD_MIGRATIONS.items():
+        if old in data:
+            if new is not None and new not in data:
+                data[new] = data[old]
+            del data[old]
+    return data
+
 # 全局模型路径字段。yaml 写盘 + UI 显示一律绝对路径；读老 yaml 时若是相对
 # 路径，由 _absolutize_model_paths 兜底转绝对（忠于历史 CWD=REPO_ROOT 的解析
 # 语义），下游可以无脑假定 4 字段是绝对路径。
@@ -86,6 +106,7 @@ def parse_preset_bytes(raw: bytes, filename: str) -> tuple[dict[str, Any], str]:
         raise PresetError(f"YAML/JSON 解析失败: {exc}") from exc
     if not isinstance(data, dict):
         raise PresetError("预设格式错误（顶层不是 mapping）")
+    migrate_legacy_fields(data)
     try:
         cfg = TrainingConfig.model_validate(data)
     except ValidationError as exc:
@@ -119,6 +140,7 @@ def read_preset(name: str, base: Path | None = None) -> dict[str, Any]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise PresetError(f"预设格式错误（顶层不是 mapping）: {name}")
+    migrate_legacy_fields(raw)
     try:
         cfg = TrainingConfig.model_validate(raw)
     except ValidationError as exc:
@@ -133,6 +155,7 @@ def write_preset(name: str, data: dict[str, Any], base: Path | None = None) -> P
     保证 yaml 落盘统一绝对路径，避免老格式（相对）和新格式（绝对）混存。
     """
     path = _preset_path(name, base)
+    migrate_legacy_fields(data)
     try:
         cfg = TrainingConfig.model_validate(data)
     except ValidationError as exc:
