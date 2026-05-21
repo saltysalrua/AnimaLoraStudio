@@ -26,6 +26,7 @@ BUILDERS: dict[str, Callable[..., AdapterProtocol]] = {
     "loha": lycoris.build,
     "lora": lycoris.build,
     "tlora": lycoris.build,
+    "full": lycoris.build,
 }
 
 

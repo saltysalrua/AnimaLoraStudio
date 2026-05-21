@@ -278,3 +278,9 @@ def test_training_config_emits_tlora_flags() -> None:
     assert ns.tlora_sig_type == "middle"
     assert ns.tlora_min_rank == 2
     assert ns.tlora_rank_alpha == 1.5
+
+
+def test_training_config_accepts_full_lora_type() -> None:
+    parser = bridge.build_parser(TrainingConfig)
+    ns = parser.parse_args(["--lora-type", "full"])
+    assert ns.lora_type == "full"

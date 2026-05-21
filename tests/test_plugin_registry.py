@@ -36,9 +36,9 @@ def AnimaLycorisAdapter():
 # ---------------------------------------------------------------------------
 
 
-def test_adapter_builders_dict_has_lokr_loha_lora_tlora() -> None:
+def test_adapter_builders_dict_has_lokr_loha_lora_tlora_full() -> None:
     from training.adapters import BUILDERS
-    assert set(BUILDERS) == {"lokr", "loha", "lora", "tlora"}
+    assert set(BUILDERS) == {"lokr", "loha", "lora", "tlora", "full"}
 
 
 def test_optimizer_builders_dict_has_3_variants() -> None:
@@ -114,7 +114,7 @@ def test_schema_consistency_raises_when_builder_missing(monkeypatch) -> None:
     try:
         # 用 typing.Literal 重建一个含 "tlora" 的 annotation
         from typing import Literal
-        field.annotation = Literal["lora", "lokr", "loha", "tlora", "missing_variant"]  # type: ignore[assignment]
+        field.annotation = Literal["lora", "lokr", "loha", "tlora", "full", "missing_variant"]  # type: ignore[assignment]
         with pytest.raises(RuntimeError, match="不同步"):
             adapters.validate_schema_consistency()
     finally:
@@ -177,6 +177,26 @@ def test_animalycoris_tlora_sets_timestep_mask(AnimaLycorisAdapter) -> None:
     assert mask.shape == (1, 8)
     assert mask.sum().item() == 5.0
     clear_timestep_mask()
+
+
+def test_animalycoris_full_injects_full_module(AnimaLycorisAdapter) -> None:
+    pytest.importorskip("lycoris.modules.full")
+    import torch
+
+    class Toy(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = torch.nn.Linear(4, 4)
+
+        def forward(self, x):
+            return self.q_proj(x)
+
+    model = Toy()
+    adapter = AnimaLycorisAdapter(algo="full")
+    modules = adapter.inject(model)
+
+    assert len(modules) == 1
+    assert {type(module).__name__ for module in modules.values()} == {"FullModule"}
 
 
 def test_animalycoris_lokr_excludes_weight_decay_for_w1(AnimaLycorisAdapter) -> None:

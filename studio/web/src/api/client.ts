@@ -1846,6 +1846,18 @@ export const api = {
     return req<BrowseResult>(`/api/browse${qs}`)
   },
 
+  // Tools --------------------------------------------------------------
+  validateLoraExtraction: (body: ExtractLoraRequest) =>
+    req<ExtractLoraResult>('/api/tools/extract-lora/validate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  extractLoraFromFull: (body: ExtractLoraRequest) =>
+    req<ExtractLoraResult>('/api/tools/extract-lora', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // System lifecycle (ADR 0002) ----------------------------------------
   // 重启 server。后端写 tmp/restart + 给自己发 SIGINT 触发 uvicorn graceful
   // shutdown；cli.py 的 loop 拾起并重启。前端调完后应进入"重启中"等待状态，
@@ -2050,4 +2062,38 @@ export interface BrowseResult {
   entries: BrowseEntry[]
   /** 若传入的是文件路径，后端会回退到父目录，并把文件名放在这里供 picker 高亮。 */
   selected?: string | null
+}
+
+export interface ExtractLoraRequest {
+  base_path: string
+  tuned_path: string
+  output_path: string
+  rank: number
+  alpha?: number | null
+  target_pattern: string
+  prefix: string
+}
+
+export interface ExtractLoraMatchedWeight {
+  name: string
+  shape: [number, number]
+  used_rank: number
+}
+
+export interface ExtractLoraResult {
+  ok: boolean
+  base_path: string
+  tuned_path: string
+  output_path: string
+  rank: number
+  alpha: number
+  target_patterns: string[]
+  matched_count: number
+  matched: ExtractLoraMatchedWeight[]
+  truncated: boolean
+  missing_in_base: number
+  skipped_shape: number
+  zero_delta: number
+  errors?: Record<string, number>
+  mean_error?: number
 }

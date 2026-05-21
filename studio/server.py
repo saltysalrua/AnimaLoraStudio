@@ -1791,6 +1791,124 @@ class TorchReinstallRequest(BaseModel):
     target: str = "auto"  # "auto" | "cu128" | "cu126" | "cu124" | "cu118" | "cpu"
 
 
+class ExtractLoraRequest(BaseModel):
+    base_path: str
+    tuned_path: str
+    output_path: str
+    rank: int = 32
+    alpha: float | None = None
+    target_pattern: str = "*q_proj.weight|*k_proj.weight|*v_proj.weight|*output_proj.weight|*mlp.layer1.weight|*mlp.layer2.weight"
+    prefix: str = "lora_unet"
+
+
+def _resolve_user_path(value: str, *, field: str) -> Path:
+    if not value.strip():
+        raise HTTPException(400, f"{field} is required")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (REPO_ROOT / path).resolve()
+    return path
+
+
+def _analyze_lora_extraction(req: ExtractLoraRequest) -> tuple[Path, Path, Path, list[str], dict[str, Any]]:
+    import torch
+    from safetensors.torch import load_file
+    from tools.extract_lora_from_full import _matches, _split_patterns
+
+    base_path = _resolve_user_path(req.base_path, field="base_path")
+    tuned_path = _resolve_user_path(req.tuned_path, field="tuned_path")
+    output_path = _resolve_user_path(req.output_path, field="output_path")
+
+    if req.rank < 1:
+        raise HTTPException(400, "rank must be >= 1")
+    alpha = float(req.rank if req.alpha is None else req.alpha)
+    if alpha <= 0:
+        raise HTTPException(400, "alpha must be > 0")
+    if not base_path.is_file():
+        raise HTTPException(404, f"base_path not found: {base_path}")
+    if not tuned_path.is_file():
+        raise HTTPException(404, f"tuned_path not found: {tuned_path}")
+    if base_path.suffix != ".safetensors" or tuned_path.suffix != ".safetensors":
+        raise HTTPException(400, "base_path and tuned_path must be .safetensors files")
+    if output_path.suffix != ".safetensors":
+        raise HTTPException(400, "output_path must end with .safetensors")
+
+    base = load_file(str(base_path), device="cpu")
+    tuned = load_file(str(tuned_path), device="cpu")
+    patterns = _split_patterns(req.target_pattern)
+    matched: list[dict[str, Any]] = []
+    skipped_shape = 0
+    missing_in_base = 0
+    zero_delta = 0
+
+    for name, tuned_tensor in tuned.items():
+        if name not in base:
+            missing_in_base += 1
+            continue
+        base_tensor = base[name]
+        if not name.endswith(".weight") or tuned_tensor.ndim != 2 or base_tensor.ndim != 2:
+            continue
+        if tuned_tensor.shape != base_tensor.shape:
+            skipped_shape += 1
+            continue
+        if not _matches(name, patterns):
+            continue
+        if torch.count_nonzero(tuned_tensor.float() - base_tensor.float()).item() == 0:
+            zero_delta += 1
+            continue
+        rows, cols = tuned_tensor.shape
+        matched.append({"name": name, "shape": [int(rows), int(cols)], "used_rank": min(int(req.rank), int(rows), int(cols))})
+
+    summary = {
+        "base_path": str(base_path),
+        "tuned_path": str(tuned_path),
+        "output_path": str(output_path),
+        "rank": int(req.rank),
+        "alpha": alpha,
+        "target_patterns": patterns,
+        "matched_count": len(matched),
+        "matched": matched[:200],
+        "truncated": len(matched) > 200,
+        "missing_in_base": missing_in_base,
+        "skipped_shape": skipped_shape,
+        "zero_delta": zero_delta,
+    }
+    return base_path, tuned_path, output_path, patterns, summary
+
+
+@app.post("/api/tools/extract-lora/validate")
+def validate_lora_extraction(req: ExtractLoraRequest) -> dict[str, Any]:
+    *_, summary = _analyze_lora_extraction(req)
+    return {"ok": summary["matched_count"] > 0, **summary}
+
+
+@app.post("/api/tools/extract-lora")
+def run_lora_extraction(req: ExtractLoraRequest) -> dict[str, Any]:
+    from tools.extract_lora_from_full import extract_lora
+
+    base_path, tuned_path, output_path, patterns, summary = _analyze_lora_extraction(req)
+    if summary["matched_count"] == 0:
+        raise HTTPException(400, "no matching non-zero 2D weight deltas were found")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    errors = extract_lora(
+        base_path,
+        tuned_path,
+        output_path,
+        rank=int(req.rank),
+        alpha=float(summary["alpha"]),
+        target_patterns=patterns,
+        prefix=req.prefix,
+    )
+    mean_error = sum(errors.values()) / len(errors)
+    return {
+        "ok": True,
+        **summary,
+        "output_path": str(output_path),
+        "errors": errors,
+        "mean_error": mean_error,
+    }
+
+
 @app.post("/api/torch/reinstall")
 def torch_reinstall(body: TorchReinstallRequest) -> dict[str, Any]:
     """注册 torch 重装请求；下次 Studio 启动时由 launcher 进程执行。

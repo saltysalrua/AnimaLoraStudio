@@ -130,6 +130,67 @@ def test_torch_reinstall_invalid_target_returns_400(
     assert "非法 target" in resp.json()["detail"]
 
 
+def test_extract_lora_validate_and_run(client: TestClient, tmp_path: Path) -> None:
+    from safetensors.torch import load_file, save_file
+    import torch
+
+    base_path = tmp_path / "base.safetensors"
+    tuned_path = tmp_path / "tuned.safetensors"
+    output_path = tmp_path / "out.safetensors"
+    delta = torch.tensor([[1.0, 0.0], [0.0, 0.0]])
+    save_file({"blocks.0.q_proj.weight": torch.zeros(2, 2)}, str(base_path))
+    save_file({"blocks.0.q_proj.weight": delta}, str(tuned_path))
+
+    payload = {
+        "base_path": str(base_path),
+        "tuned_path": str(tuned_path),
+        "output_path": str(output_path),
+        "rank": 1,
+        "alpha": None,
+        "target_pattern": "*q_proj.weight",
+        "prefix": "lora_unet",
+    }
+
+    validate_resp = client.post("/api/tools/extract-lora/validate", json=payload)
+    assert validate_resp.status_code == 200
+    validate_body = validate_resp.json()
+    assert validate_body["ok"] is True
+    assert validate_body["matched_count"] == 1
+    assert validate_body["matched"][0]["name"] == "blocks.0.q_proj.weight"
+
+    run_resp = client.post("/api/tools/extract-lora", json=payload)
+    assert run_resp.status_code == 200
+    run_body = run_resp.json()
+    assert run_body["ok"] is True
+    assert run_body["output_path"] == str(output_path)
+    assert run_body["mean_error"] < 1e-5
+    tensors = load_file(str(output_path), device="cpu")
+    assert "lora_unet_blocks_0_q_proj.lora_down.weight" in tensors
+
+
+def test_extract_lora_rejects_no_matches(client: TestClient, tmp_path: Path) -> None:
+    from safetensors.torch import save_file
+    import torch
+
+    base_path = tmp_path / "base.safetensors"
+    tuned_path = tmp_path / "tuned.safetensors"
+    output_path = tmp_path / "out.safetensors"
+    save_file({"blocks.0.q_proj.weight": torch.zeros(2, 2)}, str(base_path))
+    save_file({"blocks.0.q_proj.weight": torch.ones(2, 2)}, str(tuned_path))
+
+    resp = client.post("/api/tools/extract-lora", json={
+        "base_path": str(base_path),
+        "tuned_path": str(tuned_path),
+        "output_path": str(output_path),
+        "rank": 1,
+        "target_pattern": "*v_proj.weight",
+        "prefix": "lora_unet",
+    })
+
+    assert resp.status_code == 400
+    assert "no matching" in resp.json()["detail"]
+
+
 def test_flash_attention_status_returns_env_and_candidates(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

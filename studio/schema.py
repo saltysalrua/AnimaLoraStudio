@@ -169,9 +169,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora", "full"] = Field(
         "lokr",
-        description="适配器算法（lora/lokr/loha/tlora）",
+        description="适配器算法（lora/lokr/loha/tlora/full）",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(

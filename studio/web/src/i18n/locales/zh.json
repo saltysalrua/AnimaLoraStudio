@@ -6,6 +6,7 @@
     "monitor": "监控",
     "settings": "设置",
     "generate": "测试",
+    "extractLora": "差异提取",
     "download": "下载",
     "curate": "筛选",
     "tag": "打标",

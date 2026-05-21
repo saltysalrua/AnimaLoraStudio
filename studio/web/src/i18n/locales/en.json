@@ -6,6 +6,7 @@
     "monitor": "Monitor",
     "settings": "Settings",
     "generate": "Generate",
+    "extractLora": "Extract LoRA",
     "download": "Download",
     "curate": "Curate",
     "tag": "Tag",
