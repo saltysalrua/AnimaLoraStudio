@@ -292,9 +292,9 @@ class TrainingConfig(BaseModel):
         description="最小学习率",
         json_schema_extra=_meta("training", show_when="lr_scheduler!=none", advanced=True),
     )
-    optimizer_type: Literal["adamw", "prodigy", "prodigy_plus_schedulefree"] = Field(
+    optimizer_type: Literal["adamw", "lion", "muon", "prodigy", "prodigy_plus_schedulefree"] = Field(
         "adamw",
-        description="优化器（prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
+        description="优化器（Lion 省显存；Muon 优化 2D 矩阵参数；prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
         json_schema_extra=_meta("training"),
     )
     prodigy_d_coef: float = Field(
@@ -306,6 +306,31 @@ class TrainingConfig(BaseModel):
         True,
         description="Prodigy warmup 期间保护 d 增长",
         json_schema_extra=_meta("training", show_when="optimizer_type==prodigy", advanced=True),
+    )
+    lion_beta1: float = Field(
+        0.9, ge=0.0, lt=1.0,
+        description="Lion β1（更新方向动量，常用 0.9）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    lion_beta2: float = Field(
+        0.99, ge=0.0, lt=1.0,
+        description="Lion β2（动量 EMA，常用 0.99）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    muon_momentum: float = Field(
+        0.95, ge=0.0, lt=1.0,
+        description="Muon momentum（PyTorch 默认 0.95）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==muon", advanced=True),
+    )
+    muon_nesterov: bool = Field(
+        True,
+        description="Muon 使用 Nesterov 动量",
+        json_schema_extra=_meta("training", show_when="optimizer_type==muon", advanced=True),
+    )
+    muon_ns_steps: int = Field(
+        5, ge=1,
+        description="Muon Newton-Schulz 正交化迭代步数",
+        json_schema_extra=_meta("training", show_when="optimizer_type==muon", advanced=True),
     )
     # ---------------- ProdigyPlusScheduleFree (PPSF) 专属字段 ----------------
     # 选 PPSF 时 lr_scheduler 必须为 none（Schedule-Free 不需要 scheduler，

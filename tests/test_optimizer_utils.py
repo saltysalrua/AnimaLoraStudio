@@ -16,6 +16,9 @@ import torch
 from torch import nn
 
 from utils.optimizer_utils import (
+    Lion,
+    MuonWithAdamW,
+    create_optimizer,
     create_prodigy_plus_schedulefree,
     optimizer_eval_mode,
 )
@@ -67,6 +70,83 @@ def test_eval_mode_skips_if_only_partial_methods() -> None:
     with optimizer_eval_mode(fake_opt):
         pass
     fake_opt.eval.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Lion
+# ---------------------------------------------------------------------------
+
+
+def test_create_lion_optimizer_updates_parameters() -> None:
+    model = nn.Linear(2, 1, bias=False)
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+    optim = create_optimizer(
+        "lion",
+        model.parameters(),
+        learning_rate=0.1,
+        betas=(0.9, 0.99),
+        weight_decay=0.0,
+    )
+
+    loss = model(torch.ones(1, 2)).sum()
+    loss.backward()
+    optim.step()
+
+    assert isinstance(optim, Lion)
+    assert torch.allclose(model.weight, torch.full_like(model.weight, 0.9))
+    assert "exp_avg" in optim.state[model.weight]
+
+
+def test_create_lion_rejects_invalid_betas() -> None:
+    model = nn.Linear(2, 1)
+    with pytest.raises(ValueError, match="Invalid beta1"):
+        create_optimizer("lion", model.parameters(), learning_rate=1e-4, betas=(1.0, 0.99))
+
+
+def test_create_muon_splits_matrix_params_and_adamw_fallback() -> None:
+    model = nn.Linear(4, 2)
+    optim = create_optimizer(
+        "muon",
+        model.parameters(),
+        learning_rate=0.01,
+        weight_decay=0.0,
+        momentum=0.9,
+        ns_steps=2,
+    )
+
+    assert isinstance(optim, MuonWithAdamW)
+    assert optim.adamw is not None
+    assert model.weight in optim.muon.param_groups[0]["params"]
+    assert model.bias in optim.adamw.param_groups[0]["params"]
+
+
+def test_create_muon_updates_matrix_and_fallback_params() -> None:
+    model = nn.Linear(4, 2)
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+        model.bias.fill_(1.0)
+    optim = create_optimizer(
+        "muon",
+        model.parameters(),
+        learning_rate=0.01,
+        weight_decay=0.0,
+        momentum=0.9,
+        ns_steps=2,
+    )
+
+    loss = model(torch.ones(1, 4)).sum()
+    loss.backward()
+    optim.step()
+
+    assert not torch.allclose(model.weight, torch.ones_like(model.weight))
+    assert not torch.allclose(model.bias, torch.ones_like(model.bias))
+
+
+def test_create_muon_rejects_without_trainable_2d_params() -> None:
+    bias = nn.Parameter(torch.ones(4))
+    with pytest.raises(ValueError, match="at least one trainable 2D parameter"):
+        create_optimizer("muon", [bias], learning_rate=0.01)
 
 
 # ---------------------------------------------------------------------------

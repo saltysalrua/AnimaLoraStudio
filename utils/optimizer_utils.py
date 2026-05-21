@@ -7,6 +7,8 @@ Optimizer Utils Module - 优化器创建
 3. Prodigy (prodigyopt) - 无需调 lr 的自适应优化器
 4. ProdigyPlusScheduleFree (prodigy-plus-schedule-free) - Schedule-Free + Prodigy，
    解决 Prodigy 在扩散 LoRA 训练中的 mutation ep / 风格突变问题。
+5. Lion - 符号动量优化器，优化器状态比 AdamW 少一半。
+6. Muon - PyTorch 内置矩阵优化器，2D 参数走 Muon，其余参数回退 AdamW。
 """
 
 from __future__ import annotations
@@ -145,6 +147,23 @@ def create_optimizer(
             **kwargs
         )
 
+    elif optimizer_type == "lion":
+        return create_lion(
+            params=params,
+            lr=learning_rate,
+            betas=betas,
+            weight_decay=weight_decay,
+            **kwargs,
+        )
+
+    elif optimizer_type == "muon":
+        return create_muon(
+            params=params,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            **kwargs,
+        )
+
     elif optimizer_type == "prodigy_plus_schedulefree":
         return create_prodigy_plus_schedulefree(
             params=params,
@@ -158,9 +177,60 @@ def create_optimizer(
     else:
         raise ValueError(
             f"Unknown optimizer type: {optimizer_type}. "
-            f"Choose from: adamw, adamw8bit, prodigy, prodigy_plus_schedulefree"
+            f"Choose from: adamw, adamw8bit, lion, muon, prodigy, prodigy_plus_schedulefree"
         )
 
+
+
+class Lion(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-4,
+        betas: tuple[float, float] = (0.9, 0.99),
+        weight_decay: float = 0.0,
+    ) -> None:
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta1: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta2: {betas[1]}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay: {weight_decay}")
+        super().__init__(params, dict(lr=lr, betas=betas, weight_decay=weight_decay))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, beta2 = group["betas"]
+            weight_decay = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                if grad.is_sparse:
+                    raise RuntimeError("Lion does not support sparse gradients")
+
+                if weight_decay != 0.0:
+                    p.mul_(1 - lr * weight_decay)
+
+                state = self.state[p]
+                if len(state) == 0:
+                    state["exp_avg"] = torch.zeros_like(p)
+                exp_avg = state["exp_avg"]
+
+                update = exp_avg.mul(beta1).add(grad, alpha=1 - beta1)
+                p.add_(update.sign(), alpha=-lr)
+                exp_avg.mul_(beta2).add_(grad, alpha=1 - beta2)
+
+        return loss
 
 def create_8bit_adamw(
     params: Iterator[nn.Parameter],
@@ -280,6 +350,129 @@ def create_standard_adamw(
     print("  [OK] AdamW optimizer created")
 
     return optimizer
+
+
+def create_lion(
+    params: Iterator[nn.Parameter],
+    lr: float,
+    betas: tuple = (0.9, 0.99),
+    weight_decay: float = 0.0,
+    **kwargs,
+) -> Optimizer:
+    param_list = params if _is_param_groups(params) else list(params)
+    optimizer = Lion(param_list, lr=lr, betas=betas, weight_decay=weight_decay, **kwargs)
+    print(f"Creating Lion optimizer (lr={lr}, betas={betas}, weight_decay={weight_decay})")
+    print("  [OK] Lion optimizer created")
+    return optimizer
+
+
+class MuonWithAdamW(Optimizer):
+    def __init__(self, muon: Optimizer, adamw: Optimizer | None) -> None:
+        self.muon = muon
+        self.adamw = adamw
+        self.optimizers = [opt for opt in (muon, adamw) if opt is not None]
+        param_groups = [group for opt in self.optimizers for group in opt.param_groups]
+        defaults = dict(lr=param_groups[0]["lr"] if param_groups else 0.0)
+        super().__init__(param_groups, defaults)
+        self.state = {}
+        for opt in self.optimizers:
+            self.state.update(opt.state)
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        for opt in self.optimizers:
+            opt.zero_grad(set_to_none=set_to_none)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for opt in self.optimizers:
+            opt.step()
+        self.state = {}
+        for opt in self.optimizers:
+            self.state.update(opt.state)
+        return loss
+
+    def state_dict(self):
+        return {
+            "muon": self.muon.state_dict(),
+            "adamw": self.adamw.state_dict() if self.adamw is not None else None,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.muon.load_state_dict(state_dict["muon"])
+        if self.adamw is not None and state_dict.get("adamw") is not None:
+            self.adamw.load_state_dict(state_dict["adamw"])
+        self.state = {}
+        for opt in self.optimizers:
+            self.state.update(opt.state)
+
+
+def _split_muon_params(params: Iterator[nn.Parameter]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    groups = params if _is_param_groups(params) else [{"params": list(params)}]
+    muon_groups: list[dict[str, Any]] = []
+    adamw_groups: list[dict[str, Any]] = []
+    for group in groups:
+        matrix_params = []
+        fallback_params = []
+        for p in group["params"]:
+            if p.requires_grad and p.ndim == 2:
+                matrix_params.append(p)
+            else:
+                fallback_params.append(p)
+        base = {k: v for k, v in group.items() if k != "params"}
+        if matrix_params:
+            muon_groups.append({**base, "params": matrix_params})
+        if fallback_params:
+            adamw_groups.append({**base, "params": fallback_params})
+    return muon_groups, adamw_groups
+
+
+def create_muon(
+    params: Iterator[nn.Parameter],
+    lr: float,
+    weight_decay: float = 0.0,
+    momentum: float = 0.95,
+    nesterov: bool = True,
+    ns_steps: int = 5,
+    adamw_betas: tuple = (0.9, 0.999),
+    adamw_eps: float = 1e-8,
+    **kwargs,
+) -> Optimizer:
+    if not hasattr(torch.optim, "Muon"):
+        raise ImportError("torch.optim.Muon is required for Muon optimizer; upgrade PyTorch to a version that includes Muon")
+
+    muon_groups, adamw_groups = _split_muon_params(params)
+    if not muon_groups:
+        raise ValueError("Muon requires at least one trainable 2D parameter")
+
+    muon = torch.optim.Muon(
+        muon_groups,
+        lr=lr,
+        weight_decay=weight_decay,
+        momentum=momentum,
+        nesterov=nesterov,
+        ns_steps=ns_steps,
+        **kwargs,
+    )
+    adamw = None
+    if adamw_groups:
+        adamw = AdamW(
+            adamw_groups,
+            lr=lr,
+            betas=adamw_betas,
+            eps=adamw_eps,
+            weight_decay=weight_decay,
+        )
+
+    print(
+        f"Creating Muon optimizer (lr={lr}, weight_decay={weight_decay}, "
+        f"momentum={momentum}, ns_steps={ns_steps}, fallback_groups={len(adamw_groups)})"
+    )
+    print("  [OK] Muon optimizer created")
+    return MuonWithAdamW(muon, adamw)
 
 
 def create_prodigy(
