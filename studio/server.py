@@ -3644,7 +3644,7 @@ def _select_task_output_files(task_id: int, files: Optional[list[str]] = None) -
     out_dir = _task_output_dir(task)
     if not out_dir or not out_dir.exists():
         raise HTTPException(404, "no output dir")
-    all_files = _iter_task_output_files(out_dir)
+    all_files = _iter_task_output_files(out_dir, task_id)
     if not all_files:
         raise HTTPException(404, "empty output dir")
     if not files:
@@ -3713,8 +3713,15 @@ def _task_output_relpath(out_dir: Path, path: Path) -> str:
     return path.relative_to(out_dir).as_posix()
 
 
-def _iter_task_output_files(out_dir: Path) -> list[Path]:
-    return sorted((p for p in out_dir.rglob("*") if p.is_file()), key=lambda p: _task_output_relpath(out_dir, p))
+def _iter_task_output_files(out_dir: Path, task_id: int) -> list[Path]:
+    files = [p for p in out_dir.iterdir() if p.is_file()]
+    state_dir = out_dir / "state" / f"task_{task_id}"
+    if state_dir.exists():
+        files.extend(
+            p for p in state_dir.rglob("*")
+            if p.is_file() and _task_output_kind(p) in {"training_state", "pause_state", "auto_epoch_state"}
+        )
+    return sorted(files, key=lambda p: _task_output_relpath(out_dir, p))
 
 
 def _safe_output_relpath_or_400(base: Path, relpath: str) -> Path:
@@ -3736,7 +3743,7 @@ def list_task_outputs(task_id: int, request: Request) -> dict[str, Any]:
     out_dir = _task_output_dir(task)
     files: list[dict[str, Any]] = []
     if out_dir and out_dir.exists():
-        for f in _iter_task_output_files(out_dir):
+        for f in _iter_task_output_files(out_dir, task_id):
             relpath = _task_output_relpath(out_dir, f)
             try:
                 st = f.stat()

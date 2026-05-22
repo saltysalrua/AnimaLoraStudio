@@ -178,6 +178,16 @@ def test_outputs_list_with_files(
     state_dir = out_dir / "state" / f"task_{tid}"
     state_dir.mkdir(parents=True)
     (state_dir / "training_state_epoch2.pt").write_bytes(b"z" * 25)
+    (state_dir / "notes.txt").write_text("ignore", encoding="utf-8")
+    other_state_dir = out_dir / "state" / "task_999"
+    other_state_dir.mkdir(parents=True)
+    (other_state_dir / "training_state_epoch20.pt").write_bytes(b"other")
+    wandb_dir = out_dir / "wandb" / "wandb" / "run-20260522_133229-rw752qai" / "files"
+    wandb_dir.mkdir(parents=True)
+    (wandb_dir / "wandb-metadata.json").write_text("{}", encoding="utf-8")
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir()
+    (samples_dir / "step_0_baseline_0.png").write_bytes(b"png")
 
     resp = client.get(f"/api/queue/{tid}/outputs")
     assert resp.status_code == 200
@@ -262,6 +272,12 @@ def test_download_outputs_zip(
     state_dir = out_dir / "state" / f"task_{tid}"
     state_dir.mkdir(parents=True)
     (state_dir / "training_state_epoch2.pt").write_bytes(b"CC")
+    wandb_dir = out_dir / "wandb" / "wandb" / "run-20260522_133229-rw752qai" / "files"
+    wandb_dir.mkdir(parents=True)
+    (wandb_dir / "requirements.txt").write_text("wandb", encoding="utf-8")
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir()
+    (samples_dir / "vae_roundtrip.png").write_bytes(b"png")
 
     resp = client.get(f"/api/queue/{tid}/outputs.zip")
     assert resp.status_code == 200
