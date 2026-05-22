@@ -27,6 +27,7 @@ import json
 import logging
 import random
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -106,6 +107,41 @@ def _reload_adapter_weights(adapter: Any, spec: LoRASpec, device: str, dtype: An
         f"已热换 LoRA 权重: {Path(spec.path).name} "
         f"(scale={spec.scale}; missing={missing}, unexpected={unexpected})"
     )
+class GenerationCanceled(Exception):
+    pass
+
+
+_CANCEL_EVENTS: dict[str, threading.Event] = {}
+_CANCEL_LOCK = threading.Lock()
+_ACTIVE_WORKER: threading.Thread | None = None
+_ACTIVE_WORKER_LOCK = threading.Lock()
+
+
+def _register_cancel(req_id: str) -> threading.Event:
+    event = threading.Event()
+    with _CANCEL_LOCK:
+        _CANCEL_EVENTS[req_id] = event
+    return event
+
+
+def _pop_cancel(req_id: str) -> None:
+    with _CANCEL_LOCK:
+        _CANCEL_EVENTS.pop(req_id, None)
+
+
+def _request_cancel(req_id: str) -> bool:
+    with _CANCEL_LOCK:
+        event = _CANCEL_EVENTS.get(req_id)
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def _raise_if_canceled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise GenerationCanceled()
+
 
 class ModelCache:
     """缓存已加载的模型 / adapters。
@@ -518,7 +554,13 @@ def _virtual_path(task_id: int, filename: str) -> str:
     return f"/anima_gen_{task_id}/{filename}"
 
 
-def _run_generate(req_id: str, task_id: int, cfg: dict[str, Any], output_dir: Path) -> None:
+def _run_generate(
+    req_id: str,
+    task_id: int,
+    cfg: dict[str, Any],
+    output_dir: Path,
+    cancel_event: threading.Event | None = None,
+) -> None:
     """跑一次完整 generate（含可选 XY）。
 
     commit 10 起：PNG bytes base64 推 stdout（image_done 事件）→ server
@@ -531,6 +573,7 @@ def _run_generate(req_id: str, task_id: int, cfg: dict[str, Any], output_dir: Pa
     """
     update_monitor = _setup_monitor(cfg)
 
+    _raise_if_canceled(cancel_event)
     CACHE.ensure_loaded(cfg)
     adapters = CACHE.apply_loras(cfg.get("lora_configs", []))
 
@@ -563,6 +606,7 @@ def _run_generate(req_id: str, task_id: int, cfg: dict[str, Any], output_dir: Pa
             height=height, width=width,
             update_monitor=update_monitor,
             preview_callback=preview_callback,
+            cancel_event=cancel_event,
         )
         return
 
@@ -572,6 +616,7 @@ def _run_generate(req_id: str, task_id: int, cfg: dict[str, Any], output_dir: Pa
     img_idx = 0
     for pi, prompt in enumerate(prompts):
         for ci in range(count):
+            _raise_if_canceled(cancel_event)
             seed = (
                 (base_seed + img_idx) if base_seed != 0
                 else random.randint(0, 2**31 - 1)
@@ -634,6 +679,7 @@ def _run_xy(
     width: int,
     update_monitor: Any,
     preview_callback: Any = None,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     x_spec = xy_matrix["x"]
     y_spec = xy_matrix.get("y")
@@ -660,6 +706,7 @@ def _run_xy(
     img_idx = 0
     for yi, yv in enumerate(y_values):
         for xi, xv in enumerate(x_values):
+            _raise_if_canceled(cancel_event)
             # lora_ckpt 切换：mutate cfg.lora_configs 的 path 然后调
             # CACHE.apply_loras —— commit 20 detach 路径会快速 reinject。
             x_is_ckpt = x_spec.get("axis") == "lora_ckpt"
@@ -744,6 +791,46 @@ def _run_xy(
             img_idx += 1
 
 
+def _run_generate_worker(
+    req_id: str,
+    task_id: int,
+    cfg: dict[str, Any],
+    output_dir: Path,
+    cancel_event: threading.Event,
+) -> None:
+    try:
+        _run_generate(req_id, task_id, cfg, output_dir, cancel_event)
+        _emit_for(req_id, "done", task_id=task_id)
+    except GenerationCanceled:
+        logger.info("generate canceled: task_id=%s", task_id)
+        _emit_for(req_id, "canceled", task_id=task_id)
+    except Exception as e:
+        logger.exception("generate failed")
+        _emit_for(req_id, "error", task_id=task_id, message=str(e))
+    finally:
+        _pop_cancel(req_id)
+        with _ACTIVE_WORKER_LOCK:
+            global _ACTIVE_WORKER
+            _ACTIVE_WORKER = None
+
+
+def _start_generate_worker(req_id: str, task_id: int, cfg: dict[str, Any], output_dir: Path) -> bool:
+    global _ACTIVE_WORKER
+    with _ACTIVE_WORKER_LOCK:
+        if _ACTIVE_WORKER is not None and _ACTIVE_WORKER.is_alive():
+            return False
+        cancel_event = _register_cancel(req_id)
+        worker = threading.Thread(
+            target=_run_generate_worker,
+            args=(req_id, task_id, cfg, output_dir, cancel_event),
+            daemon=False,
+            name=f"generate-{task_id}",
+        )
+        _ACTIVE_WORKER = worker
+        worker.start()
+        return True
+
+
 # ---------------------------------------------------------------------------
 # 主循环
 # ---------------------------------------------------------------------------
@@ -762,16 +849,19 @@ def _handle_message(msg: dict[str, Any]) -> None:
         _emit_evt("unloaded")
         return
 
+    if action == "cancel":
+        if _request_cancel(str(msg.get("target_id") or req_id)):
+            _emit_for(req_id, "cancel_ack")
+        else:
+            _emit_for(req_id, "cancel_missed")
+        return
+
     if action == "generate":
         task_id = int(msg.get("task_id", 0))
         cfg = msg.get("config") or {}
         output_dir = Path(msg.get("output_dir") or ".")
-        try:
-            _run_generate(req_id, task_id, cfg, output_dir)
-            _emit_for(req_id, "done", task_id=task_id)
-        except Exception as e:
-            logger.exception("generate failed")
-            _emit_for(req_id, "error", task_id=task_id, message=str(e))
+        if not _start_generate_worker(req_id, task_id, cfg, output_dir):
+            _emit_for(req_id, "error", task_id=task_id, message="daemon is already running a task")
         return
 
     logger.warning("unknown action: %r", action)
@@ -798,6 +888,10 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        with _ACTIVE_WORKER_LOCK:
+            worker = _ACTIVE_WORKER
+        if worker is not None:
+            worker.join()
         CACHE.unload()
     return 0
 
