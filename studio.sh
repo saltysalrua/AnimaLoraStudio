@@ -161,7 +161,6 @@ else
     else
         echo "studio.sh: requirements.txt not found, skipping dependency install" >&2
     fi
-    "$PYTHON" tools/ensure_lycoris_tlora.py || { echo "studio.sh: failed to install LyCORIS T-LoRA support" >&2; exit 1; }
     # PR-S1b: write hash marker after fresh install so future stale check is correct
     "$PYTHON" tools/check_requirements_changed.py --marker "$_REQ_MARKER" --update-marker >/dev/null 2>&1 || true
 fi
@@ -173,9 +172,6 @@ _STALE="$("$PYTHON" tools/check_requirements_changed.py --marker "$_REQ_MARKER" 
 if [ "$_STALE" = "stale" ]; then
     echo "[studio] requirements.txt changed since last sync; installing new deps (no upgrade)..."
     if _pip_install -r requirements.txt; then
-        "$PYTHON" tools/ensure_lycoris_tlora.py || {
-            echo "[studio] WARNING: LyCORIS T-LoRA install failed; try ./studio.sh --reinstall if errors persist" >&2
-        }
         "$PYTHON" tools/check_requirements_changed.py --marker "$_REQ_MARKER" --update-marker >/dev/null 2>&1 || true
         echo "[studio] dep sync complete"
     else
@@ -183,10 +179,6 @@ if [ "$_STALE" = "stale" ]; then
         echo "[studio] try ./studio.sh --reinstall if errors persist" >&2
     fi
 fi
-
-"$PYTHON" tools/ensure_lycoris_tlora.py || {
-    echo "[studio] WARNING: LyCORIS T-LoRA support is unavailable; try ./studio.sh --reinstall if T-LoRA errors persist" >&2
-}
 
 echo "studio.sh: using $PYTHON"
 
