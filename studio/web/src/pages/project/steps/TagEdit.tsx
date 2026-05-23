@@ -55,7 +55,6 @@ export default function TagEditPage() {
   // '' = 全部；否则限定到该 folder（1_data / 2_data ...）。命名特意区分于下面
   // editing 时用的 `activeFolder`（那个是当前编辑图所在 folder，纯展示）。
   const [folderFilter, setFolderFilter] = useState<string>('')
-  const [exporting, setExporting] = useState(false)
 
   const reloadCache = useCallback(async () => {
     if (versionId == null) return
@@ -89,29 +88,8 @@ export default function TagEditPage() {
       (evt.status === 'done' || evt.status === 'failed')
     ) {
       void reloadCache(); void reload()
-    } else if (
-      // train.zip 打包结果 SSE —— <a> 直链发完后端 publish ready/_failed,这里清
-      // app-side "打包中..." 状态 + 失败弹 toast。和 Layout.tsx 的导出共用同一对事件,
-      // 两个页面同时打开时各自只响应 project_id+version_id 匹配的那一条。
-      (evt.type === 'version_train_zip_ready' || evt.type === 'version_train_zip_failed') &&
-      evt.project_id === project.id &&
-      versionId != null &&
-      evt.version_id === versionId
-    ) {
-      setExporting(false)
-      if (evt.type === 'version_train_zip_failed') {
-        const err = typeof evt.error === 'string' ? evt.error : '?'
-        toast(t('tagEdit.downloadFailed', { error: err }), 'error')
-      }
     }
   })
-
-  // 兜底：SSE 事件丢失时 60s 强制清 exporting,不让按钮卡死。
-  useEffect(() => {
-    if (!exporting) return
-    const tid = window.setTimeout(() => setExporting(false), 60_000)
-    return () => window.clearTimeout(tid)
-  }, [exporting])
 
   const dirtyKeys = useMemo(() => {
     const out: string[] = []
@@ -297,24 +275,6 @@ export default function TagEditPage() {
     await reload()
   }
 
-  const downloadTrainZip = () => {
-    if (dirty) {
-      toast(t('tagEdit.saveThenDownloadToast'), 'error')
-      return
-    }
-    if (exporting) return
-    setExporting(true)
-    // <a download> 直链 —— 浏览器原生接管下载（进度条 / 暂停 / 切 tab 不中断）。
-    // app-side "打包中..." 由 version_train_zip_ready/_failed SSE 清。
-    const filename = `${project.slug}-${activeVersion.label}.train.zip`
-    const a = document.createElement('a')
-    a.href = api.versionTrainZipUrl(project.id, activeVersion.id)
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-  }
-
   const stats = activeVersion.stats
   const trainTotal = stats?.train_image_count ?? 0
   const taggedTotal = stats?.tagged_image_count ?? 0
@@ -345,14 +305,6 @@ export default function TagEditPage() {
               {t('tagEdit.taggedBadge', { tagged: taggedTotal, total: trainTotal })}
             </span>
           )}
-          <button
-            className="btn btn-primary btn-sm"
-            disabled={exporting || dirty || trainTotal === 0}
-            onClick={downloadTrainZip}
-            title={dirty ? t('tagEdit.saveThenDownload') : t('tagEdit.downloadTitle')}
-          >
-            {exporting ? t('tagEdit.zipping') : t('tagEdit.downloadZip')}
-          </button>
           <SaveBar
             pid={project.id}
             vid={activeVersion.id}

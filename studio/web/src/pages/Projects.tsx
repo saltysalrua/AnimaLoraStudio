@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { api, type BundleImportResult, type DataExportItem, type ProjectStage, type ProjectSummary } from '../api/client'
+import { api, type BundleImportResult, type ProjectStage, type ProjectSummary } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import PathPicker from '../components/PathPicker'
 import StageBadge from '../components/StageBadge'
@@ -38,8 +38,6 @@ export default function ProjectsPage() {
   const [importing, setImporting] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [showImportPicker, setShowImportPicker] = useState(false)
-  const [dataExports, setDataExports] = useState<DataExportItem[]>([])
-  const [dataExportsLoading, setDataExportsLoading] = useState(false)
   const navigate = useNavigate()
   const { toast } = useToast()
   const { confirm } = useDialog()
@@ -132,17 +130,6 @@ export default function ProjectsPage() {
     await runBundleImport(() => api.importBundleUpload(file))
   }
 
-  const refreshDataExports = async () => {
-    setDataExportsLoading(true)
-    try {
-      setDataExports(await api.listDataExports())
-    } catch (e) {
-      toast(String(e), 'error')
-    } finally {
-      setDataExportsLoading(false)
-    }
-  }
-
   const openProject = (p: ProjectSummary) => {
     navigate(`/projects/${p.id}`)
   }
@@ -156,10 +143,7 @@ export default function ProjectsPage() {
           <>
             <button
               className="btn btn-secondary btn-sm"
-              onClick={() => {
-                setShowImportDialog(true)
-                void refreshDataExports()
-              }}
+              onClick={() => setShowImportDialog(true)}
               disabled={importing}
               title={importing ? t('projects.importing') : t('projects.importZipHint')}
             >
@@ -219,17 +203,10 @@ export default function ProjectsPage() {
       {showImportDialog && (
         <BundleImportDialog
           importing={importing}
-          dataExports={dataExports}
-          dataExportsLoading={dataExportsLoading}
           onUpload={handleImportUpload}
           onPickPath={() => {
             setShowImportDialog(false)
             setShowImportPicker(true)
-          }}
-          onRefreshDataExports={refreshDataExports}
-          onImportDataExport={(filename) => {
-            setShowImportDialog(false)
-            void runBundleImport(() => api.importBundleFromDataExports(filename))
           }}
           onCancel={() => setShowImportDialog(false)}
         />
@@ -248,21 +225,13 @@ export default function ProjectsPage() {
 
 function BundleImportDialog({
   importing,
-  dataExports,
-  dataExportsLoading,
   onUpload,
   onPickPath,
-  onRefreshDataExports,
-  onImportDataExport,
   onCancel,
 }: {
   importing: boolean
-  dataExports: DataExportItem[]
-  dataExportsLoading: boolean
   onUpload: (file: File | null | undefined) => void
   onPickPath: () => void
-  onRefreshDataExports: () => void
-  onImportDataExport: (filename: string) => void
   onCancel: () => void
 }) {
   const { t } = useTranslation()
@@ -306,45 +275,6 @@ function BundleImportDialog({
             <div className="font-medium text-fg-primary mb-1">{t('projects.importPath')}</div>
             <div className="text-xs text-fg-tertiary">{t('projects.importPathHint')}</div>
           </button>
-        </div>
-
-        <div className="border border-subtle rounded-md p-3">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div>
-              <div className="font-medium text-fg-primary text-sm">{t('projects.importDataExports')}</div>
-              <div className="text-xs text-fg-tertiary">{t('projects.importDataExportsHint')}</div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-secondary btn-xs"
-              disabled={dataExportsLoading || importing}
-              onClick={onRefreshDataExports}
-            >
-              {dataExportsLoading ? t('common.loading') : t('common.refresh')}
-            </button>
-          </div>
-          {dataExports.length === 0 ? (
-            <div className="text-xs text-fg-tertiary py-2">
-              {dataExportsLoading ? t('common.loading') : t('projects.noDataExports')}
-            </div>
-          ) : (
-            <div className="max-h-52 overflow-auto flex flex-col gap-1">
-              {dataExports.map((item) => (
-                <button
-                  key={item.filename}
-                  type="button"
-                  className="flex items-center justify-between gap-3 px-2 py-1.5 rounded hover:bg-overlay text-left disabled:opacity-60"
-                  disabled={importing}
-                  onClick={() => onImportDataExport(item.filename)}
-                >
-                  <span className="font-mono text-xs text-fg-primary truncate">{item.filename}</span>
-                  <span className="text-[11px] text-fg-tertiary shrink-0">
-                    {(item.size / 1024 / 1024).toFixed(1)} MB
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         <div className="flex justify-end">
