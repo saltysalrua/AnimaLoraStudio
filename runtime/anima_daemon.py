@@ -490,7 +490,11 @@ def _encode_jpeg(img: Any, quality: int = 80) -> tuple[str, int]:
     return base64.b64encode(raw).decode("ascii"), len(raw)
 
 
-def _build_preview_callback(req_id: str, every_n: int) -> Any:
+def _build_preview_callback(
+    req_id: str,
+    every_n: int,
+    cancel_event: threading.Event | None = None,
+) -> Any:
     """每步推 preview_step 事件；TAEFlux 可用 + 节流命中时附 image_b64。
 
     用户反馈：进度条始终要可见（"当前在做什么，第几步"），预览图按需。
@@ -499,8 +503,11 @@ def _build_preview_callback(req_id: str, every_n: int) -> Any:
       - every_n>0 且步命中（含末步）+ TAEFlux 加载 OK → 附 image_b64
     callback 在 daemon 主线程同步执行；空逻辑 ~微秒级，TAEFlux decode +
     JPEG 编码 ~10-20ms。
+
+    cancel_event 注入后每步检查，取消延迟从"整张图"降到"一步"。
     """
     def _cb(step: int, total: int, latent: Any) -> None:
+        _raise_if_canceled(cancel_event)
         # 是否带预览图：preview_every_n_steps>0 + 节流命中 + TAEFlux 可用
         with_image = False
         b64: Optional[str] = None
@@ -580,7 +587,7 @@ def _run_generate(
     # 进度推送：永远建 callback 推 preview_step（含 step/total）；
     # preview_every_n_steps>0 时附 image_b64 中间预览图（commit 14）。
     preview_every = int(cfg.get("preview_every_n_steps", 0) or 0)
-    preview_callback = _build_preview_callback(req_id, preview_every)
+    preview_callback = _build_preview_callback(req_id, preview_every, cancel_event)
 
     prompts: list[str] = cfg.get("prompts") or [
         "newest, safe, 1girl, masterpiece, best quality"
@@ -654,6 +661,8 @@ def _run_generate(
                     step=img_idx + 1, total=total,
                     image_b64=b64, byte_size=byte_size,
                 )
+            except GenerationCanceled:
+                raise
             except Exception as e:
                 logger.exception("generate failed")
                 _emit_for(req_id, "image_error", step=img_idx + 1, message=str(e))
@@ -781,6 +790,8 @@ def _run_xy(
                     xy={"xi": xi, "yi": yi, "xv": xv, "yv": yv},
                     image_b64=b64, byte_size=byte_size,
                 )
+            except GenerationCanceled:
+                raise
             except Exception as e:
                 logger.exception("XY [%d,%d] failed", xi, yi)
                 _emit_for(
