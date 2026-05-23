@@ -821,7 +821,7 @@ function Filmstrip({
             <button
               onClick={() => onSelect(im.name)}
               className={'fs-thumb-sq ' + (isActive ? 'is-active' : '')}
-              style={{ backgroundImage: `url(${thumbUrl(im)})` }}
+              style={{ backgroundImage: `url("${thumbUrl(im)}")` }}
               title={im.name}
             >
               {crops.length > 0 && crops.map((c, i) => (

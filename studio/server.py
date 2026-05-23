@@ -3410,6 +3410,44 @@ def enqueue(body: EnqueueRequest) -> dict[str, Any]:
     return task or {"id": task_id}
 
 
+@app.get("/api/queue/hold")
+def get_queue_hold() -> dict[str, Any]:
+    """查看当前队列挂起状态 + 等待恢复调度的 pending task 数（UI banner 用）。"""
+    with db.connection_for() as conn:
+        held = db.get_queue_held(conn)
+        pending = db.list_tasks(conn, status="pending")
+    return {"held": held, "pending_waiting": len(pending)}
+
+
+@app.post("/api/queue/hold")
+def hold_queue() -> dict[str, Any]:
+    """挂起队列：dispatcher 不再拉新 task。已 running 的不受影响（ADR §3.2）。
+
+    "同时暂停 running task" 由前端 modal 拆成两步：先调本 endpoint，再
+    单独调 `/api/queue/{id}/pause`。后端不做合一操作。
+    """
+    with db.connection_for() as conn:
+        db.set_queue_held(conn, True)
+    bus.publish({"type": "queue_hold_changed", "held": True})
+    return {"held": True}
+
+
+@app.post("/api/queue/release")
+def release_queue() -> dict[str, Any]:
+    """恢复调度：dispatcher 重新按 priority + created_at 拉 pending。"""
+    with db.connection_for() as conn:
+        db.set_queue_held(conn, False)
+    bus.publish({"type": "queue_hold_changed", "held": False})
+    return {"held": False}
+
+
+@app.post("/api/queue/reorder")
+def reorder_queue(body: ReorderRequest) -> dict[str, Any]:
+    with db.connection_for() as conn:
+        db.reorder(conn, body.ordered_ids)
+    return {"reordered": len(body.ordered_ids)}
+
+
 @app.get("/api/queue/{task_id}")
 def get_queue_item(task_id: int) -> dict[str, Any]:
     with db.connection_for() as conn:
@@ -3478,37 +3516,6 @@ def pause_task(task_id: int) -> dict[str, Any]:
             raise HTTPException(404, "task not found")
         raise HTTPException(409, reason or "pause rejected")
     return {"task_id": task_id, "pause_pending": True}
-
-
-@app.get("/api/queue/hold")
-def get_queue_hold() -> dict[str, Any]:
-    """查看当前队列挂起状态 + 等待恢复调度的 pending task 数（UI banner 用）。"""
-    with db.connection_for() as conn:
-        held = db.get_queue_held(conn)
-        pending = db.list_tasks(conn, status="pending")
-    return {"held": held, "pending_waiting": len(pending)}
-
-
-@app.post("/api/queue/hold")
-def hold_queue() -> dict[str, Any]:
-    """挂起队列：dispatcher 不再拉新 task。已 running 的不受影响（ADR §3.2）。
-
-    "同时暂停 running task" 由前端 modal 拆成两步：先调本 endpoint，再
-    单独调 `/api/queue/{id}/pause`。后端不做合一操作。
-    """
-    with db.connection_for() as conn:
-        db.set_queue_held(conn, True)
-    bus.publish({"type": "queue_hold_changed", "held": True})
-    return {"held": True}
-
-
-@app.post("/api/queue/release")
-def release_queue() -> dict[str, Any]:
-    """恢复调度：dispatcher 重新按 priority + created_at 拉 pending。"""
-    with db.connection_for() as conn:
-        db.set_queue_held(conn, False)
-    bus.publish({"type": "queue_hold_changed", "held": False})
-    return {"held": False}
 
 
 @app.post("/api/queue/{task_id}/resume")
@@ -3893,13 +3900,6 @@ def delete_queue_item(task_id: int) -> dict[str, Any]:
             raise HTTPException(400, "only terminal tasks can be deleted")
         db.delete_task(conn, task_id)
     return {"deleted": task_id}
-
-
-@app.post("/api/queue/reorder")
-def reorder_queue(body: ReorderRequest) -> dict[str, Any]:
-    with db.connection_for() as conn:
-        db.reorder(conn, body.ordered_ids)
-    return {"reordered": len(body.ordered_ids)}
 
 
 # ---------------------------------------------------------------------------
