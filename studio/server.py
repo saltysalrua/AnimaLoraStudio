@@ -3959,7 +3959,9 @@ def get_log(task_id: int) -> dict[str, Any]:
     p = LOGS_DIR / f"{task_id}.log"
     if not p.exists():
         return {"task_id": task_id, "content": "", "size": 0}
-    text = p.read_text(encoding="utf-8", errors="replace")
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    lines = [ln for ln in raw.splitlines(keepends=True) if not ln.startswith("__EVENT__:")]
+    text = "".join(lines)
     return {"task_id": task_id, "content": text, "size": len(text.encode("utf-8"))}
 
 
