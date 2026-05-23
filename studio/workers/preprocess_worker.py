@@ -97,6 +97,7 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
 
         download_dir, preprocess_dir = preprocess.project_paths(project)
         preprocess_dir.mkdir(parents=True, exist_ok=True)
+        project_dir = projects.project_dir(project["id"], project["slug"])
 
         # 模型权重必须先下载（UI 在开始按钮前会引导用户下载）
         model_path = model_downloader.upscaler_target(model_label)
@@ -155,8 +156,10 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
             if _stop_requested:
                 log(f"[cancel] 收到取消信号，已处理 {idx - 1}/{total}")
                 break
-            src_path = download_dir / src_name
-            if not src_path.exists():
+            src_path, origin_name = _resolve_upscale_source(
+                project_dir, download_dir, preprocess_dir, src_name
+            )
+            if src_path is None or not src_path.exists():
                 log(f"[skip] ({idx}/{total}) {src_name}: 源已不存在")
                 skipped += 1
                 emit_event(
@@ -168,8 +171,11 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
             dst_path = preprocess.product_path_for(preprocess_dir, src_name)
             # 'all' 是增量（已 resolve 过）；这里再过一遍 manifest，防止两个 worker
             # 同时被调起（罕见但便宜）。'all_force' / 'selected' 走重跑路径。
-            if mode == "all" and preprocess_manifest.get_entry(
-                projects.project_dir(project["id"], project["slug"]), dst_path.name
+            existing_entry = preprocess_manifest.get_entry(project_dir, dst_path.name)
+            if (
+                mode == "all"
+                and existing_entry is not None
+                and preprocess_manifest.entry_stage(existing_entry) == "upscaled"
             ):
                 skipped += 1
                 emit_event(
@@ -195,8 +201,9 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
                     prewarm_thumb_sizes=[256, 768],
                 )
                 # 写 manifest：ADR 0004 — 状态唯一真理，downstream resolve 用
+                meta["origin"] = origin_name
                 preprocess_manifest.add_processed(
-                    projects.project_dir(project["id"], project["slug"]),
+                    project_dir,
                     dst_path.name,
                     meta,
                 )
@@ -227,6 +234,22 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
         log(f"[error] {exc}")
         print(traceback.format_exc(), flush=True)
         return 1
+
+
+def _resolve_upscale_source(
+    project_dir: Path,
+    download_dir: Path,
+    preprocess_dir: Path,
+    name: str,
+) -> tuple[Path | None, str]:
+    entry = preprocess_manifest.get_entry(project_dir, name)
+    if entry is not None:
+        origin = preprocess_manifest.entry_origin(entry, name)
+        return preprocess_dir / name, origin
+    dl = download_dir / name
+    if dl.is_file():
+        return dl, name
+    return None, name
 
 
 def _resolve_crop_source(

@@ -109,18 +109,21 @@ def list_pending(p: dict[str, Any]) -> list[dict[str, Any]]:
     """
     from PIL import Image
 
-    download, _ = project_paths(p)
+    download, preprocess = project_paths(p)
     pdir = project_root(p)
     preprocess_manifest.ensure_manifest(pdir)  # 老项目首次访问触发迁移
-    processed = preprocess_manifest.all_processed(pdir)
-    processed_origins = {
+    manifested = preprocess_manifest.all_processed(pdir)
+    upscaled = preprocess_manifest.all_processed(pdir, stage="upscaled")
+    cropped = preprocess_manifest.all_processed(pdir, stage="cropped")
+    manifested_origins = {
         preprocess_manifest.entry_origin(entry, name)
-        for name, entry in processed.items()
+        for name, entry in manifested.items()
     }
+    upscaled_names = set(upscaled)
 
     items: list[dict[str, Any]] = []
     for f in _download_images(download):
-        if f.name in processed_origins:
+        if f.name in manifested_origins:
             continue
         st = f.stat()
         w: Optional[int] = None
@@ -137,7 +140,31 @@ def list_pending(p: dict[str, Any]) -> list[dict[str, Any]]:
             "w": w,
             "h": h,
         })
-    return items
+
+    for name in sorted(cropped.keys()):
+        if name in upscaled_names:
+            continue
+        entry = cropped[name]
+        png = preprocess / name
+        if not png.is_file():
+            continue
+        st = png.stat()
+        w = None
+        h = None
+        try:
+            with Image.open(png) as im:
+                w, h = im.size
+        except (OSError, ValueError):
+            pass
+        items.append({
+            "name": name,
+            "mtime": st.st_mtime,
+            "size": st.st_size,
+            "w": w,
+            "h": h,
+            "origin": preprocess_manifest.entry_origin(entry, name),
+        })
+    return sorted(items, key=lambda it: it["name"])
 
 
 def list_processed(p: dict[str, Any]) -> list[dict[str, Any]]:
@@ -155,7 +182,7 @@ def list_processed(p: dict[str, Any]) -> list[dict[str, Any]]:
     download, preprocess = project_paths(p)
     pdir = project_root(p)
     preprocess_manifest.ensure_manifest(pdir)
-    processed = preprocess_manifest.all_processed(pdir)
+    processed = preprocess_manifest.all_processed(pdir, stage="upscaled")
 
     download_stems = {f.stem for f in _download_images(download)}
 
@@ -203,29 +230,14 @@ def list_processed(p: dict[str, Any]) -> list[dict[str, Any]]:
         })
     return items
 
-
 def summary(p: dict[str, Any]) -> dict[str, Any]:
-    """给 status 端点用的简短统计。
-
-    `pending_count`：按 origin 判定 download 是否已处理。一张 download/X.jpg
-    只要 manifest 里有任一 entry 的 origin 指向它（含 multi-crop 派生），就不
-    再计入 pending。
-    `processed_count`：manifest 里所有已处理 entry 的数量（multi-crop 后会
-    > download_count）。
-    """
+    """给 status 端点用的简短统计。"""
     download, _ = project_paths(p)
     pdir = project_root(p)
     preprocess_manifest.ensure_manifest(pdir)
     n_download = len(_download_images(download))
-    processed = preprocess_manifest.all_processed(pdir)
-    n_processed = len(processed)
-    processed_origins = {
-        preprocess_manifest.entry_origin(entry, name)
-        for name, entry in processed.items()
-    }
-    n_pending = sum(
-        1 for f in _download_images(download) if f.name not in processed_origins
-    )
+    n_processed = len(preprocess_manifest.all_processed(pdir, stage="upscaled"))
+    n_pending = len(list_pending(p))
     return {
         "download_count": n_download,
         "processed_count": n_processed,
@@ -259,18 +271,20 @@ def resolve_targets(
     if not download.exists():
         return []
     existing = {f.name for f in download.iterdir() if _is_image(f)}
+    pending = {it["name"] for it in list_pending(p)}
 
     if mode == "all":
-        return sorted(it["name"] for it in list_pending(p))
+        return sorted(pending)
     if mode == "all_force":
         return sorted(existing)
     if mode == "selected":
         if not names:
             raise PreprocessError("mode=selected 时 names 不能为空")
         chosen = []
+        selectable = existing | pending
         for n in names:
             _validate_name(n)
-            if n in existing:
+            if n in selectable:
                 chosen.append(n)
         # 保留唯一 + 字典序，便于日志稳定
         return sorted(set(chosen))
