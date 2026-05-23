@@ -1841,6 +1841,7 @@
     "postprocessStretch": "stretch (may distort)",
     "postprocessCrop": "crop (crop then scale)",
     "maxCropTitle": "Maximum crop ratio within one cluster (default 0.1 = 10%)",
+    "aiLogTitle": "Prior generation log",
     "aiStatusDone": "Done",
     "aiStatusRunning": "Generating",
     "aiStatusFailed": "Failed",

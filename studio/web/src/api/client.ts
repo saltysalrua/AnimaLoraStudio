@@ -884,7 +884,6 @@ export interface RegAiRequest {
   seed?: number
   incremental?: boolean
   mixed_precision?: string
-  attention_backend?: AttentionBackend
 }
 
 /** PR-9 — 测试出图（独立工具页，多 LoRA + multi-prompt）。 */

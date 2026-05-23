@@ -2796,13 +2796,6 @@ class RegAiRequest(BaseModel):
     seed: int = 0
     incremental: bool = False
     mixed_precision: str = "bf16"
-    attention_backend: AttentionBackend = "flash_attn"
-
-    # 兼容老前端送 xformers / flash_attn 双 bool（自动映射成 attention_backend）
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_attention(cls, data: Any) -> Any:
-        return migrate_legacy_attention(data)
 
 
 @app.post("/api/projects/{pid}/versions/{vid}/reg/generate-prior")
@@ -2821,6 +2814,7 @@ def reg_generate_prior(pid: int, vid: int, body: RegAiRequest) -> dict[str, Any]
     rdir = _reg_dir(vdir)
     rdir.mkdir(parents=True, exist_ok=True)
 
+    from studio.services.xformers_setup import detect_attention_backend
     cfg = RegAiConfig(
         **model_paths,
         train_dir=str(train),
@@ -2836,7 +2830,7 @@ def reg_generate_prior(pid: int, vid: int, body: RegAiRequest) -> dict[str, Any]
         seed=body.seed,
         incremental=body.incremental,
         mixed_precision=body.mixed_precision,
-        attention_backend=body.attention_backend,
+        attention_backend=detect_attention_backend(),
     )
 
     cfg_dir = STUDIO_DATA / "reg_ai_configs"
@@ -3387,7 +3381,7 @@ def list_queue(
     with db.connection_for() as conn:
         items = db.list_tasks(conn, status=status)
     if not include_generate:
-        items = db.filter_out_task_types(items, ("generate",))
+        items = db.filter_out_task_types(items, ("generate", "reg_ai"))
     # ADR 0006 PR-4 — is_pausable 信号每行注入（§8.1 / 上面 get_queue_item 注释）
     try:
         sup = _supervisor()
