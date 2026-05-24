@@ -536,6 +536,38 @@ export type VersionStage =
   | 'training'
   | 'done'
 
+/** ADR-0007 §11.3-B 新模型：version 运行态状态机（5 enum）。 */
+export type VersionStatus =
+  | 'preparing'
+  | 'training'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+
+/** ADR-0007 §11.3-B 新模型：version 准备 cursor（仅 status=preparing 时有意义）。
+ *  按 PHASE_ORDER 顺序：curating → tagging → editing → regularizing → ready。 */
+export type VersionPhase =
+  | 'curating'
+  | 'tagging'
+  | 'editing'
+  | 'regularizing'
+  | 'ready'
+
+export const PHASE_ORDER: VersionPhase[] = [
+  'curating', 'tagging', 'editing', 'regularizing', 'ready',
+]
+
+export const PHASE_SKIPPABLE: VersionPhase[] = ['regularizing']
+
+/** ADR-0007 §11.5-A: advance / skip phase endpoint response。 */
+export interface PhaseAdvanceResult {
+  advanced: boolean
+  ok: boolean
+  reason: string
+  new_phase: VersionPhase | null
+  version: Version | null
+}
+
 export interface VersionStats {
   train_image_count: number
   tagged_image_count: number
@@ -551,6 +583,10 @@ export interface Version {
   label: string
   config_name: string | null
   stage: VersionStage
+  /** ADR-0007 §11.3-B 新字段；与 stage 双写过渡（v9 前老 frontend 仍可用 stage）。 */
+  status: VersionStatus
+  phase: VersionPhase
+  last_failure_reason: string | null
   created_at: number
   output_lora_path: string | null
   note: string | null
@@ -565,6 +601,9 @@ export interface ProjectSummary {
   title: string
   stage: ProjectStage
   active_version_id: number | null
+  /** ADR-0007 §11.8-E: 项目卡片右上角 status badge / 卡片显 version 名（list 端点 enrich）。 */
+  active_version_label: string | null
+  active_version_status: VersionStatus | null
   created_at: number
   updated_at: number
   note: string | null
@@ -1343,6 +1382,25 @@ export const api = {
     req<ProjectDetail>(
       `/api/projects/${pid}/versions/${vid}/activate`,
       { method: 'POST' }
+    ),
+
+  // Phase cursor 推进 / 跳过 (ADR-0007 §11.5-A) --------------------------
+  advanceVersionPhase: (pid: number, vid: number) =>
+    req<PhaseAdvanceResult>(
+      `/api/projects/${pid}/versions/${vid}/advance-phase`,
+      { method: 'POST' }
+    ),
+
+  skipVersionPhase: (pid: number, vid: number) =>
+    req<PhaseAdvanceResult>(
+      `/api/projects/${pid}/versions/${vid}/skip-phase`,
+      { method: 'POST' }
+    ),
+
+  // Task config snapshot (ADR-0007 §11.7) --------------------------------
+  getTaskSnapshotConfig: (taskId: number) =>
+    req<{ yaml: string; config: Record<string, unknown> }>(
+      `/api/queue/${taskId}/snapshot/config`
     ),
 
   // Download / jobs (PP2) ------------------------------------------------

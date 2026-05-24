@@ -480,6 +480,7 @@
     "placeholderAssistant": "assistant expected output (few-shot answer)"
   },
   "projects": {
+    "noActiveVersion": "(no active version)",
     "title": "Projects",
     "description": "Each project targets one LoRA training goal — character, style, or concept. Create a project to start the pipeline.",
     "emptyTrash": "Empty trash",
@@ -597,6 +598,7 @@
     "tabLogs": "Logs",
     "tabMonitor": "Monitor",
     "tabOutputs": "Outputs",
+    "tabSnapshot": "Snapshot config",
     "deleteRecord": "Delete record",
     "deleteTitle": "Delete task record",
     "deleteDesc": "Will permanently delete task",
@@ -1197,7 +1199,63 @@
     "stepTag": "Tag",
     "stepTagEdit": "Tag edit",
     "stepReg": "Regularization",
-    "stepTrain": "Train"
+    "stepTrain": "Train",
+    "tabDetails": "Details",
+    "tabTasks": "Tasks",
+    "tabOutput": "Output",
+    "tasksPlaceholder": "Training tasks for this project (to be implemented)",
+    "outputPlaceholder": "LoRA artifacts produced by this project (to be implemented)",
+    "tasksEmpty": "No training tasks for this project yet",
+    "tasksTable": {
+      "name": "Task",
+      "status": "Status",
+      "started": "Started",
+      "finished": "Finished"
+    },
+    "outputEmpty": "No LoRA artifacts produced yet",
+    "outputOpenTrain": "Open train page",
+    "detail": {
+      "folders": "Train folders (repeat × concept)",
+      "foldersTotal": "{{n}} images total",
+      "tagDist": "Tag distribution",
+      "tagCoverage": "{{tagged}} / {{total}} tagged",
+      "resolutionDist": "Resolution distribution",
+      "aspectDist": "Aspect ratio distribution",
+      "regSet": "Regularization set",
+      "regCount": "{{n}} images",
+      "emptyCurate": "Pick training images in ③ Curate first",
+      "emptyTag": "Generate captions in ④ Tag first",
+      "emptyResolution": "See details in ② Preprocess → Upscale",
+      "emptyAspect": "See bucket stats in ② Preprocess → Crop",
+      "emptyReg": "Generate reg set or explicitly skip in ⑥ Reg",
+      "goCurate": "Curate",
+      "goEdit": "Edit",
+      "goUpscale": "Upscale",
+      "goCrop": "Crop",
+      "goReg": "Reg"
+    }
+  },
+  "versionStatus": {
+    "preparing": "Preparing",
+    "training": "Training",
+    "completed": "Completed",
+    "failed": "Failed",
+    "canceled": "Canceled"
+  },
+  "phaseNav": {
+    "prevTitle": "Previous step:",
+    "nextTitle": "Next step:",
+    "advanceFailed": "Unable to advance to the next step"
+  },
+  "snapshot": {
+    "title": "Training config snapshot",
+    "subtitle": "Config frozen when this task started. Captions / images are not part of the snapshot.",
+    "applyBtn": "Apply this config",
+    "applyConfirmTitle": "Apply this config",
+    "applyConfirmDesc": "Write this config back to the current version's training config (overwrites the existing one), then jump to the train page to edit / start training.",
+    "empty": "No config snapshot for this task",
+    "notFoundHint": "May be an old task from before v8 schema; snapshot was not created.",
+    "noVersionLink": "This task is not linked to a version; cannot apply"
   },
   "layout": {
     "loading": "Loading project...",
