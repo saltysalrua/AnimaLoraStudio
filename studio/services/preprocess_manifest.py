@@ -122,10 +122,6 @@ def entry_origin(entry: dict[str, Any], fallback_name: str) -> str:
     return entry.get("origin") or entry.get("source") or fallback_name
 
 
-def entry_stage(entry: dict[str, Any]) -> str:
-    return str(entry.get("stage") or "upscaled")
-
-
 def resolve(project_dir: Path, name: str) -> Optional[Path]:
     """给定产物文件名（如 `foo.png`），返回它实际指向的磁盘路径。
 
@@ -175,20 +171,17 @@ def get_entry(project_dir: Path, name: str) -> Optional[dict[str, Any]]:
     return m["images"].get(name)
 
 
-def all_processed(project_dir: Path, stage: str | None = None) -> dict[str, dict[str, Any]]:
-    """返回 `{name: entry}` 所有已知预处理产物，可按 stage 过滤。"""
+def all_processed(project_dir: Path) -> dict[str, dict[str, Any]]:
+    """返回 `{name: entry}` 所有"已处理" entry。
+
+    新 schema：任何 entry 都算已处理（无 `kind` 字段）。
+    老 schema：兼容性按 `kind == "processed"` 过滤；非 processed 视为未来扩展。
+    """
     m = load(project_dir)
-    items = {
+    return {
         name: entry
         for name, entry in m["images"].items()
         if entry.get("kind", "processed") == "processed"
-    }
-    if stage is None:
-        return items
-    return {
-        name: entry
-        for name, entry in items.items()
-        if entry_stage(entry) == stage
     }
 
 
@@ -214,7 +207,6 @@ def add_processed(project_dir: Path, name: str, meta: dict[str, Any]) -> None:
         entry: dict[str, Any] = {
             "origin": origin,
             "mtime": meta.get("mtime", time.time()),
-            "stage": "upscaled",
         }
         if "size" in meta:
             entry["size"] = meta["size"]
@@ -264,7 +256,6 @@ def replace_with_crops(
                 "origin": o.get("origin") or source_name,
                 "mtime": o.get("mtime", now),
                 "size": int(o.get("size", 0)),
-                "stage": "cropped",
             }
             m["images"][o["name"]] = entry
         _atomic_write(manifest_path(project_dir), m)

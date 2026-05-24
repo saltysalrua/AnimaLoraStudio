@@ -156,9 +156,9 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
             if _stop_requested:
                 log(f"[cancel] 收到取消信号，已处理 {idx - 1}/{total}")
                 break
-            src_path, origin_name = _resolve_upscale_source(
-                project_dir, download_dir, preprocess_dir, src_name
-            )
+            # ADR 0004 §149 resolver 单点：manifest 有 entry → preprocess/{name}；
+            # 否则 → download/{name}（隐式 original）。worker 不自己决定源在哪。
+            src_path = preprocess_manifest.resolve(project_dir, src_name)
             if src_path is None or not src_path.exists():
                 log(f"[skip] ({idx}/{total}) {src_name}: 源已不存在")
                 skipped += 1
@@ -168,15 +168,18 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
                     succeeded=succeeded, failed=failed, skipped=skipped,
                 )
                 continue
+            # origin 沿用 manifest 里已有的（含 multi-crop 的根 origin），没就用 name 本身。
+            existing_entry = preprocess_manifest.get_entry(project_dir, src_name)
+            origin_name = (
+                preprocess_manifest.entry_origin(existing_entry, src_name)
+                if existing_entry is not None
+                else src_name
+            )
             dst_path = preprocess.product_path_for(preprocess_dir, src_name)
-            # 'all' 是增量（已 resolve 过）；这里再过一遍 manifest，防止两个 worker
-            # 同时被调起（罕见但便宜）。'all_force' / 'selected' 走重跑路径。
-            existing_entry = preprocess_manifest.get_entry(project_dir, dst_path.name)
-            if (
-                mode == "all"
-                and existing_entry is not None
-                and preprocess_manifest.entry_stage(existing_entry) == "upscaled"
-            ):
+            # 'all' 增量去重：dst 已有 entry 跳过；race guard 也走这里。
+            # ADR 0004 Addendum 1 §「Stage 不强制时序」—— 不按 stage 判断该不该跑，
+            # 用户在 selected / all_force 明确表态时一律放行。
+            if mode == "all" and preprocess_manifest.get_entry(project_dir, dst_path.name) is not None:
                 skipped += 1
                 emit_event(
                     "preprocess_progress",
@@ -234,22 +237,6 @@ def run(job_id: int) -> int:  # noqa: PLR0912, PLR0915 - 主流程线性可读
         log(f"[error] {exc}")
         print(traceback.format_exc(), flush=True)
         return 1
-
-
-def _resolve_upscale_source(
-    project_dir: Path,
-    download_dir: Path,
-    preprocess_dir: Path,
-    name: str,
-) -> tuple[Path | None, str]:
-    entry = preprocess_manifest.get_entry(project_dir, name)
-    if entry is not None:
-        origin = preprocess_manifest.entry_origin(entry, name)
-        return preprocess_dir / name, origin
-    dl = download_dir / name
-    if dl.is_file():
-        return dl, name
-    return None, name
 
 
 def _resolve_crop_source(
