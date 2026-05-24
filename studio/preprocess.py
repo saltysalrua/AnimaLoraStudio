@@ -203,7 +203,6 @@ def list_processed(p: dict[str, Any]) -> list[dict[str, Any]]:
         })
     return items
 
-
 def summary(p: dict[str, Any]) -> dict[str, Any]:
     """给 status 端点用的简短统计。
 
@@ -267,10 +266,16 @@ def resolve_targets(
     if mode == "selected":
         if not names:
             raise PreprocessError("mode=selected 时 names 不能为空")
+        # selected 允许 download/ 原图 + manifest 里已有 entry 的产物名 ——
+        # 后者覆盖"重新上调 / 在裁剪产物上再 upscale"的链路（ADR 0004 Addendum 1
+        # §「Stage 不强制时序」）。worker 端用 resolve() 找实际源。
+        pdir = project_root(p)
+        manifest_names = set(preprocess_manifest.all_processed(pdir).keys())
+        selectable = existing | manifest_names
         chosen = []
         for n in names:
             _validate_name(n)
-            if n in existing:
+            if n in selectable:
                 chosen.append(n)
         # 保留唯一 + 字典序，便于日志稳定
         return sorted(set(chosen))

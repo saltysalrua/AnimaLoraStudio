@@ -322,7 +322,7 @@ export default function FreeCropEditor({
         style={{
           width: renderW,
           height: renderH,
-          backgroundImage: `url(${image.thumbUrl})`,
+          backgroundImage: `url("${image.thumbUrl}")`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
         }}

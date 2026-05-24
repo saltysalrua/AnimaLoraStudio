@@ -1841,6 +1841,7 @@
     "postprocessStretch": "stretch（拉伸，可能变形）",
     "postprocessCrop": "crop（先裁后缩）",
     "maxCropTitle": "单聚类内最大允许裁剪比例（默认 0.1 = 10%）",
+    "aiLogTitle": "先验生成日志",
     "aiStatusDone": "已完成",
     "aiStatusRunning": "生成中",
     "aiStatusFailed": "失败",

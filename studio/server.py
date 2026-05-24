@@ -2796,13 +2796,6 @@ class RegAiRequest(BaseModel):
     seed: int = 0
     incremental: bool = False
     mixed_precision: str = "bf16"
-    attention_backend: AttentionBackend = "flash_attn"
-
-    # 兼容老前端送 xformers / flash_attn 双 bool（自动映射成 attention_backend）
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_attention(cls, data: Any) -> Any:
-        return migrate_legacy_attention(data)
 
 
 @app.post("/api/projects/{pid}/versions/{vid}/reg/generate-prior")
@@ -2821,6 +2814,7 @@ def reg_generate_prior(pid: int, vid: int, body: RegAiRequest) -> dict[str, Any]
     rdir = _reg_dir(vdir)
     rdir.mkdir(parents=True, exist_ok=True)
 
+    from studio.services.xformers_setup import detect_attention_backend
     cfg = RegAiConfig(
         **model_paths,
         train_dir=str(train),
@@ -2836,7 +2830,7 @@ def reg_generate_prior(pid: int, vid: int, body: RegAiRequest) -> dict[str, Any]
         seed=body.seed,
         incremental=body.incremental,
         mixed_precision=body.mixed_precision,
-        attention_backend=body.attention_backend,
+        attention_backend=detect_attention_backend(),
     )
 
     cfg_dir = STUDIO_DATA / "reg_ai_configs"
@@ -3387,7 +3381,7 @@ def list_queue(
     with db.connection_for() as conn:
         items = db.list_tasks(conn, status=status)
     if not include_generate:
-        items = db.filter_out_task_types(items, ("generate",))
+        items = db.filter_out_task_types(items, ("generate", "reg_ai"))
     # ADR 0006 PR-4 — is_pausable 信号每行注入（§8.1 / 上面 get_queue_item 注释）
     try:
         sup = _supervisor()
@@ -3414,6 +3408,44 @@ def enqueue(body: EnqueueRequest) -> dict[str, Any]:
         {"type": "task_state_changed", "task_id": task_id, "status": "pending"}
     )
     return task or {"id": task_id}
+
+
+@app.get("/api/queue/hold")
+def get_queue_hold() -> dict[str, Any]:
+    """查看当前队列挂起状态 + 等待恢复调度的 pending task 数（UI banner 用）。"""
+    with db.connection_for() as conn:
+        held = db.get_queue_held(conn)
+        pending = db.list_tasks(conn, status="pending")
+    return {"held": held, "pending_waiting": len(pending)}
+
+
+@app.post("/api/queue/hold")
+def hold_queue() -> dict[str, Any]:
+    """挂起队列：dispatcher 不再拉新 task。已 running 的不受影响（ADR §3.2）。
+
+    "同时暂停 running task" 由前端 modal 拆成两步：先调本 endpoint，再
+    单独调 `/api/queue/{id}/pause`。后端不做合一操作。
+    """
+    with db.connection_for() as conn:
+        db.set_queue_held(conn, True)
+    bus.publish({"type": "queue_hold_changed", "held": True})
+    return {"held": True}
+
+
+@app.post("/api/queue/release")
+def release_queue() -> dict[str, Any]:
+    """恢复调度：dispatcher 重新按 priority + created_at 拉 pending。"""
+    with db.connection_for() as conn:
+        db.set_queue_held(conn, False)
+    bus.publish({"type": "queue_hold_changed", "held": False})
+    return {"held": False}
+
+
+@app.post("/api/queue/reorder")
+def reorder_queue(body: ReorderRequest) -> dict[str, Any]:
+    with db.connection_for() as conn:
+        db.reorder(conn, body.ordered_ids)
+    return {"reordered": len(body.ordered_ids)}
 
 
 @app.get("/api/queue/{task_id}")
@@ -3484,37 +3516,6 @@ def pause_task(task_id: int) -> dict[str, Any]:
             raise HTTPException(404, "task not found")
         raise HTTPException(409, reason or "pause rejected")
     return {"task_id": task_id, "pause_pending": True}
-
-
-@app.get("/api/queue/hold")
-def get_queue_hold() -> dict[str, Any]:
-    """查看当前队列挂起状态 + 等待恢复调度的 pending task 数（UI banner 用）。"""
-    with db.connection_for() as conn:
-        held = db.get_queue_held(conn)
-        pending = db.list_tasks(conn, status="pending")
-    return {"held": held, "pending_waiting": len(pending)}
-
-
-@app.post("/api/queue/hold")
-def hold_queue() -> dict[str, Any]:
-    """挂起队列：dispatcher 不再拉新 task。已 running 的不受影响（ADR §3.2）。
-
-    "同时暂停 running task" 由前端 modal 拆成两步：先调本 endpoint，再
-    单独调 `/api/queue/{id}/pause`。后端不做合一操作。
-    """
-    with db.connection_for() as conn:
-        db.set_queue_held(conn, True)
-    bus.publish({"type": "queue_hold_changed", "held": True})
-    return {"held": True}
-
-
-@app.post("/api/queue/release")
-def release_queue() -> dict[str, Any]:
-    """恢复调度：dispatcher 重新按 priority + created_at 拉 pending。"""
-    with db.connection_for() as conn:
-        db.set_queue_held(conn, False)
-    bus.publish({"type": "queue_hold_changed", "held": False})
-    return {"held": False}
 
 
 @app.post("/api/queue/{task_id}/resume")
@@ -3644,17 +3645,17 @@ def _select_task_output_files(task_id: int, files: Optional[list[str]] = None) -
     out_dir = _task_output_dir(task)
     if not out_dir or not out_dir.exists():
         raise HTTPException(404, "no output dir")
-    all_files = [f for f in sorted(out_dir.iterdir()) if f.is_file()]
+    all_files = _iter_task_output_files(out_dir, task_id)
     if not all_files:
         raise HTTPException(404, "empty output dir")
     if not files:
         return task, all_files, False
-    by_name = {f.name: f for f in all_files}
+    by_path = {_task_output_relpath(out_dir, f): f for f in all_files}
     selected: list[Path] = []
     missing: list[str] = []
     for name in files:
-        _validate_component_or_400(name)
-        f = by_name.get(name)
+        _safe_output_relpath_or_400(out_dir, name)
+        f = by_path.get(name)
         if f:
             selected.append(f)
         else:
@@ -3666,10 +3667,10 @@ def _select_task_output_files(task_id: int, files: Optional[list[str]] = None) -
     return task, selected, True
 
 
-def _write_outputs_zip(dest: Path, selected: list[Path]) -> None:
+def _write_outputs_zip(dest: Path, out_dir: Path, selected: list[Path]) -> None:
     with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
         for f in selected:
-            zf.write(f, arcname=f.name)
+            zf.write(f, arcname=_task_output_relpath(out_dir, f))
 
 
 def _task_archive_basename(task: dict[str, Any]) -> Optional[str]:
@@ -3695,13 +3696,47 @@ def _is_loopback(request: Request) -> bool:
     return bool(client and client.host in _LOCALHOST_HOSTS)
 
 
+def _task_output_kind(path: Path) -> str:
+    name = path.name
+    suffix = path.suffix.lower()
+    if name.startswith("training_state_") and suffix == ".pt":
+        return "training_state"
+    if name.startswith("pause_step_") and suffix == ".pt":
+        return "pause_state"
+    if name == "auto_epoch_state.pt":
+        return "auto_epoch_state"
+    if suffix in _LORA_EXTS and not name.startswith("training_state_"):
+        return "lora"
+    return "other"
+
+
+def _task_output_relpath(out_dir: Path, path: Path) -> str:
+    return path.relative_to(out_dir).as_posix()
+
+
+def _iter_task_output_files(out_dir: Path, task_id: int) -> list[Path]:
+    files = [p for p in out_dir.iterdir() if p.is_file()]
+    state_dir = out_dir / "state" / f"task_{task_id}"
+    if state_dir.exists():
+        files.extend(
+            p for p in state_dir.rglob("*")
+            if p.is_file() and _task_output_kind(p) in {"training_state", "pause_state", "auto_epoch_state"}
+        )
+    return sorted(files, key=lambda p: _task_output_relpath(out_dir, p))
+
+
+def _safe_output_relpath_or_400(base: Path, relpath: str) -> Path:
+    if not relpath or relpath.startswith(("/", "\\")):
+        raise HTTPException(400, "invalid path")
+    parts = Path(relpath.replace("\\", "/")).parts
+    if any(part in ("", ".", "..") for part in parts):
+        raise HTTPException(400, "invalid path")
+    return _safe_join_or_400(base, *parts)
+
+
 @app.get("/api/queue/{task_id}/outputs")
 def list_task_outputs(task_id: int, request: Request) -> dict[str, Any]:
-    """列出 task 关联 version 的 output 目录里所有文件。
-
-    `supports_open_folder` 仅在请求来自 loopback（同机浏览器）时为 True；
-    云端部署时永远为 False，避免前端显示一个无意义按钮。
-    """
+    """列出 task 关联 version 的 output 目录里所有文件。"""
     with db.connection_for() as conn:
         task = db.get_task(conn, task_id)
     if not task:
@@ -3709,18 +3744,20 @@ def list_task_outputs(task_id: int, request: Request) -> dict[str, Any]:
     out_dir = _task_output_dir(task)
     files: list[dict[str, Any]] = []
     if out_dir and out_dir.exists():
-        for f in sorted(out_dir.iterdir(), key=lambda p: p.name):
-            if not f.is_file():
-                continue
+        for f in _iter_task_output_files(out_dir, task_id):
+            relpath = _task_output_relpath(out_dir, f)
             try:
                 st = f.stat()
             except OSError:
                 continue
+            kind = _task_output_kind(f)
             files.append({
                 "name": f.name,
+                "path": relpath,
                 "size": st.st_size,
                 "mtime": st.st_mtime,
-                "is_lora": f.suffix.lower() in _LORA_EXTS,
+                "kind": kind,
+                "is_lora": kind == "lora",
             })
     return {
         "task_id": task_id,
@@ -3738,24 +3775,20 @@ def download_task_outputs_zip(
     background: BackgroundTasks,
     files: Optional[str] = None,
 ) -> FileResponse:
-    """把 output 目录里的文件打包成 zip 一次性下载。
-
-    没传 `files` → 全量打包（向后兼容）。
-    传了 `files`（逗号分隔的文件名）→ 仅打包这些，路径必须是 out_dir 下的直接
-    子文件，禁止 path traversal / 子目录。
-
-    实现：写到临时文件再 FileResponse；响应发完后用 BackgroundTasks 清理。
-    safetensors / pt 几乎都是已压缩二进制，用 ZIP_STORED（不再压缩，CPU 省一倍）。
-    """
+    """把 output 目录里的文件打包成 zip 一次性下载。"""
     import tempfile
     wanted = [n for n in files.split(",") if n] if files else None
+    if files is not None and not wanted:
+        raise HTTPException(400, "empty files list")
     task, selected, partial = _select_task_output_files(task_id, wanted)
+    out_dir = _task_output_dir(task)
+    assert out_dir is not None  # _select_task_output_files 已经校验
 
     tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     tmp.close()
     tmp_path = Path(tmp.name)
     try:
-        _write_outputs_zip(tmp_path, selected)
+        _write_outputs_zip(tmp_path, out_dir, selected)
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
         bus.publish({
@@ -3792,8 +3825,10 @@ def export_task_outputs_to_data_exports(
     basename = _task_archive_basename(task) or f"task_{task_id}"
     archive_name = f"{basename}_outputs_selected.zip" if partial else f"{basename}_outputs.zip"
     dest = _unique_data_export_path(archive_name)
+    out_dir = _task_output_dir(task)
+    assert out_dir is not None
     try:
-        _write_outputs_zip(dest, selected)
+        _write_outputs_zip(dest, out_dir, selected)
     except Exception as e:
         dest.unlink(missing_ok=True)
         bus.publish({"type": "task_outputs_zip_failed", "task_id": task_id, "error": str(e)})
@@ -3802,10 +3837,9 @@ def export_task_outputs_to_data_exports(
     return _export_result(dest)
 
 
-@app.get("/api/queue/{task_id}/output/{filename}")
+@app.get("/api/queue/{task_id}/output/{filename:path}")
 def download_task_output(task_id: int, filename: str) -> FileResponse:
-    """下载 output 目录下的指定文件。`Content-Disposition: attachment` 让
-    浏览器走「保存」对话框而不是 inline 渲染。"""
+    """下载 output 目录下的指定文件。"""
     with db.connection_for() as conn:
         task = db.get_task(conn, task_id)
     if not task:
@@ -3813,13 +3847,13 @@ def download_task_output(task_id: int, filename: str) -> FileResponse:
     out_dir = _task_output_dir(task)
     if not out_dir or not out_dir.exists():
         raise HTTPException(404, "no output dir")
-    f = _safe_join_or_400(out_dir, filename)
+    f = _safe_output_relpath_or_400(out_dir, filename)
     if not f.exists() or not f.is_file():
         raise HTTPException(404, "file not found")
     return FileResponse(
         f,
         media_type="application/octet-stream",
-        filename=filename,  # 让 starlette 自动加 Content-Disposition
+        filename=f.name,
     )
 
 
@@ -3866,13 +3900,6 @@ def delete_queue_item(task_id: int) -> dict[str, Any]:
             raise HTTPException(400, "only terminal tasks can be deleted")
         db.delete_task(conn, task_id)
     return {"deleted": task_id}
-
-
-@app.post("/api/queue/reorder")
-def reorder_queue(body: ReorderRequest) -> dict[str, Any]:
-    with db.connection_for() as conn:
-        db.reorder(conn, body.ordered_ids)
-    return {"reordered": len(body.ordered_ids)}
 
 
 # ---------------------------------------------------------------------------
@@ -3932,7 +3959,9 @@ def get_log(task_id: int) -> dict[str, Any]:
     p = LOGS_DIR / f"{task_id}.log"
     if not p.exists():
         return {"task_id": task_id, "content": "", "size": 0}
-    text = p.read_text(encoding="utf-8", errors="replace")
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    lines = [ln for ln in raw.splitlines(keepends=True) if not ln.startswith("__EVENT__:")]
+    text = "".join(lines)
     return {"task_id": task_id, "content": text, "size": len(text.encode("utf-8"))}
 
 
