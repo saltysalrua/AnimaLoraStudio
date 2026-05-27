@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -145,23 +147,62 @@ class WandBMonitor:
         except Exception as exc:
             logger.warning(f"W&B 图片记录失败: {exc}")
 
+    def _delete_previous_artifact_versions(self, artifact_name: str, artifact_type: str, keep_artifact) -> None:
+        keep_version = getattr(keep_artifact, "version", None)
+        collection_name = f"{keep_artifact.entity}/{keep_artifact.project}/{artifact_name}"
+        deleted = 0
+        try:
+            api = self._wandb.Api()
+            for artifact in api.artifacts(type_name=artifact_type, name=collection_name):
+                if getattr(artifact, "version", None) == keep_version:
+                    continue
+                try:
+                    artifact.delete(delete_aliases=True)
+                    deleted += 1
+                    logger.info(f"W&B artifact 旧版本已删除: {artifact_name}:{artifact.version}")
+                except Exception as exc:
+                    logger.warning(f"W&B 删除旧 artifact 版本失败 ({artifact_name}:{getattr(artifact, 'version', '?')}): {exc}")
+            if deleted:
+                logger.info(f"W&B artifact 已清理旧版本: {artifact_name} ({deleted} 个)")
+        except Exception as exc:
+            logger.warning(f"W&B artifact 历史版本清理失败 ({artifact_name}): {exc}")
+
     def _upload_artifact(self, file_path: Path, artifact_name: str, artifact_type: str, policy: str) -> None:
         if not self.enabled:
             return
         try:
             artifact = self._wandb.Artifact(artifact_name, type=artifact_type)
-            artifact.add_file(str(file_path))
-            self._run.log_artifact(artifact)
-            logger.info(f"W&B artifact 已上传: {artifact_name} ({file_path.name})")
+            artifact.add_file(str(file_path), name=file_path.name)
+            size_mb = file_path.stat().st_size / 1024 / 1024
+            logger.info(f"W&B artifact 开始上传: {artifact_name} ({file_path.name}, {size_mb:.1f} MB)")
+            logged_artifact = self._run.log_artifact(artifact)
+            start_time = time.monotonic()
+            done = threading.Event()
+
+            def report_waiting() -> None:
+                while not done.wait(10):
+                    elapsed = time.monotonic() - start_time
+                    logger.info(f"W&B artifact 仍在上传: {artifact_name} ({elapsed:.0f}s, {size_mb:.1f} MB)")
+
+            progress_thread = threading.Thread(target=report_waiting, daemon=True)
+            progress_thread.start()
+            try:
+                logged_artifact.wait()
+            finally:
+                done.set()
+                progress_thread.join(timeout=1)
+            elapsed = time.monotonic() - start_time
+            logger.info(f"W&B artifact 已上传: {artifact_name} ({file_path.name}, {size_mb:.1f} MB, {elapsed:.1f}s)")
             if policy == "last":
+                self._delete_previous_artifact_versions(artifact_name, artifact_type, logged_artifact)
                 prev = self._last_artifact.get(artifact_name)
-                if prev is not None:
+                if prev is not None and getattr(prev, "version", None) != getattr(logged_artifact, "version", None):
                     try:
-                        prev.delete()
-                        logger.info(f"W&B artifact 旧版本已删除: {artifact_name}")
+                        prev.delete(delete_aliases=True)
+                        logger.info(f"W&B artifact 旧版本已删除: {artifact_name}:{prev.version}")
                     except Exception as exc:
                         logger.warning(f"W&B 删除旧 artifact 失败: {exc}")
-                self._last_artifact[artifact_name] = artifact
+                self._last_artifact[artifact_name] = logged_artifact
         except Exception as exc:
             logger.warning(f"W&B artifact 上传失败 ({artifact_name}): {exc}")
 
