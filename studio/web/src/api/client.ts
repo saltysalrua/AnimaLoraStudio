@@ -131,6 +131,18 @@ export interface WandBConfig {
   sample_max_side: number
   /** step 节流：>0 时只在 global_step % N == 0 上传，0 = 不额外节流 */
   sample_every_n_steps: number
+  /** 上传模型 artifact 到 wandb */
+  upload_model: boolean
+  /** 模型 artifact 保留策略：all=全部版本 / last=仅最新 */
+  upload_model_policy: 'all' | 'last'
+  /** 上传手动保存的训练状态 artifact */
+  upload_state_manual: boolean
+  /** 手动状态 artifact 保留策略 */
+  upload_state_manual_policy: 'all' | 'last'
+  /** 上传自动保存的训练状态 artifact */
+  upload_state_auto: boolean
+  /** 自动状态 artifact 保留策略 */
+  upload_state_auto_policy: 'all' | 'last'
 }
 
 export interface ModelScopeConfig {
@@ -1469,6 +1481,10 @@ export const api = {
   listPresets: () =>
     req<{ items: PresetSummary[] }>('/api/presets').then((r) => r.items),
   getPreset: (name: string) => req<ConfigData>(`/api/presets/${name}`),
+  getPresetWithWarnings: (name: string) =>
+    req<{ config: ConfigData; dropped_fields: string[]; defaulted_fields: string[] }>(
+      `/api/presets/${name}?warnings=true`,
+    ),
   savePreset: (name: string, data: ConfigData) =>
     req<{ name: string; path: string }>(`/api/presets/${name}`, {
       method: 'PUT',
