@@ -32,6 +32,12 @@ def migrate_legacy_attention(data: Any) -> Any:
         "wandb_run_name",
         "wandb_mode",
         "wandb_log_samples",
+        "wandb_upload_model",
+        "wandb_upload_model_policy",
+        "wandb_upload_state_manual",
+        "wandb_upload_state_manual_policy",
+        "wandb_upload_state_auto",
+        "wandb_upload_state_auto_policy",
     ):
         data.pop(key, None)
     if "attention_backend" in data:

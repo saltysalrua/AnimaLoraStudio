@@ -69,6 +69,12 @@ class WandBMonitor:
         log_samples: bool = False,
         sample_max_side: int = 1216,
         sample_every_n_steps: int = 0,
+        upload_model: bool = False,
+        upload_model_policy: str = "last",
+        upload_state_manual: bool = False,
+        upload_state_manual_policy: str = "last",
+        upload_state_auto: bool = False,
+        upload_state_auto_policy: str = "last",
     ) -> None:
         self._wandb = wandb_module
         self._run = run
@@ -76,6 +82,13 @@ class WandBMonitor:
         self.sample_max_side = max(64, int(sample_max_side or 512))
         self.sample_every_n_steps = max(0, int(sample_every_n_steps or 0))
         self._last_logged_step: Optional[int] = None
+        self._upload_model_enabled = upload_model
+        self._upload_model_policy = upload_model_policy
+        self._upload_state_manual_enabled = upload_state_manual
+        self._upload_state_manual_policy = upload_state_manual_policy
+        self._upload_state_auto_enabled = upload_state_auto
+        self._upload_state_auto_policy = upload_state_auto_policy
+        self._last_artifact: dict[str, "Any"] = {}
 
     @property
     def enabled(self) -> bool:
@@ -132,6 +145,44 @@ class WandBMonitor:
         except Exception as exc:
             logger.warning(f"W&B 图片记录失败: {exc}")
 
+    def _upload_artifact(self, file_path: Path, artifact_name: str, artifact_type: str, policy: str) -> None:
+        if not self.enabled:
+            return
+        try:
+            artifact = self._wandb.Artifact(artifact_name, type=artifact_type)
+            artifact.add_file(str(file_path))
+            self._run.log_artifact(artifact)
+            logger.info(f"W&B artifact 已上传: {artifact_name} ({file_path.name})")
+            if policy == "last":
+                prev = self._last_artifact.get(artifact_name)
+                if prev is not None:
+                    try:
+                        prev.delete()
+                        logger.info(f"W&B artifact 旧版本已删除: {artifact_name}")
+                    except Exception as exc:
+                        logger.warning(f"W&B 删除旧 artifact 失败: {exc}")
+                self._last_artifact[artifact_name] = artifact
+        except Exception as exc:
+            logger.warning(f"W&B artifact 上传失败 ({artifact_name}): {exc}")
+
+    def upload_model(self, file_path: Path) -> None:
+        if not self._upload_model_enabled or not self.enabled:
+            return
+        name = f"{self._run.name}-model"
+        self._upload_artifact(file_path, name, "model", self._upload_model_policy)
+
+    def upload_state_manual(self, file_path: Path) -> None:
+        if not self._upload_state_manual_enabled or not self.enabled:
+            return
+        name = f"{self._run.name}-state-manual"
+        self._upload_artifact(file_path, name, "training-state", self._upload_state_manual_policy)
+
+    def upload_state_auto(self, file_path: Path) -> None:
+        if not self._upload_state_auto_enabled or not self.enabled:
+            return
+        name = f"{self._run.name}-state-auto"
+        self._upload_artifact(file_path, name, "training-state", self._upload_state_auto_policy)
+
     def finish(self) -> None:
         if not self.enabled:
             return
@@ -172,6 +223,14 @@ def init_wandb_monitor(args, output_dir: Path, config_path: Optional[Path]) -> W
         sample_every_n_steps = int(os.environ.get("WANDB_SAMPLE_EVERY_N_STEPS", "0") or 0)
     except ValueError:
         sample_every_n_steps = 0
+    _env_bool = lambda key, default="0": str(os.environ.get(key, default)).strip().lower() in {"1", "true", "yes", "on"}
+    _env_policy = lambda key: "all" if str(os.environ.get(key, "last")).strip().lower() == "all" else "last"
+    upload_model = _env_bool("WANDB_UPLOAD_MODEL")
+    upload_model_policy = _env_policy("WANDB_UPLOAD_MODEL_POLICY")
+    upload_state_manual = _env_bool("WANDB_UPLOAD_STATE_MANUAL")
+    upload_state_manual_policy = _env_policy("WANDB_UPLOAD_STATE_MANUAL_POLICY")
+    upload_state_auto = _env_bool("WANDB_UPLOAD_STATE_AUTO")
+    upload_state_auto_policy = _env_policy("WANDB_UPLOAD_STATE_AUTO_POLICY")
     wandb_dir = output_dir / "wandb"
     wandb_dir.mkdir(parents=True, exist_ok=True)
     cfg = {
@@ -195,4 +254,10 @@ def init_wandb_monitor(args, output_dir: Path, config_path: Optional[Path]) -> W
         log_samples=log_samples,
         sample_max_side=sample_max_side,
         sample_every_n_steps=sample_every_n_steps,
+        upload_model=upload_model,
+        upload_model_policy=upload_model_policy,
+        upload_state_manual=upload_state_manual,
+        upload_state_manual_policy=upload_state_manual_policy,
+        upload_state_auto=upload_state_auto,
+        upload_state_auto_policy=upload_state_auto_policy,
     )
