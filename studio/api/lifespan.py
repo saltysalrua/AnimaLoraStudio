@@ -31,7 +31,7 @@ from typing import Any, AsyncIterator, Optional
 from fastapi import FastAPI
 
 from .. import db
-from ..event_bus import bus
+from ..infrastructure.event_bus import bus
 from ..paths import ensure_dirs
 from ..supervisor import Supervisor
 
@@ -79,8 +79,9 @@ async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
     db.init_db()
 
     # 测试出图 tempdir 遗留清扫（防 supervisor crash 泄漏 anima_gen_* 目录）
-    from ..services.inference_core import cleanup_stale_generate_tempdirs
-    from ..services import generate_cache, model_downloader as _md
+    from ..services.inference.core import cleanup_stale_generate_tempdirs
+    from ..services.inference import cache as generate_cache
+    from ..services import models as _md
     from ..services import system_stats
     cleanup_stale_generate_tempdirs()
 

@@ -10,8 +10,9 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from .... import db, projects, versions
-from ....event_bus import bus
+from .... import db
+from ....services.projects import projects, versions
+from ....infrastructure.event_bus import bus
 from ....services import version_config
 
 

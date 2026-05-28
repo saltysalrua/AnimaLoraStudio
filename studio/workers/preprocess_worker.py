@@ -25,8 +25,12 @@ from typing import Any, Callable
 
 from PIL import Image
 
-from studio import db, preprocess, project_jobs, projects
-from studio.services import model_downloader, preprocess_manifest, upscaler
+from studio import db
+from studio.services.preprocess import core as preprocess
+from studio.services.projects import jobs as project_jobs, projects
+from studio.services import models as model_downloader
+from studio.services.preprocess import manifest as preprocess_manifest
+from studio.services.inference import upscaler
 
 
 _stop_requested = False
@@ -391,7 +395,7 @@ def _run_crop(
             )
             # 给前端 grid 预热缩略图
             try:
-                from studio import thumb_cache
+                from studio.services.dataset import thumb_cache
                 for out_name in out_names:
                     out_path = preprocess_dir / out_name
                     with Image.open(out_path) as piece:

@@ -59,19 +59,19 @@ from ._shared import (
     _version_dir_or_404,
     _version_train_dir_or_404,
 )
-from .... import datasets, db, presets_io, project_jobs, projects, versions
+from .... import db
+from ....services.presets import io as presets_io
+from ....services.projects import jobs as project_jobs, projects, versions
+from ....services.dataset import scan as datasets
 from ....domain import RegAiConfig
-from ....event_bus import bus
+from ....infrastructure.event_bus import bus
 from ....paths import STUDIO_DATA, safe_join
-from ....services import (
-    caption_snapshot,
-    model_downloader,
-    presets as preset_flow,
-    reg_builder,
-    tagedit,
-    version_config,
-)
-from ....services.tagger import VALID_TAGGER_NAMES
+from ....services import model_downloader, version_config
+from ....services import presets as preset_flow
+from ....services.tagging import caption_snapshot
+from ....services.reg import builder as reg_builder
+from ....services.dataset import tagedit
+from ....services.tagging.base import VALID_TAGGER_NAMES
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -369,7 +369,7 @@ def reg_generate_prior(pid: int, vid: int, body: RegAiRequest) -> dict[str, Any]
     rdir = _reg_dir(vdir)
     rdir.mkdir(parents=True, exist_ok=True)
 
-    from ....services.xformers_setup import detect_attention_backend
+    from ....services.runtime.xformers import detect_attention_backend
     cfg = RegAiConfig(
         **model_paths,
         train_dir=str(train),

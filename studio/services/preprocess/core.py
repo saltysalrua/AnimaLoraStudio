@@ -32,8 +32,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from ... import project_jobs, projects
-from ...datasets import IMAGE_EXTS
+from ...services.projects import jobs as project_jobs, projects
+from ...services.dataset.scan import IMAGE_EXTS
 from . import manifest as preprocess_manifest
 
 

@@ -24,8 +24,9 @@ from fastapi.responses import FileResponse
 
 from ...errors import _export_result, _safe_join_or_400, _unique_data_export_path
 from ...schemas.queue import ExportOutputsBody
-from .... import db, projects, versions
-from ....event_bus import bus
+from .... import db
+from ....services.projects import projects, versions
+from ....infrastructure.event_bus import bus
 from ....paths import DATA_EXPORTS
 
 router = APIRouter()

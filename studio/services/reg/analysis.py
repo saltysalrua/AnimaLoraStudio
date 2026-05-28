@@ -34,9 +34,9 @@ import numpy as np
 import requests
 from PIL import Image
 
-from ...datasets import IMAGE_EXTS
+from ...services.dataset.scan import IMAGE_EXTS
 from ..booru import api as booru_api, pool as booru_pool
-from .. import tagedit
+from ..dataset import tagedit
 
 
 ProgressFn = Callable[[str], None]

@@ -9,8 +9,9 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from studio import db, project_jobs, projects, secrets, server, versions
-from studio.services import reg_builder
+from studio import db, secrets, server
+from studio.services.projects import jobs as project_jobs, projects, versions
+from studio.services.reg import builder as reg_builder
 
 
 @pytest.fixture

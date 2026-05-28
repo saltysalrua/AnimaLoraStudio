@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from studio import curation, db, projects, versions
-from studio.services import duplicate_finder
-from studio.services import preprocess_manifest
+from studio import db
+from studio.services.dataset import curation
+from studio.services.projects import projects, versions
+from studio.services.preprocess import duplicates as duplicate_finder
+from studio.services.preprocess import manifest as preprocess_manifest
 
 
 @pytest.fixture

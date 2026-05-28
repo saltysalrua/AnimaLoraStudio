@@ -31,10 +31,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .. import db, project_jobs, secrets as _secrets
-from ..log_tail import LogTailer, MonitorStatePoller
+from .. import db, secrets as _secrets
+from ..services.projects import jobs as project_jobs
+from ..infrastructure.log_tail import LogTailer, MonitorStatePoller
 from ..paths import LOGS_DIR, REPO_ROOT, STUDIO_DATA, STUDIO_DB, USER_PRESETS_DIR
-from ..services.inference_daemon import (
+from ..services.inference.daemon import (
     InferenceDaemon,
     STATE_STOPPED as _DAEMON_STOPPED,
     get_daemon,
@@ -556,7 +557,7 @@ class Supervisor:
         启动（snapshot 是 forensics 不是必需）。
         """
         try:
-            from .. import task_snapshot
+            from ..services import task_snapshot
             task_snapshot.freeze_config(task_id, cfg_path)
         except Exception:
             logger.exception(
@@ -651,7 +652,7 @@ class Supervisor:
             vid = task.get("version_id")
             if vid:
                 try:
-                    from .. import versions as _versions
+                    from ..services.projects import versions as _versions
                     _versions.update_version(
                         conn, int(vid),
                         status=_versions.VersionStatus.TRAINING,
@@ -965,7 +966,7 @@ class Supervisor:
             db.update_task(conn, task_id, **fields)
 
         try:
-            from ..services.inference_core import cleanup_generate_tempdir
+            from ..services.inference.core import cleanup_generate_tempdir
             cleanup_generate_tempdir(task_id)
         except Exception as e:
             logger.warning("cleanup generate tempdir failed: %s", e)
