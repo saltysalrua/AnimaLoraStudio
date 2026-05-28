@@ -28,10 +28,10 @@ from .migrations import (
 class TrainingConfig(BaseModel):
     """与 config/train_template.yaml 对齐的完整训练参数。
 
-    `extra="forbid"`：未知键直接报错，避免拼写错误悄悄失效。
+    `extra="ignore"`：云端/旧版预设里多出的键静默丢弃。
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     # ---------------------------------------------------------------- 模型路径
     # 这些路径在 Studio 创建 version 时会被替换成 **绝对路径**（基于
