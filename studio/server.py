@@ -23,24 +23,19 @@ import json
 import logging
 import os
 import shutil
-import threading
 import time
 import zipfile
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import (
     BackgroundTasks,
-    FastAPI,
     File,
     HTTPException,
     Request,
     UploadFile,
 )
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import (
@@ -59,6 +54,17 @@ from . import (
     versions,
     versions_phase,
 )
+from .api.app import app
+from .api.errors import (
+    _data_export_path,
+    _export_result,
+    _preset_err_code as _err_code,
+    _safe_join_or_400,
+    _unique_data_export_path,
+    _validate_component_or_400,
+)
+from .api.responses import EMPTY_STATE
+from .api.static import SPAStaticFiles
 from .event_bus import bus
 from .services import (
     caption_snapshot,
@@ -91,9 +97,7 @@ from .paths import (
     STUDIO_DB,
     USER_PRESETS_DIR,
     WEB_DIST,
-    ensure_dirs,
     safe_join,
-    validate_path_component,
 )
 from .schema import (
     GROUP_ORDER,
@@ -107,502 +111,13 @@ from .schema import (
 )
 from .supervisor import Supervisor
 
-ensure_dirs()
-db.init_db()
-
 logger = logging.getLogger(__name__)
 
 
-def _safe_join_or_400(base: Path, *parts: str) -> Path:
-    """safe_join 的 HTTPException 版本。把 ValueError 包成 400。"""
-    try:
-        return safe_join(base, *parts)
-    except ValueError as exc:
-        raise HTTPException(400, f"invalid path: {exc}") from exc
-
-
-def _validate_component_or_400(name: str) -> None:
-    """validate_path_component 的 HTTPException 版本（用于不需要 join 的纯名校验）。"""
-    try:
-        validate_path_component(name)
-    except ValueError as exc:
-        raise HTTPException(400, f"invalid path: {exc}") from exc
-
-
-def _data_export_path(filename: str, suffixes: tuple[str, ...] = (".zip",)) -> Path:
-    path = _safe_join_or_400(DATA_EXPORTS, filename)
-    allowed = tuple(s.lower() for s in suffixes)
-    if allowed and path.suffix.lower() not in allowed:
-        label = " / ".join(allowed)
-        raise HTTPException(400, f"请选择 {label} 文件")
-    return path
-
-
-def _unique_data_export_path(filename: str, suffixes: tuple[str, ...] = (".zip",)) -> Path:
-    base = _data_export_path(filename, suffixes)
-    if not base.exists():
-        return base
-    stem = base.stem
-    suffix = base.suffix
-    for i in range(2, 1000):
-        candidate = _data_export_path(f"{stem}-{i}{suffix}", suffixes)
-        if not candidate.exists():
-            return candidate
-    raise HTTPException(409, f"导出文件名冲突过多: {filename}")
-
-
-def _export_result(path: Path) -> dict[str, Any]:
-    st = path.stat()
-    return {"filename": path.name, "path": str(path), "size": st.st_size, "mtime": st.st_mtime}
-
-
-def _install_proactor_disconnect_filter(loop: asyncio.AbstractEventLoop) -> None:
-    """吞 Windows + asyncio Proactor 的 cosmetic ConnectionResetError 噪声。
-
-    Python asyncio 在 Windows 上有 [bpo-44291](https://github.com/python/cpython/issues/87691) 类问题：
-    远端 TCP 强制断开（用户关 tab / 刷新 / SSE 重连，WinError 10054 / 10053）
-    时 `_ProactorBasePipeTransport._call_connection_lost` 走 `socket.shutdown()`
-    抛 `ConnectionResetError` / `ConnectionAbortedError`，但 callback 内部
-    没 catch 这两个 expected error，asyncio 默认 handler 打 traceback 到
-    stderr。server 完全没事，只是日志被刷一行无意义 stack。
-
-    精确过滤：只在 exception 是 ConnectionResetError / ConnectionAbortedError
-    且 handle repr 含 `_call_connection_lost` 时静默吞掉；其它 asyncio
-    异常仍交给 default handler。仅 Windows 装；其它平台用 SelectorEventLoop
-    没这个 bug。
-    """
-    if os.name != "nt":
-        return
-
-    def _filter(loop_: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
-        exc = context.get("exception")
-        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
-            handle = context.get("handle")
-            if handle and "_call_connection_lost" in repr(handle):
-                return
-        loop_.default_exception_handler(context)
-
-    loop.set_exception_handler(_filter)
-
-
-@asynccontextmanager
-async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
-    """启动绑定 event bus 到当前 loop 并起 supervisor；关闭时停 supervisor。"""
-    # 装 Windows ProactorEventLoop 的 ConnectionResetError 过滤器（详见 helper docstring）
-    _install_proactor_disconnect_filter(asyncio.get_running_loop())
-
-    # 测试出图 tempdir 遗留清扫（防 supervisor crash 泄漏 anima_gen_* 目录）
-    from .services.inference_core import cleanup_stale_generate_tempdirs
-    from .services import generate_cache, model_downloader as _md
-    cleanup_stale_generate_tempdirs()
-
-    # TAEFlux（中间步预览）后台下载：跟 server 一起启动；下载失败不阻塞 server。
-    # 如果已下载则 noop；下载期间用户能正常用其他功能，预览功能等下载完才生效。
-    def _bg_download_taeflux() -> None:
-        try:
-            if _md.taeflux_available():
-                return
-            logger.info("background-downloading TAEFlux (~1.6MB)…")
-            ok = _md.download_taeflux(on_log=lambda m: logger.info("[taeflux] %s", m))
-            if not ok:
-                logger.warning("taeflux background download failed; preview disabled until manual install")
-        except Exception:
-            logger.exception("taeflux background download crashed")
-    threading.Thread(target=_bg_download_taeflux, name="taeflux-bg-download", daemon=True).start()
-
-    bus.attach_loop(asyncio.get_running_loop())
-
-    # commit 11：SSE 客户端断连 + 30s 缓冲后清 generate cache。
-    # 防刷新/短抖动：用户重连（_on_first_subscribe）取消计时器。
-    _disconnect_timer: dict[str, Optional[threading.Timer]] = {"t": None}
-
-    def _on_last_unsubscribe() -> None:
-        # 已有 timer 不重置（多个客户端各自 unsubscribe 时，最后一个才是关键）
-        if _disconnect_timer["t"] is not None:
-            return
-        timer = threading.Timer(30.0, _flush_cache)
-        timer.daemon = True
-        _disconnect_timer["t"] = timer
-        timer.start()
-
-    def _on_first_subscribe() -> None:
-        timer = _disconnect_timer.get("t")
-        if timer is not None:
-            timer.cancel()
-            _disconnect_timer["t"] = None
-
-    def _flush_cache() -> None:
-        n = generate_cache.total_count()
-        if n:
-            generate_cache.clear_all()
-            logger.info("flushed generate cache (%d images) after SSE idle", n)
-        _disconnect_timer["t"] = None
-
-    bus.set_connection_callbacks(
-        on_first_subscribe=_on_first_subscribe,
-        on_last_unsubscribe=_on_last_unsubscribe,
-    )
-
-    sup = Supervisor(on_event=bus.publish)
-    sup.start()
-    app_.state.supervisor = sup
-
-    # PR #37: system stats SSE — 后台 sampler 每 2.5s 采集 + bus.publish。前端
-    # 只 mount 时 GET 一次冷启动，避免 cloud 部署被每客户端独立轮询污染。
-    def _publish_system_stats(payload: dict[str, Any]) -> None:
-        bus.publish({"type": "system_stats_updated", "payload": payload})
-
-    sys_sampler = system_stats.SystemStatsSampler(_publish_system_stats)
-    sys_sampler.start()
-    app_.state.system_stats_sampler = sys_sampler
-
-    try:
-        yield
-    finally:
-        # 取消可能挂着的 disconnect timer，shutdown 阶段不需要再延迟
-        timer = _disconnect_timer.get("t")
-        if timer is not None:
-            timer.cancel()
-        sys_sampler.stop()
-        sup.stop()
-        # commit 11：lifespan shutdown 清掉所有图 cache（释放内存 + 干净退出）
-        generate_cache.clear_all()
-
-
-app = FastAPI(title="AnimaStudio", version=__version__, lifespan=_lifespan)
-
-
-# ── gzip ────────────────────────────────────────────────────────────
-# 给 JSON / 文本响应自动 gzip 压缩。对 /api/state（10k 步训练 ~500KB → ~100KB）
-# 这种大数组高度可压；对小响应 (< 1000B) 跳过避免 framing overhead 反而变大。
-#
-# 显式排除两类路径：
-#   - /api/events：SSE 流。GZipMiddleware 会 buffer chunks 到 minimum_size
-#     才发，破坏 SSE 实时性 + 某些 EventSource 实现解析 gzip 流有兼容问题
-#   - /samples/*：图片字节（PNG/JPEG/WEBP 已经是压缩格式），gzip 再压净浪费
-#     CPU 且 size 略增
-_GZIP_SKIP_PREFIXES = ("/api/events", "/samples/")
-
-
-class _SelectiveGZipMiddleware(GZipMiddleware):
-    """GZipMiddleware 的子类，按 path 前缀绕过指定路由。"""
-
-    async def __call__(self, scope, receive, send):  # type: ignore[override]
-        if scope.get("type") == "http":
-            path = scope.get("path", "")
-            if any(path.startswith(p) for p in _GZIP_SKIP_PREFIXES):
-                await self.app(scope, receive, send)
-                return
-        await super().__call__(scope, receive, send)
-
-
-app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1000)
-
-
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
-
-EMPTY_STATE: dict[str, Any] = {
-    "losses": [],
-    "lr_history": [],
-    "epoch": 0,
-    "total_epochs": 0,
-    "step": 0,
-    "total_steps": 0,
-    "speed": 0.0,
-    "samples": [],
-    "start_time": None,
-    "config": {},
-}
-
-
-@app.get("/api/health")
-def health() -> dict[str, Any]:
-    return {"status": "ok", "version": app.version}
-
-
-@app.get("/api/system/stats")
-def get_system_stats() -> dict[str, Any]:
-    """Topbar 系统资源小组件用 (CPU/RAM/GPU/VRAM)。前端按 2-3s 轮询。"""
-    return system_stats.stats_to_json(system_stats.collect_stats())
-
-
-@app.get("/api/state")
-def get_state(task_id: Optional[int] = None, max_points: int = 0) -> JSONResponse:
-    """读取训练监控 state.json（PP6.1 改造 — per-task）。
-
-    `task_id` 给了 → 查 tasks.monitor_state_path 对应文件；没有 / 文件缺失 →
-    返回 EMPTY_STATE，不报错。
-    `task_id` 没给 → 优先 running 的 task；没 running 时回退到**最近一次**
-    （done / failed / canceled）带 monitor_state_path 的 task，让监控页结束
-    后还能看到上一次训练的曲线。都没有再返回 EMPTY_STATE。
-
-    `max_points`（默认 0 = 不降采样）— PR #37 引入时默认 1000，PR (此处)
-    改成默认 0：cold start 是一次性 HTTP，10k+ 步训练用户经常碰到，宁可
-    payload 大一点也要给完整历史。想降采样的 caller 显式传 max_points=N
-    （留着给未来 thumbnail / 预览之类的轻量场景）。
-
-    旧的全局 `monitor_data/state.json` 路径已退役（PP6.1）。
-    """
-    target_path: Optional[Path] = None
-    if task_id is not None:
-        with db.connection_for() as conn:
-            row = conn.execute(
-                "SELECT monitor_state_path FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
-        if row and row["monitor_state_path"]:
-            target_path = Path(row["monitor_state_path"])
-    else:
-        # 没给 task_id：先找 running 的 task；没 running 回退到最近的完成任务
-        with db.connection_for() as conn:
-            row = conn.execute(
-                "SELECT monitor_state_path FROM tasks WHERE status = 'running' "
-                "AND monitor_state_path IS NOT NULL "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-            if not (row and row["monitor_state_path"]):
-                row = conn.execute(
-                    "SELECT monitor_state_path FROM tasks "
-                    "WHERE monitor_state_path IS NOT NULL "
-                    "ORDER BY COALESCE(finished_at, started_at, created_at) DESC "
-                    "LIMIT 1"
-                ).fetchone()
-        if row and row["monitor_state_path"]:
-            target_path = Path(row["monitor_state_path"])
-
-    if target_path is None or not target_path.exists():
-        return JSONResponse(EMPTY_STATE)
-    try:
-        data = json.loads(target_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(500, f"failed to read state: {exc}")
-
-    # 服务端下采样 losses / lr_history（samples cap 50 已经在 train_monitor 端做了）
-    if max_points and max_points > 0:
-        from runtime.train_monitor import _downsample_uniform
-        if isinstance(data.get("losses"), list):
-            data["losses"] = _downsample_uniform(data["losses"], max_points)
-        if isinstance(data.get("lr_history"), list):
-            data["lr_history"] = _downsample_uniform(data["lr_history"], max_points)
-
-    return JSONResponse(data)
-
-
-# ---------------------------------------------------------------------------
-# /api/schema, /api/presets/*  ( + 旧 /api/configs/* 308 redirect)
-# ---------------------------------------------------------------------------
-
-
-class DuplicateRequest(BaseModel):
-    new_name: str
-
-
-class _PresetExportBody(BaseModel):
-    config: dict[str, Any]
-
-
-class _PresetImportBody(BaseModel):
-    filename: str
-
-
-class _PresetImportFromPathBody(BaseModel):
-    path: str
-
-
-@app.get("/api/schema")
-def get_schema() -> dict[str, Any]:
-    """返回 TrainingConfig 的 JSON Schema + 分组顺序，前端据此渲染表单。"""
-    return {
-        "schema": TrainingConfig.model_json_schema(),
-        "groups": [
-            {"key": k, "label": label, "default_collapsed": dc}
-            for k, label, dc in GROUP_ORDER
-        ],
-    }
-
-
-@app.get("/api/presets")
-def list_presets_endpoint() -> dict[str, Any]:
-    return {"items": presets_io.list_presets()}
-
-
-@app.get("/api/presets/{name}")
-def get_preset(name: str) -> dict[str, Any]:
-    try:
-        return presets_io.read_preset(name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-
-
-@app.put("/api/presets/{name}")
-def put_preset(name: str, body: dict[str, Any]) -> dict[str, str]:
-    try:
-        path = presets_io.write_preset(name, body)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"name": name, "path": str(path)}
-
-
-@app.delete("/api/presets/{name}")
-def delete_preset_endpoint(name: str) -> dict[str, str]:
-    try:
-        presets_io.delete_preset(name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"deleted": name}
-
-
-@app.post("/api/presets/{name}/duplicate")
-def duplicate_preset_endpoint(name: str, body: DuplicateRequest) -> dict[str, str]:
-    try:
-        path = presets_io.duplicate_preset(name, body.new_name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"name": body.new_name, "path": str(path)}
-
-
-@app.get("/api/presets/{name}/download")
-def download_preset(name: str) -> FileResponse:
-    """端到端文件 I/O：直接返回 `studio_data/presets/{name}.yaml` 原文件。"""
-    try:
-        path = presets_io.preset_path(name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"预设不存在: {name}")
-    return FileResponse(path, media_type="application/yaml", filename=f"{name}.yaml")
-
-@app.post("/api/presets/{name}/export")
-def export_preset_to_data_exports(name: str, body: _PresetExportBody) -> dict[str, Any]:
-    """把当前预设表单完整参数校验后保存到 data_exports/。"""
-    DATA_EXPORTS.mkdir(parents=True, exist_ok=True)
-    try:
-        dest = _unique_data_export_path(f"{name}.yaml", (".yaml", ".yml"))
-        path = presets_io.write_preset(dest.stem, body.config, DATA_EXPORTS)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return _export_result(path)
-
-
-@app.post("/api/presets/import-from-data-exports")
-def import_preset_from_data_exports(body: _PresetImportBody) -> dict[str, Any]:
-    """从 data_exports/ 里的 yaml/json 预设导入到用户预设池。"""
-    src = _data_export_path(body.filename, (".yaml", ".yml", ".json"))
-    if not src.exists():
-        raise HTTPException(404, f"文件不存在: {body.filename}")
-    if not src.is_file():
-        raise HTTPException(400, "请选择文件")
-    try:
-        config, suggested = presets_io.parse_preset_bytes(src.read_bytes(), src.name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    if presets_io.preset_path(suggested).exists():
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"预设已存在: {suggested}",
-                "config": config,
-                "suggested_name": suggested,
-            },
-        )
-    try:
-        path = presets_io.write_preset(suggested, config)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"name": suggested, "path": str(path)}
-
-
-@app.post("/api/presets/import-from-path")
-def import_preset_from_path(body: _PresetImportFromPathBody) -> dict[str, Any]:
-    """从服务器绝对路径导入预设（yaml/yml/json）。"""
-    src = Path(body.path)
-    if not src.is_file():
-        raise HTTPException(400, f"文件不存在或不可读: {body.path}")
-    if src.suffix.lower() not in (".yaml", ".yml", ".json"):
-        raise HTTPException(400, "请选择 .yaml / .yml / .json 文件")
-    try:
-        config, suggested = presets_io.parse_preset_bytes(src.read_bytes(), src.name)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    if presets_io.preset_path(suggested).exists():
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"预设已存在: {suggested}",
-                "config": config,
-                "suggested_name": suggested,
-            },
-        )
-    try:
-        path = presets_io.write_preset(suggested, config)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"name": suggested, "path": str(path)}
-
-
-@app.post("/api/presets/import")
-async def import_preset(file: UploadFile = File(...)) -> dict[str, Any]:
-    """接 .yaml/.yml/.json 上传 → 解析 + schema 校验 → 落盘到 `suggested_name`。
-
-    无冲突 → write_preset 直接写,返回 200 `{name, path}`。
-    冲突(`suggested_name.yaml` 已存在)→ 409 + 结构化 detail
-    `{message, config, suggested_name}`,前端 ImportConflictDialog 让用户选
-    覆盖 / 另存为 / 取消,选定后走 PUT /api/presets/{name} 完成落盘。
-    解析/校验失败 → 400/422。
-    """
-    raw = await file.read()
-    try:
-        config, suggested = presets_io.parse_preset_bytes(raw, file.filename or "")
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    if presets_io.preset_path(suggested).exists():
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"预设已存在: {suggested}",
-                "config": config,
-                "suggested_name": suggested,
-            },
-        )
-    try:
-        path = presets_io.write_preset(suggested, config)
-    except presets_io.PresetError as exc:
-        raise HTTPException(status_code=_err_code(exc), detail=str(exc)) from exc
-    return {"name": suggested, "path": str(path)}
-
-
-def _err_code(exc: presets_io.PresetError) -> int:
-    """PresetError → HTTP 状态码：'不存在' → 404，名字非法/已存在 → 400，其它 → 422。"""
-    msg = str(exc)
-    if "不存在" in msg:
-        return 404
-    if "非法预设名" in msg or "已存在" in msg:
-        return 400
-    return 422
-
-
-# 旧 /api/configs/* 端点保留为 308 redirect（保护任何外部脚本）。
-# 308 保持 method + body，所以 PUT/POST/DELETE 都能透明转发。
-@app.api_route(
-    "/api/configs",
-    methods=["GET", "POST", "PUT", "DELETE"],
-    include_in_schema=False,
-)
-def _configs_root_redirect(request: Request) -> RedirectResponse:
-    qs = ("?" + request.url.query) if request.url.query else ""
-    return RedirectResponse(url=f"/api/presets{qs}", status_code=308)
-
-
-@app.api_route(
-    "/api/configs/{rest:path}",
-    methods=["GET", "POST", "PUT", "DELETE"],
-    include_in_schema=False,
-)
-def _configs_redirect(rest: str, request: Request) -> RedirectResponse:
-    qs = ("?" + request.url.query) if request.url.query else ""
-    return RedirectResponse(url=f"/api/presets/{rest}{qs}", status_code=308)
+# health / system stats / state, presets CRUD + import/export, /api/schema,
+# /api/configs/* 308 redirects 已 PR-5 commit 2 抽到 api/routers/{health,presets}.py。
+# 仍需 server.py 内的 _err_code helper 给其它 router 用？无 —— 仅 presets 内部用。
+# DuplicateRequest / PresetXxxBody pydantic 模型也已抽到 api/schemas/presets.py。
 
 
 # ---------------------------------------------------------------------------
@@ -4081,48 +3596,7 @@ def delete_queue_item(task_id: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/datasets")
-def get_datasets(path: str = "") -> dict[str, Any]:
-    """扫描数据集目录。`?path=` 指定根目录；缺省 = repo_root/dataset。"""
-    root = Path(path) if path else REPO_ROOT / "dataset"
-    if not root.is_absolute():
-        root = (REPO_ROOT / root).resolve()
-    return datasets.scan_dataset_root(root)
-
-
-@app.get("/api/browse")
-def browse_dir(path: str = "") -> dict[str, Any]:
-    """目录浏览（给前端 path picker 用）。缺省 = REPO_ROOT。
-
-    PathPicker 设计本就是给用户选外部模型路径用的（云端机器把模型放数据盘），
-    所以这里 allow_outside_repo=True；安全边界在 list_dir 本身（只读 entries
-    名字+类型，不返回内容）。
-    """
-    target = Path(path) if path else REPO_ROOT
-    if not target.is_absolute():
-        target = (REPO_ROOT / target).resolve()
-    try:
-        return browse.list_dir(target, allow_outside_repo=True)
-    except browse.BrowseError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-@app.get("/api/datasets/thumbnail")
-def get_dataset_thumbnail(folder: str, name: str) -> FileResponse:
-    """返回 dataset 缩略图（实际是原图，前端用 CSS 缩放）。
-
-    `folder` 可以是绝对路径或相对路径（用户在 dataset 浏览器里点出来的），
-    `name` 必须是单一文件名（不含分隔符）。最终路径必须在 REPO_ROOT 内。
-    """
-    _validate_component_or_400(name)
-    p = (Path(folder) / name).resolve()
-    try:
-        p.relative_to(REPO_ROOT.resolve())
-    except ValueError:
-        raise HTTPException(403, "thumbnail path outside repo")
-    if not p.exists() or p.suffix.lower() not in datasets.IMAGE_EXTS:
-        raise HTTPException(404)
-    return FileResponse(p)
+# /api/datasets, /api/browse, /api/datasets/thumbnail 已 PR-5 commit 2 抽到 api/routers/browse.py。
 
 
 # ---------------------------------------------------------------------------
@@ -4139,26 +3613,7 @@ def get_log(task_id: int) -> dict[str, Any]:
     return {"task_id": task_id, "content": text, "size": len(text.encode("utf-8"))}
 
 
-@app.get("/api/events")
-async def events(request: Request) -> StreamingResponse:
-    """SSE：广播任务状态变化事件给所有订阅者。"""
-    queue = await bus.subscribe()
-
-    async def gen() -> AsyncIterator[bytes]:
-        try:
-            yield b": connected\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    evt = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"data: {json.dumps(evt)}\n\n".encode("utf-8")
-                except asyncio.TimeoutError:
-                    yield b": keepalive\n\n"
-        finally:
-            bus.unsubscribe(queue)
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
+# /api/events SSE 已 PR-5 commit 2 抽到 api/routers/events_sse.py。
 
 
 # ---------------------------------------------------------------------------
@@ -4236,30 +3691,8 @@ def get_sample(
 # ---------------------------------------------------------------------------
 
 
-class SPAStaticFiles(StaticFiles):
-    """SPA 路由兜底：未命中实际文件且不像静态资产时，返回 index.html。
-
-    这样直接刷新 `/studio/projects/1/v/1/curate` 这种 react-router 路由
-    也能拿到 index.html，让 BrowserRouter 在前端解析路径。
-    带文件扩展名的请求（.js/.css/.png 等）保持原 404 行为，避免把缺失的
-    资源吞成 200 误导浏览器。
-    """
-
-    async def get_response(self, path, scope):  # type: ignore[override]
-        from starlette.exceptions import HTTPException as StarletteHTTPException
-        try:
-            return await super().get_response(path, scope)
-        except StarletteHTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            # 末段含 "." → 视为静态资产请求，不兜底
-            last = path.rsplit("/", 1)[-1]
-            if "." in last:
-                raise
-            return FileResponse(Path(self.directory) / "index.html")
-
-
 # React 应用：构建后通过 /studio 访问。开发期请用 `npm run dev` 起 5173。
+# `SPAStaticFiles` 已 PR-5 抽到 studio/api/static.py。
 if WEB_DIST.exists():
     app.mount(
         "/studio",
@@ -4630,27 +4063,7 @@ def root() -> RedirectResponse | JSONResponse:
 # CLI
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    import argparse
-    import uvicorn
-
-    parser = argparse.ArgumentParser(description="AnimaStudio daemon")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument(
-        "--reload", action="store_true", help="dev mode (auto-reload on edit)"
-    )
-    args = parser.parse_args()
-
-    # 真正给用户看的入口是 /studio/（前端 SPA），裸根路径只是兼容旧 monitor。
-    print(f"[AnimaStudio] http://{args.host}:{args.port}/studio/")
-    uvicorn.run(
-        "studio.server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-    )
+from .api.main import main  # noqa: E402  # PR-5 抽到 api.main，re-export 保 `from studio.server import main` 兼容
 
 
 if __name__ == "__main__":
