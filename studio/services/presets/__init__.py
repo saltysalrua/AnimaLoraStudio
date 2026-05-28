@@ -11,9 +11,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .. import presets_io, secrets
-from ..schema import TrainingConfig
-from . import model_downloader, version_config
+from . import io as presets_io
+from ... import secrets
+from ...schema import TrainingConfig
+from ..models import downloader as model_downloader
+from .. import version_config
 
 
 def _auto_sync_paths() -> bool:
