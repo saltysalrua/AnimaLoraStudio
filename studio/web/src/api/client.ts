@@ -1017,6 +1017,8 @@ export interface VersionConfigResponse {
    * 与否都返回 —— 新建预设可以在 version 已有 config 的状态下被点（覆盖
    * 当前预设），所以这个 hint 跟 has_config 状态无关。 */
   project_specific_defaults?: ConfigData
+  dropped_fields?: string[]
+  defaulted_fields?: string[]
 }
 
 export interface RegBuildRequest {
@@ -2071,7 +2073,13 @@ export const api = {
       { method: 'PUT', body: JSON.stringify(data) }
     ),
   forkPresetForVersion: (pid: number, vid: number, name: string) =>
-    req<{ has_config: true; config: ConfigData; from_preset: string }>(
+    req<{
+      has_config: true
+      config: ConfigData
+      from_preset: string
+      dropped_fields: string[]
+      defaulted_fields: string[]
+    }>(
       `/api/projects/${pid}/versions/${vid}/config/from_preset`,
       { method: 'POST', body: JSON.stringify({ name }) }
     ),
