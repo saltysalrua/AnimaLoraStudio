@@ -288,6 +288,7 @@
       },
       "optimizerType": {
         "adamw": "AdamW",
+        "automagic": "Automagic",
         "lion": "Lion",
         "prodigy": "Prodigy",
         "prodigyPlusSchedulefree": "Prodigy + Schedule-Free"
@@ -366,6 +367,12 @@
       "prodigy_safeguard_warmup": "Protect d growth during Prodigy warmup",
       "lion_beta1": "Lion β1 (momentum interpolation coefficient)",
       "lion_beta2": "Lion β2 (momentum accumulation coefficient)",
+      "automagic_min_lr": "Automagic per-parameter learning-rate floor",
+      "automagic_max_lr": "Automagic per-parameter learning-rate ceiling",
+      "automagic_lr_bump": "Automagic learning-rate adjustment step",
+      "automagic_beta2": "Automagic second-moment β2",
+      "automagic_eps": "Automagic numerical stability epsilon",
+      "automagic_clip_threshold": "Automagic update RMS clipping threshold",
       "ppsf_d_coef": "PPSF d scaling coefficient (0.5 for small datasets, 2.0 for overfitting)",
       "ppsf_prodigy_steps": "Freeze d after N PPSF steps (0 = never freeze; recommended 1/4 to 1/2 of total steps)",
       "ppsf_beta1": "PPSF Adam β1 (PPSF default 0.9)",
