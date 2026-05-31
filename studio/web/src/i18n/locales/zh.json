@@ -288,6 +288,7 @@
       },
       "optimizerType": {
         "adamw": "AdamW",
+        "lion": "Lion",
         "prodigy": "Prodigy",
         "prodigyPlusSchedulefree": "Prodigy + Schedule-Free"
       },
@@ -363,6 +364,8 @@
       "optimizer_type": "优化器（prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
       "prodigy_d_coef": "Prodigy d 缩放系数（小数据集 0.5，过拟合 2.0）",
       "prodigy_safeguard_warmup": "Prodigy warmup 期间保护 d 增长",
+      "lion_beta1": "Lion β1（动量插值系数）",
+      "lion_beta2": "Lion β2（动量累计系数）",
       "ppsf_d_coef": "PPSF d 缩放系数（小数据集 0.5，过拟合 2.0）",
       "ppsf_prodigy_steps": "PPSF 在第 N 步后冻结 d（0=不冻结；建议总步数 1/4 到 1/2）",
       "ppsf_beta1": "PPSF Adam β1（PPSF 默认 0.9）",

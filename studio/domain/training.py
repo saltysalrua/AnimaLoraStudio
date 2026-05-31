@@ -234,9 +234,9 @@ class TrainingConfig(BaseModel):
         description="最小学习率",
         json_schema_extra=_meta("training", show_when="lr_scheduler!=none", advanced=True),
     )
-    optimizer_type: Literal["adamw", "prodigy", "prodigy_plus_schedulefree"] = Field(
+    optimizer_type: Literal["adamw", "lion", "prodigy", "prodigy_plus_schedulefree"] = Field(
         "adamw",
-        description="优化器（prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
+        description="优化器（Lion 状态更省显存；prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
         json_schema_extra=_meta("training"),
     )
     prodigy_d_coef: float = Field(
@@ -248,6 +248,16 @@ class TrainingConfig(BaseModel):
         True,
         description="Prodigy warmup 期间保护 d 增长",
         json_schema_extra=_meta("training", show_when="optimizer_type==prodigy", advanced=True),
+    )
+    lion_beta1: float = Field(
+        0.9, ge=0.0, lt=1.0,
+        description="Lion β1（动量插值系数）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    lion_beta2: float = Field(
+        0.99, ge=0.0, lt=1.0,
+        description="Lion β2（动量累计系数）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
     )
     # ---------------- ProdigyPlusScheduleFree (PPSF) 专属字段 ----------------
     # 选 PPSF 时 lr_scheduler 必须为 none（Schedule-Free 不需要 scheduler，
