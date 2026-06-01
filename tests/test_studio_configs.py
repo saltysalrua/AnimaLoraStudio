@@ -37,7 +37,12 @@ def test_schema_is_complete() -> None:
     fields = TrainingConfig.model_fields
     for name in (
         "transformer_path", "data_dir", "lora_type", "lora_rank", "epochs",
+        "tlora_min_rank", "tlora_alpha_rank_scale",
         "optimizer_type", "prodigy_d_coef", "prodigy_safeguard_warmup",
+        "lr_scheduler_warmup_steps",
+        "lion_beta1", "lion_beta2",
+        "automagic_min_lr", "automagic_max_lr", "automagic_lr_bump",
+        "automagic_beta2", "automagic_eps", "automagic_clip_threshold",
         # ProdigyPlusScheduleFree 字段
         "ppsf_d_coef", "ppsf_prodigy_steps", "ppsf_beta1", "ppsf_beta2",
         "ppsf_split_groups", "ppsf_split_groups_mean", "ppsf_use_speed",
@@ -46,10 +51,19 @@ def test_schema_is_complete() -> None:
     ):
         assert name in fields, f"missing: {name}"
     assert "wandb_enabled" in fields
-    # optimizer_type Literal 包含 PPSF
+    lora_annotation = fields["lora_type"].annotation
+    lora_options = getattr(lora_annotation, "__args__", ())
+    assert "tlora" in lora_options
+    # optimizer_type Literal 包含 Lion / PPSF
+    scheduler_annotation = fields["lr_scheduler"].annotation
+    scheduler_options = getattr(scheduler_annotation, "__args__", ())
+    assert "cosine_with_warmup" in scheduler_options
     optimizer_annotation = fields["optimizer_type"].annotation
     # Literal 的 __args__ 包含所有合法值
-    assert "prodigy_plus_schedulefree" in getattr(optimizer_annotation, "__args__", ())
+    optimizer_options = getattr(optimizer_annotation, "__args__", ())
+    assert "automagic" in optimizer_options
+    assert "lion" in optimizer_options
+    assert "prodigy_plus_schedulefree" in optimizer_options
 
 
 def test_lokr_rank_allows_full_dimension_trigger() -> None:
@@ -79,6 +93,15 @@ def test_schema_carries_ui_metadata(client: TestClient) -> None:
     assert props["transformer_path"]["control"] == "path"
     assert "show_when" in props["prodigy_d_coef"]
     assert props["wandb_enabled"]["group"] == "wandb"
+    assert props["tlora_min_rank"]["show_when"] == "lora_type==tlora"
+    assert props["tlora_alpha_rank_scale"]["show_when"] == "lora_type==tlora"
+    assert props["lion_beta1"]["show_when"] == "optimizer_type==lion"
+    assert props["lion_beta2"]["show_when"] == "optimizer_type==lion"
+    assert "automagic" not in props["learning_rate"]["disable_when"]
+    assert props["lr_scheduler"]["disable_when"] == "optimizer_type==automagic||optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree"
+    assert props["lr_scheduler_warmup_steps"]["show_when"] == "lr_scheduler==cosine_with_warmup"
+    assert props["automagic_min_lr"]["show_when"] == "optimizer_type==automagic"
+    assert props["automagic_max_lr"]["show_when"] == "optimizer_type==automagic"
     # PPSF 字段都按 optimizer_type==prodigy_plus_schedulefree 显示
     for ppsf_field in (
         "ppsf_d_coef", "ppsf_prodigy_steps", "ppsf_beta1", "ppsf_beta2",
@@ -115,6 +138,14 @@ def test_prodigy_rejects_non_none_scheduler() -> None:
     """普通 Prodigy 也固定常数学习率，不允许外部 scheduler。"""
     payload = TrainingConfig().model_dump(mode="python")
     payload["optimizer_type"] = "prodigy"
+    payload["lr_scheduler"] = "cosine"
+    with pytest.raises(Exception):
+        TrainingConfig.model_validate(payload)
+
+
+def test_automagic_rejects_non_none_scheduler() -> None:
+    payload = TrainingConfig().model_dump(mode="python")
+    payload["optimizer_type"] = "automagic"
     payload["lr_scheduler"] = "cosine"
     with pytest.raises(Exception):
         TrainingConfig.model_validate(payload)

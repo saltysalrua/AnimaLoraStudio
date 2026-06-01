@@ -283,15 +283,19 @@
       "loraType": {
         "lora": "LoRA",
         "lokr": "LoKr",
-        "loha": "LoHa"
+        "loha": "LoHa",
+        "tlora": "T-LoRA"
       },
       "lrScheduler": {
         "none": "Constant",
         "cosine": "Cosine",
-        "cosineWithRestart": "Cosine with restart"
+        "cosineWithRestart": "Cosine with restart",
+        "cosineWithWarmup": "Cosine with warmup"
       },
       "optimizerType": {
         "adamw": "AdamW",
+        "automagic": "Automagic",
+        "lion": "Lion",
         "prodigy": "Prodigy",
         "prodigyPlusSchedulefree": "Prodigy + Schedule-Free"
       },
@@ -358,6 +362,8 @@
       "lora_rank": "Rank (recommended 8/16/32/64; LoKr can use a sufficiently large value to trigger full dimension)",
       "lora_alpha": "Alpha (usually same as rank; often √rank when rs_lora is enabled)",
       "lokr_factor": "LoKr decomposition factor (only when lora_type=lokr)",
+      "tlora_min_rank": "T-LoRA minimum active rank",
+      "tlora_alpha_rank_scale": "T-LoRA rank power scale",
       "lora_dora": "DoRA: direction/magnitude split training, generally considered more stable",
       "lora_rs": "rs-LoRA: scale=α/√r instead of α/r, more stable at high rank (>32)",
       "lora_dropout": "LoRA input dropout (0 disables)",
@@ -373,9 +379,18 @@
       "lr_scheduler_t0": "First cosine_with_restart cycle",
       "lr_scheduler_t_mult": "cosine_with_restart cycle multiplier",
       "lr_scheduler_eta_min": "Minimum learning rate",
+      "lr_scheduler_warmup_steps": "cosine_with_warmup warmup steps",
       "optimizer_type": "Optimizer (prodigy_plus_schedulefree is recommended for DiT LoRA; averaged weights fix Prodigy epoch style jumps)",
       "prodigy_d_coef": "Prodigy d scaling coefficient (0.5 for small datasets, 2.0 for overfitting)",
       "prodigy_safeguard_warmup": "Protect d growth during Prodigy warmup",
+      "lion_beta1": "Lion β1 (momentum interpolation coefficient)",
+      "lion_beta2": "Lion β2 (momentum accumulation coefficient)",
+      "automagic_min_lr": "Automagic per-parameter learning-rate floor",
+      "automagic_max_lr": "Automagic per-parameter learning-rate ceiling",
+      "automagic_lr_bump": "Automagic learning-rate adjustment step",
+      "automagic_beta2": "Automagic second-moment β2",
+      "automagic_eps": "Automagic numerical stability epsilon",
+      "automagic_clip_threshold": "Automagic update RMS clipping threshold",
       "ppsf_d_coef": "PPSF d scaling coefficient (0.5 for small datasets, 2.0 for overfitting)",
       "ppsf_prodigy_steps": "Freeze d after N PPSF steps (0 = never freeze; recommended 1/4 to 1/2 of total steps)",
       "ppsf_beta1": "PPSF Adam β1 (PPSF default 0.9)",

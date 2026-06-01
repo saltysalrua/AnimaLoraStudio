@@ -120,9 +120,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
         "lokr",
-        description="适配器算法（lora/lokr/loha）",
+        description="适配器算法（lora/lokr/loha/tlora）",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -139,6 +139,16 @@ class TrainingConfig(BaseModel):
         8, ge=2,
         description="LoKr 分解因子（仅 lora_type=lokr）",
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
+    )
+    tlora_min_rank: int = Field(
+        8, ge=1,
+        description="T-LoRA 低噪声时保留的最小 active rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_alpha_rank_scale: float = Field(
+        1.0, ge=0.0,
+        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向高噪声才开高 rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     lora_dora: bool = Field(
         False,
@@ -200,7 +210,7 @@ class TrainingConfig(BaseModel):
     )
     learning_rate: float = Field(
         1e-4, gt=0.0,
-        description="学习率（Prodigy 必须为 1.0）",
+        description="学习率（Automagic 作为初始每参数学习率；Prodigy 必须为 1.0）",
         json_schema_extra=_meta(
             "training",
             cli_alias="--lr",
@@ -209,14 +219,14 @@ class TrainingConfig(BaseModel):
             disable_hint="Prodigy 接管学习率",
         ),
     )
-    lr_scheduler: Literal["none", "cosine", "cosine_with_restart"] = Field(
+    lr_scheduler: Literal["none", "cosine", "cosine_with_restart", "cosine_with_warmup"] = Field(
         "none",
         description="学习率调度（none = 常数；Prodigy / PPSF 固定为 none）",
         json_schema_extra=_meta(
             "training",
-            disable_when="optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
+            disable_when="optimizer_type==automagic||optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
             disable_value="none",
-            disable_hint="Prodigy 固定为常数学习率",
+            disable_hint="自适应优化器固定为常数学习率",
         ),
     )
     lr_scheduler_t0: int = Field(
@@ -234,9 +244,14 @@ class TrainingConfig(BaseModel):
         description="最小学习率",
         json_schema_extra=_meta("training", show_when="lr_scheduler!=none", advanced=True),
     )
-    optimizer_type: Literal["adamw", "prodigy", "prodigy_plus_schedulefree"] = Field(
+    lr_scheduler_warmup_steps: int = Field(
+        100, ge=0,
+        description="cosine_with_warmup 预热步数",
+        json_schema_extra=_meta("training", show_when="lr_scheduler==cosine_with_warmup", advanced=True),
+    )
+    optimizer_type: Literal["adamw", "automagic", "lion", "prodigy", "prodigy_plus_schedulefree"] = Field(
         "adamw",
-        description="优化器（prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
+        description="优化器（Automagic/Lion 状态更省显存；prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
         json_schema_extra=_meta("training"),
     )
     prodigy_d_coef: float = Field(
@@ -248,6 +263,46 @@ class TrainingConfig(BaseModel):
         True,
         description="Prodigy warmup 期间保护 d 增长",
         json_schema_extra=_meta("training", show_when="optimizer_type==prodigy", advanced=True),
+    )
+    lion_beta1: float = Field(
+        0.9, ge=0.0, lt=1.0,
+        description="Lion β1（动量插值系数）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    lion_beta2: float = Field(
+        0.99, ge=0.0, lt=1.0,
+        description="Lion β2（动量累计系数）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    automagic_min_lr: float = Field(
+        1e-7, ge=0.0,
+        description="Automagic 每参数学习率下限",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_max_lr: float = Field(
+        1e-3, gt=0.0,
+        description="Automagic 每参数学习率上限",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_lr_bump: float = Field(
+        1e-6, ge=0.0,
+        description="Automagic 同向/反向更新时调整每参数学习率的步幅",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_beta2: float = Field(
+        0.999, ge=0.0, lt=1.0,
+        description="Automagic 二阶矩 β2",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_eps: float = Field(
+        1e-30, gt=0.0,
+        description="Automagic 数值稳定项",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_clip_threshold: float = Field(
+        1.0, gt=0.0,
+        description="Automagic update RMS 裁剪阈值",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
     )
     # ---------------- ProdigyPlusScheduleFree (PPSF) 专属字段 ----------------
     # 选 PPSF 时 lr_scheduler 必须为 none（Schedule-Free 不需要 scheduler，
@@ -491,10 +546,10 @@ class TrainingConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_prodigy_scheduler(self) -> "TrainingConfig":
         """Prodigy 系列固定使用常数学习率，外部 scheduler 统一拦截。"""
-        if self.optimizer_type in {"prodigy", "prodigy_plus_schedulefree"} and self.lr_scheduler != "none":
+        if self.optimizer_type in {"automagic", "prodigy", "prodigy_plus_schedulefree"} and self.lr_scheduler != "none":
             raise ValueError(
                 f"optimizer_type={self.optimizer_type} requires lr_scheduler=none "
-                "(Prodigy 系列固定使用常数学习率)."
+                "(自适应优化器固定使用常数学习率)."
             )
         return self
 

@@ -16,6 +16,9 @@ import torch
 from torch import nn
 
 from utils.optimizer_utils import (
+    Automagic,
+    Lion,
+    create_optimizer,
     create_prodigy_plus_schedulefree,
     get_optimizer_monitor_metrics,
     optimizer_eval_mode,
@@ -73,6 +76,77 @@ def test_eval_mode_skips_if_only_partial_methods() -> None:
 # ---------------------------------------------------------------------------
 # get_optimizer_monitor_metrics
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Lion
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Automagic
+# ---------------------------------------------------------------------------
+
+
+def test_create_automagic_optimizer_updates_parameters() -> None:
+    model = nn.Linear(2, 1, bias=False)
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+    optim = create_optimizer(
+        "automagic",
+        model.parameters(),
+        learning_rate=1e-6,
+        min_lr=1e-7,
+        max_lr=1e-3,
+        lr_bump=1e-6,
+        weight_decay=0.0,
+    )
+
+    loss = model(torch.ones(1, 2)).sum()
+    loss.backward()
+    optim.step()
+
+    assert isinstance(optim, Automagic)
+    assert not torch.allclose(model.weight, torch.ones_like(model.weight))
+    assert "lr_mask" in optim.state[model.weight]
+    assert optim.get_avg_learning_rate() >= optim.min_lr
+
+
+def test_automagic_monitor_metrics_use_dynamic_lr() -> None:
+    model = nn.Linear(2, 1)
+    optim = create_optimizer("automagic", model.parameters(), learning_rate=1e-6)
+    for p in model.parameters():
+        optim.initialize_state(p)
+    metrics = get_optimizer_monitor_metrics(optim)
+    assert metrics["lr"] == pytest.approx(1e-6)
+    assert metrics["actual_lr"] == pytest.approx(1e-6)
+
+
+def test_create_lion_optimizer_updates_parameters() -> None:
+    model = nn.Linear(2, 1, bias=False)
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+    optim = create_optimizer(
+        "lion",
+        model.parameters(),
+        learning_rate=0.1,
+        betas=(0.9, 0.99),
+        weight_decay=0.0,
+    )
+
+    loss = model(torch.ones(1, 2)).sum()
+    loss.backward()
+    optim.step()
+
+    assert isinstance(optim, Lion)
+    assert torch.allclose(model.weight, torch.full_like(model.weight, 0.9))
+    assert "exp_avg" in optim.state[model.weight]
+
+
+def test_create_lion_rejects_invalid_betas() -> None:
+    model = nn.Linear(2, 1)
+    with pytest.raises(ValueError, match="Invalid beta1"):
+        create_optimizer("lion", model.parameters(), learning_rate=1e-4, betas=(1.0, 0.99))
 
 
 def test_monitor_metrics_uses_plain_lr_for_adamw() -> None:
