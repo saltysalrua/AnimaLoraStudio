@@ -279,12 +279,14 @@
       "loraType": {
         "lora": "LoRA",
         "lokr": "LoKr",
-        "loha": "LoHa"
+        "loha": "LoHa",
+        "tlora": "T-LoRA"
       },
       "lrScheduler": {
         "none": "常数",
         "cosine": "Cosine",
-        "cosineWithRestart": "Cosine 重启"
+        "cosineWithRestart": "Cosine 重启",
+        "cosineWithWarmup": "Cosine 预热"
       },
       "optimizerType": {
         "adamw": "AdamW",
@@ -347,6 +349,8 @@
       "lora_rank": "rank（推荐 8/16/32/64；LoKr 可设足够大触发 full dimension）",
       "lora_alpha": "alpha（通常与 rank 相同；rs_lora 开启时常设为 √rank）",
       "lokr_factor": "LoKr 分解因子（仅 lora_type=lokr）",
+      "tlora_min_rank": "T-LoRA 最小 active rank",
+      "tlora_alpha_rank_scale": "T-LoRA rank 幂次缩放",
       "lora_dora": "DoRA：方向/幅度分离训练，社区共识收敛更稳",
       "lora_rs": "rs-LoRA：scale=α/√r 而非 α/r，高 rank（>32）训练更稳",
       "lora_dropout": "LoRA 输入 dropout（0 关闭）",
@@ -362,6 +366,7 @@
       "lr_scheduler_t0": "cosine_with_restart 首次周期",
       "lr_scheduler_t_mult": "cosine_with_restart 周期倍数",
       "lr_scheduler_eta_min": "最小学习率",
+      "lr_scheduler_warmup_steps": "cosine_with_warmup 预热步数",
       "optimizer_type": "优化器（prodigy_plus_schedulefree 是 DiT LoRA 训练推荐，averaged weights 解决 Prodigy 的风格突变 ep 问题）",
       "prodigy_d_coef": "Prodigy d 缩放系数（小数据集 0.5，过拟合 2.0）",
       "prodigy_safeguard_warmup": "Prodigy warmup 期间保护 d 增长",

@@ -120,9 +120,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
         "lokr",
-        description="适配器算法（lora/lokr/loha）",
+        description="适配器算法（lora/lokr/loha/tlora）",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -139,6 +139,16 @@ class TrainingConfig(BaseModel):
         8, ge=2,
         description="LoKr 分解因子（仅 lora_type=lokr）",
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
+    )
+    tlora_min_rank: int = Field(
+        8, ge=1,
+        description="T-LoRA 低噪声时保留的最小 active rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_alpha_rank_scale: float = Field(
+        1.0, ge=0.0,
+        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向高噪声才开高 rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     lora_dora: bool = Field(
         False,
@@ -209,7 +219,7 @@ class TrainingConfig(BaseModel):
             disable_hint="Prodigy 接管学习率",
         ),
     )
-    lr_scheduler: Literal["none", "cosine", "cosine_with_restart"] = Field(
+    lr_scheduler: Literal["none", "cosine", "cosine_with_restart", "cosine_with_warmup"] = Field(
         "none",
         description="学习率调度（none = 常数；Prodigy / PPSF 固定为 none）",
         json_schema_extra=_meta(
@@ -233,6 +243,11 @@ class TrainingConfig(BaseModel):
         1e-6, ge=0.0,
         description="最小学习率",
         json_schema_extra=_meta("training", show_when="lr_scheduler!=none", advanced=True),
+    )
+    lr_scheduler_warmup_steps: int = Field(
+        100, ge=0,
+        description="cosine_with_warmup 预热步数",
+        json_schema_extra=_meta("training", show_when="lr_scheduler==cosine_with_warmup", advanced=True),
     )
     optimizer_type: Literal["adamw", "automagic", "lion", "prodigy", "prodigy_plus_schedulefree"] = Field(
         "adamw",
