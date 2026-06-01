@@ -123,7 +123,9 @@ _check_venv_python_version() {
     fi
 }
 
-if [ -x "venv/bin/python" ]; then
+if [ -x "/opt/venv/bin/python" ]; then
+    PYTHON="/opt/venv/bin/python"
+elif [ -x "venv/bin/python" ]; then
     PYTHON="venv/bin/python"
     _check_venv_python_version
 elif [ -x ".venv/bin/python" ]; then
@@ -200,6 +202,10 @@ if [ "$_STALE" = "stale" ]; then
 fi
 
 echo "studio.sh: using $PYTHON"
+
+if [ -f "/.dockerenv" ] && [ "${#_PASSTHROUGH[@]}" -eq 0 ]; then
+    exec "$PYTHON" -m studio run --host 0.0.0.0 --no-browser
+fi
 
 # Restart loop (PR-A): if cli.py exits but tmp/restart is still present, loop
 # back and re-run. cli.py's own inner loop handles the common case (server
