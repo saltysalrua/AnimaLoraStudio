@@ -701,7 +701,7 @@ class TrainingConfig(BaseModel):
         description="自定义 WandB 服务地址（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
     )
-    wandb_mode: str = Field(
+    wandb_mode: Literal["", "online", "offline", "disabled"] = Field(
         "",
         description="运行模式 online/offline/disabled（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
@@ -726,7 +726,7 @@ class TrainingConfig(BaseModel):
         description="上传模型 artifact（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
     )
-    wandb_upload_model_policy: str = Field(
+    wandb_upload_model_policy: Literal["", "all", "last"] = Field(
         "",
         description="模型保留策略 all/last（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
@@ -736,7 +736,7 @@ class TrainingConfig(BaseModel):
         description="上传手动保存的训练状态 artifact（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
     )
-    wandb_upload_state_manual_policy: str = Field(
+    wandb_upload_state_manual_policy: Literal["", "all", "last"] = Field(
         "",
         description="手动状态保留策略 all/last（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
@@ -746,7 +746,7 @@ class TrainingConfig(BaseModel):
         description="上传自动保存的训练状态 artifact（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
     )
-    wandb_upload_state_auto_policy: str = Field(
+    wandb_upload_state_auto_policy: Literal["", "all", "last"] = Field(
         "",
         description="自动状态保留策略 all/last（留空使用全局设置）",
         json_schema_extra=_meta("wandb", advanced=True),
