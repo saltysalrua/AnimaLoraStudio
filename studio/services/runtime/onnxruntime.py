@@ -361,6 +361,10 @@ def current_runtime() -> dict[str, Any]:
     except ImportError:
         pass
 
+    if installed_pkg is None and process_version is not None:
+        installed_pkg = GPU_PACKAGE if "CUDAExecutionProvider" in providers else CPU_PACKAGE
+        installed_ver = process_version
+
     # 检测「pip 装的包名/版本」 vs 「进程里 import 的版本」不一致
     # （onnxruntime 是 C extension，pip 重装不会热替换已 import 的 .pyd）
     restart_required = False
