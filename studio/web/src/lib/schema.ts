@@ -35,7 +35,9 @@ export function controlKind(prop: SchemaProperty): ControlKind {
   // 解开 anyOf: [X, null] 的可空类型
   let type = prop.type
   if (!type && prop.anyOf) {
+    const hasNull = prop.anyOf.some((a) => a.type === 'null')
     const nonNull = prop.anyOf.find((a) => a.type && a.type !== 'null')
+    if (hasNull && nonNull?.type === 'boolean') return 'tristate'
     type = nonNull?.type
   }
 
