@@ -76,8 +76,8 @@ export default function SettingsDrawer() {
        *  panel 槽位无人覆盖 → 看见底层页面 / 出现黑白闪屏。 */}
       <div
         onClick={() => void close()}
-        className={`absolute inset-0 transition-[background-color,backdrop-filter,-webkit-backdrop-filter] ease-out ${
-          active ? 'bg-black/25 backdrop-blur-sm' : 'bg-black/0 backdrop-blur-0'
+        className={`absolute inset-0 transition-colors ease-out ${
+          active ? 'bg-black/35' : 'bg-black/0'
         }`}
         style={{ transitionDuration: `${ANIM_MS}ms` }}
         aria-label="close settings"
