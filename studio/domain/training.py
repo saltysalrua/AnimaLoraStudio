@@ -116,9 +116,9 @@ class TrainingConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "tlora"] = Field(
         "lokr",
-        description="适配器算法。lokr Kronecker 分解参数最省（默认）；lora 经典低秩通用；loha Hadamard 积，表达力较高但参数较多",
+        description="适配器算法。lokr Kronecker 分解参数最省（默认）；lora 经典低秩通用；loha Hadamard 积，表达力较高但参数较多；tlora 时间步自适应 rank",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -135,6 +135,16 @@ class TrainingConfig(BaseModel):
         8, ge=2,
         description="LoKr 矩阵分解因子：越大压缩越强、参数越少；越小参数越多。默认 8 适合大多数场景",
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
+    )
+    tlora_min_rank: int = Field(
+        8, ge=1,
+        description="T-LoRA 低噪声时保留的最小 active rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_alpha_rank_scale: float = Field(
+        1.0, ge=0.0,
+        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向高噪声才开高 rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     lora_dora: bool = Field(
         False,
