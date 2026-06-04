@@ -137,13 +137,17 @@ class TrainingConfig(BaseModel):
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
     )
     tlora_min_rank: int = Field(
-        8, ge=1,
-        description="T-LoRA 低噪声时保留的最小 active rank",
+        1, ge=1,
+        description="T-LoRA 高噪声时保留的最小 active rank（与论文 ControlGenAI/T-LoRA 对齐，默认 1）",
         json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     tlora_alpha_rank_scale: float = Field(
         1.0, ge=0.0,
-        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向高噪声才开高 rank",
+        description=(
+            "T-LoRA 幂次缩放（对齐官方 SDXL `alpha_rank_scale`）：1.0=线性 schedule；"
+            ">1 越偏向低噪声端才开高 rank；<1 越早开高 rank。"
+            "公式 r=(1-t)^α·(rank-min_rank)+min_rank，t 为 noise level (0=clean, 1=noisy)"
+        ),
         json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     lora_dora: bool = Field(

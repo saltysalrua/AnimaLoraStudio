@@ -229,9 +229,16 @@ class AnimaLycorisAdapter:
             self._tlora_arange = torch.arange(rank, device=device)
             for lora in self._tlora_modules:
                 lora._anima_tlora_mask = self._tlora_mask
+        # 与 ControlGenAI/T-LoRA 官方 (arxiv 2507.05964) SDXL get_mask_by_timestep
+        # 对齐: r = ((max_t - t)/max_t)^alpha * (rank - min_rank) + min_rank
+        # PR 的 sigma_t ∈ [0,1]、t=1=noisy (training_loop.py:120 锁死),
+        # 故 (max_t - t)/max_t == (1 - t)。alpha=1.0 退化为 FLUX 路径的线性 schedule。
+        # 论文 motivation: "higher diffusion timesteps are more prone to overfitting" —
+        # 高噪声 timestep 限制 rank, 低噪声 timestep 给满 rank。
         t = sigma_t.float().mean().clamp(min=0.0, max=1.0)
-        active_rank = t.pow(self.tlora_alpha_rank_scale) * (rank - self.tlora_min_rank) + self.tlora_min_rank
-        active_rank = active_rank.clamp(max=float(rank))
+        frac = (1.0 - t).pow(self.tlora_alpha_rank_scale)
+        active_rank = frac * (rank - self.tlora_min_rank) + self.tlora_min_rank
+        active_rank = active_rank.clamp(min=float(self.tlora_min_rank), max=float(rank))
         self._tlora_mask.copy_((self._tlora_arange < active_rank).to(self._tlora_mask.dtype))
 
     def clear_timestep_mask(self) -> None:
