@@ -260,15 +260,19 @@ def test_animalycoris_non_lokr_does_not_exclude_weight_decay(AnimaLycorisAdapter
 
 
 def test_tlora_mask_changes_with_sigma_and_is_not_saved(AnimaLycorisAdapter) -> None:
+    """与 ControlGenAI/T-LoRA 官方 (arxiv 2507.05964) 对齐：
+    high noise → low rank, clean → full rank。"""
     import torch
     from training.adapters.protocol import StepContext
 
     adapter = AnimaLycorisAdapter(algo="tlora", rank=8, tlora_min_rank=2, tlora_alpha_rank_scale=1.0)
     adapter._tlora_modules = [types.SimpleNamespace()]
+    # t=0 (clean) → 满 rank (frac = (1-0)^1 = 1, active = rank)
     adapter.on_step_begin(StepContext(0, 10, 0, torch.tensor([0.0]), argparse.Namespace()))
-    assert adapter._tlora_mask.tolist() == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    adapter.on_step_begin(StepContext(1, 10, 0, torch.tensor([1.0]), argparse.Namespace()))
     assert adapter._tlora_mask.tolist() == [1.0] * 8
+    # t=1 (max noise) → 只有前 min_rank=2 active (frac = (1-1)^1 = 0)
+    adapter.on_step_begin(StepContext(1, 10, 0, torch.tensor([1.0]), argparse.Namespace()))
+    assert adapter._tlora_mask.tolist() == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert adapter.state_dict() == {}
 
 

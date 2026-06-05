@@ -137,8 +137,8 @@ class TrainingConfig(BaseModel):
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
     )
     tlora_min_rank: int = Field(
-        8, ge=1,
-        description="T-LoRA 低噪声时保留的最小 active rank",
+        1, ge=1,
+        description="T-LoRA 高噪声时保留的最小 active rank",
         json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     tlora_alpha_rank_scale: float = Field(
