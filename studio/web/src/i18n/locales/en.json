@@ -1026,6 +1026,10 @@
     "currentDevLocked": "Currently on dev · cannot disable",
     "updateLogTitle": "Last update log",
     "close": "Close",
+    "onboardingSection": "First-run guide",
+    "onboardingReopenTitle": "Re-run first-run guide",
+    "onboardingReopenHelp": "Re-open the first-run install panel. Useful for checking what's not installed yet, or for filling in what you skipped.",
+    "onboardingReopen": "Re-run guide",
     "serviceRestartTitle": "Restart Studio",
     "serviceRestartHelp1": "Shut down and restart the backend process.",
     "serviceRestartHelp2": "Common use cases: force refresh after editing <code>secrets.json</code>, or apply a newly installed onnxruntime / PyTorch EP.",
@@ -2185,5 +2189,56 @@
     "processing": "Server processing…",
     "failed": "Failed",
     "etaPrefix": "ETA"
+  },
+  "onboarding": {
+    "title": "Welcome to AnimaLoraStudio",
+    "subtitle": "Here are the basics you'll want set up. Tick what you need and install them in one go. Already-installed items are auto-checked.",
+    "downloadSource": "Download source",
+    "downloadSourceHint": "Pre-selected based on your language; feel free to change. This source is used for all model downloads.",
+    "downloadSourceInstallHint": "Switching applies to downloads not yet started — current in-flight downloads keep running. To switch right now, close this guide and restart Studio.",
+    "skipWhileInstalling": "Guide closed — downloads keep running in the background. To stop them, restart Studio.",
+    "skip": "Skip",
+    "installSelected": "Install selected ({{count}})",
+    "checkingState": "Checking installed state…",
+    "finish": "Done",
+    "retry": "Retry",
+    "showLog": "Show log",
+    "hideLog": "Hide log",
+    "restart": "Restart now",
+    "restarting": "Restarting…",
+    "restartHint": "All installs done — a service restart is required to take effect",
+    "installing": {
+      "generic": "Installing…",
+      "base": "Installing: Base model bundle",
+      "tagger": "Installing: Auto-tagging",
+      "accel": "Installing: Training acceleration",
+      "upscaler": "Installing: Image upscaler"
+    },
+    "status": {
+      "checking": "Checking…",
+      "idle": "Not installed",
+      "queued": "Queued",
+      "installing": "Installing",
+      "done": "Installed",
+      "failed": "Failed"
+    },
+    "items": {
+      "base": {
+        "label": "Base model bundle",
+        "description": "Anima main + VAE + Qwen3 + T5 — the core models needed for training (about 30 GB total)"
+      },
+      "tagger": {
+        "label": "Auto-tagging",
+        "description": "WD14 model + ONNX Runtime — auto-generates tags for your training set"
+      },
+      "accel": {
+        "label": "Training acceleration (optional)",
+        "description": "Flash Attention — noticeable training speedup; skip on CPU / older GPUs where it won't build"
+      },
+      "upscaler": {
+        "label": "Image upscaler (optional)",
+        "description": "4x-AnimeSharp — upscales training images during preprocessing"
+      }
+    }
   }
 }
