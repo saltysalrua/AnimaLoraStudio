@@ -636,7 +636,20 @@ class Automagic(Optimizer):
             if isinstance(converted_state.get("lr_mask"), dict):
                 converted_state["lr_mask"] = Auto8bitTensor(converted_state["lr_mask"])
             converted["state"][param_id] = converted_state
-        return super().load_state_dict(converted)
+        result = super().load_state_dict(converted)
+        # PyTorch only moves float tensors to param device; bool state and
+        # Auto8bitTensor internals stay on CPU after load. Fix them up.
+        for group in self.param_groups:
+            for p in group["params"]:
+                st = self.state.get(p)
+                if st is None:
+                    continue
+                device = p.device
+                if isinstance(st.get("last_polarity"), torch.Tensor):
+                    st["last_polarity"] = st["last_polarity"].to(device=device)
+                if isinstance(st.get("lr_mask"), Auto8bitTensor):
+                    st["lr_mask"].quantized = st["lr_mask"].quantized.to(device=device)
+        return result
 
 
 def create_automagic(
