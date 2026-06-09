@@ -1008,7 +1008,7 @@
     "saveTestImages": {
       "title": "Save test images to disk",
       "label": "Save test images",
-      "desc": "When enabled, every generation is written to studio_data/test/<date>/{single,xy}/image_N.png. xy mode saves the composed grid; compare mode is never saved. Default: off."
+      "tooltip": "When enabled, every generation writes to studio_data/test/<date>/: single mode saves a single PNG; xy mode saves a folder (composite + per-cell PNGs, each cell is drop-into-Comfy/A1111 compatible); compare is never saved. Default: off."
     },
     "theme": "Theme",
     "themeLight": "☀ Light",
@@ -1214,6 +1214,9 @@
     "historyTask": "History #{{id}}",
     "imageCount": "{{n}} images",
     "backToCurrent": "Back to current",
+    "historyLorasMissing": "{{n}} LoRA(s) from history not found locally; please re-pick",
+    "loraNotFoundHint": "Not found locally; please re-pick",
+    "repickLora": "Re-pick",
     "emptyHint": "Fill parameters, then click “Start generate”",
     "previewStep": "Sampling {{step}} / {{total}} (intermediate preview)",
     "waitingImages": "Waiting for images…",
@@ -1324,6 +1327,8 @@
     "checkingShort": "Checking…",
     "pruneStale": "Clear stale",
     "noHistory": "No history",
+    "refreshHistory": "Refresh",
+    "refreshHistoryTitle": "Reload disk history (use after multi-tab sync or external folder changes)",
     "noExportableXyData": "No exportable XY data",
     "allCellsLoadFailed": "All cell images failed to load (the originals may have been released)",
     "canvas2dUnavailable": "canvas 2d is unavailable",
