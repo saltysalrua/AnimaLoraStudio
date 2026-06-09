@@ -1,6 +1,6 @@
 # AnimaLoraStudio
 
-[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-lightgrey)](README.md) [![English](https://img.shields.io/badge/lang-English-blue)](README.en.md) [![Version](https://img.shields.io/badge/version-0.10.3-blue)](CHANGELOG.md)
+[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-lightgrey)](README.md) [![English](https://img.shields.io/badge/lang-English-blue)](README.en.md) [![Version](https://img.shields.io/badge/version-0.12.0-blue)](CHANGELOG.md)
 
 **End-to-end pipeline**: scrape from Booru → curate → tag → reg set → train → image testing, all driven from a single browser panel. Optimized for [Anima](https://huggingface.co/circlestone-labs/Anima) (Cosmos DiT, anime-tuned) training.
 
@@ -51,11 +51,11 @@
 8-step pipeline + tool pages:
 
 1. **Download** — Booru scraping / local jpg / png / zip upload
-2. **Preprocess** (optional) — multi-tool pipeline: overview (multi-select + one-click undo) + duplicate review (perceptual-hash grouped manual review) + upscale (ESRGAN / Real-ESRGAN presets via ModelScope / HF) + crop (manual rect drawing + smart AR-clustered prefill aligned with sd-scripts training buckets) + inpaint
-3. **Curate** — dual download / train panels with multi-select copy / remove and subfolder management
+2. **Curate** — dual download / train panels with multi-select copy / remove and subfolder management
+3. **Preprocess** (optional) — overview (multi-select + one-click undo) + duplicate review + upscale (ESRGAN / Real-ESRGAN presets) + crop (manual rect drawing + smart AR-clustered prefill) + inpaint
 4. **Tag** — choose from WD14 / CLTagger / LLM with automatic GPU EP fallback; trigger_word input at the top
 5. **Tag editor** — cached mode with restore points, bulk add / delete / replace
-6. **Regularization set** (optional) — Booru reverse search / AI prior generation
+6. **Regularization set** (optional) — AI prior generation (default) / Booru reverse search; mirror + flat structures, editable with delete / auto-dedupe / dual-tagger choice
 7. **Train** — bidirectional preset flow, queues immediately on submit; config edits autosave; Simple / Advanced modes
 8. **Image testing** — single image / XY matrix / inference daemon
 
@@ -148,13 +148,14 @@ Open <http://127.0.0.1:8765/studio/>:
 1. Click "+ New project" on the projects page
 2. **① Download**: Booru scraping (fill in Gelbooru / Danbooru credentials in Settings first) or local zip upload
 3. **② Curate**: dual grid, select images to copy into train/
-4. **③ Tag**: choose WD14 / CLTagger / LLM (OpenAI-compatible, including a JoyCaption preset), set thresholds, run automatically
-5. **④ Tag editor**: bulk add / delete / replace, per-image edits, automatic restore points
-6. **⑤ Regularization set**: two generation modes —
+4. **③ Preprocess** (optional): duplicate review / upscale / crop; skip if not needed
+5. **④ Tag**: choose WD14 / CLTagger / LLM (OpenAI-compatible, including a JoyCaption preset), set thresholds, run automatically
+6. **⑤ Tag editor**: bulk add / delete / replace, per-image edits, automatic restore points
+7. **⑥ Regularization set** (optional): two generation modes —
    - **Booru reverse search**: reverse search Booru based on tag distribution, with automatic WD14 tagging and aspect-ratio clustering
    - **AI prior generation**: use the base model directly to generate the reg set (no LoRA required)
-7. **⑥ Train**: pick a preset to copy into the version's private config, edit parameters (autosaved with 600ms debounce, no save button), submit to the queue. The picker label shows "· customized" once the config has diverged from the source preset; the preset pool is never modified
-8. View tasks on the **Queue** page; open **task detail** for logs / monitoring / output (with one-click full zip download)
+8. **⑦ Train**: pick a preset to copy into the version's private config, edit parameters (autosaved with 600ms debounce, no save button), submit to the queue. The picker label shows "· customized" once the config has diverged from the source preset; the preset pool is never modified
+9. View tasks on the **Queue** page; open **task detail** for logs / monitoring / output (with one-click full zip download)
 
 After training, the sidebar **Test** page provides single-image generation / XY matrices / inference daemon for LoRA evaluation. Prompts can be pulled directly from the training set, eliminating round trips to ComfyUI.
 
@@ -178,11 +179,15 @@ AnimaLoraStudio/
 │   ├── anima_daemon.py            # Inference daemon: keeps the base model and LoRA loaded in GPU
 │   ├── anima_reg_ai.py            # AI prior generation: no LoRA, base model produces reg set
 │   └── train_monitor.py           # Training state writer
-├── studio/                        # AnimaStudio Web workbench (FastAPI + React)
-│   ├── server.py                  # Daemon entry
-│   ├── services/                  # Business logic (uploads / tagging / reg set / inference_core /
-│   │                              #   torch_setup / xformers_setup / flash_attention_setup, etc.)
-│   ├── workers/                   # Background subprocesses (download / tag / reg_build)
+├── studio/                        # AnimaStudio Web workbench (FastAPI + React) — 4-layer architecture (ADR 0008)
+│   ├── api/                       # HTTP surface: FastAPI app + 27 routers + schemas + deps + exception_handlers
+│   ├── services/                  # Business services, 11 subpackages: tagging / booru / reg / inference / models /
+│   │                              #   preprocess / projects / dataset / presets / runtime / data_io
+│   ├── domain/                    # pydantic models: TrainingConfig / LoRA / XY / Generate / RegAi + migrations
+│   ├── infrastructure/            # paths / DB / event bus / secrets / logging / argparse bridge
+│   ├── supervisor/                # Task scheduler daemon thread
+│   ├── workers/                   # 4 background subprocess entries (download / tag / reg_build / preprocess)
+│   ├── server.py                  # 51-line compatibility shim, re-exports `app` / `main` (real entries: api/app.py / api/main.py)
 │   └── web/                       # React + Vite frontend
 ├── tools/                         # User CLI / launcher-time setup helpers
 │   ├── download_models.py         # One-click download of base model / VAE / Qwen3 / T5 tokenizer
@@ -206,9 +211,11 @@ AnimaLoraStudio/
 
 Runtime data (gitignored):
 
-- `studio_data/` — SQLite + user presets + task logs + per-task monitor state + samples
-- `models/diffusion_models/`, `models/vae/`, `models/wd14/` — large weight files
+- `studio_data/` — SQLite + user presets
+- `studio_data/tasks/{id}/` — Per-training-task config snapshot + monitor state + samples + run.log (history survives version deletion)
 - `studio_data/projects/{id}-{slug}/versions/{label}/output/` — trained LoRA artifacts
+- `studio_data/projects/{id}-{slug}/versions/{label}/reg/` — regularization set (shared by tasks under that version)
+- `models/diffusion_models/`, `models/vae/`, `models/wd14/` — large weight files
 
 ---
 
@@ -260,7 +267,7 @@ Documentation entry: [docs/README.md](docs/README.md). Three sections:
 
 ## Version
 
-Current version is **0.10.3**. See [CHANGELOG.md](CHANGELOG.md) for the full history. The Settings → System → version card inside Studio allows one-click upgrade to the latest version.
+Current version is **0.12.0**. See [CHANGELOG.md](CHANGELOG.md) for the full history. The Settings → System → version card inside Studio allows one-click upgrade to the latest version.
 
 ---
 

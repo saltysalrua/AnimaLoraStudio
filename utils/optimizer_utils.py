@@ -7,8 +7,10 @@ Optimizer Utils Module - 优化器创建
 3. Prodigy (prodigyopt) - 无需调 lr 的自适应优化器
 4. ProdigyPlusScheduleFree (prodigy-plus-schedule-free) - Schedule-Free + Prodigy，
    解决 Prodigy 在扩散 LoRA 训练中的 mutation ep / 风格突变问题。
-5. Lion - 符号动量优化器，优化器状态比 AdamW 少一半。
-6. Automagic - AI Toolkit 风格的 per-parameter adaptive learning-rate 优化器。
+5. Lion - EvoLved Sign Momentum (Chen et al., 2023, arxiv 2302.06675)
+6. Automagic - Per-parameter adaptive lr via sign-agreement tracking
+   原作者: Ostris (https://github.com/ostris/ai-toolkit, MIT license, Copyright (c)
+   2024 Ostris, LLC). bf16 Kahan summation path 借鉴自 tdrussell/diffusion-pipe.
 """
 
 from __future__ import annotations
@@ -197,7 +199,7 @@ def create_optimizer(
     else:
         raise ValueError(
             f"Unknown optimizer type: {optimizer_type}. "
-            f"Choose from: adamw, adamw8bit, automagic, lion, prodigy, prodigy_plus_schedulefree"
+            f"Choose from: adamw, automagic, lion, prodigy, prodigy_plus_schedulefree"
         )
 
 
@@ -321,6 +323,38 @@ def create_standard_adamw(
     return optimizer
 
 
+# ============================================================================
+# Automagic optimizer + Auto8bitTensor helper
+#
+# Adapted from ostris/ai-toolkit (https://github.com/ostris/ai-toolkit), which
+# also flowed through tdrussell/diffusion-pipe (added Kahan summation for
+# bfloat16). The core sign-agreement schedule, 8-bit lr_mask, Adafactor-style
+# factored 2nd moment, and stochastic-rounding helpers below are Ostris's
+# design. We re-implement on top of the upstream structure and align with
+# diffusion-pipe's bf16 Kahan path.
+#
+# MIT License — Copyright (c) 2024 Ostris, LLC
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# ============================================================================
+
+
 class Auto8bitTensor:
     def __init__(self, data: torch.Tensor | dict[str, Any]) -> None:
         if isinstance(data, dict):
@@ -364,16 +398,19 @@ def _copy_stochastic(target: torch.Tensor, source: torch.Tensor) -> None:
     target.copy_(source.to(target.dtype))
 
 
-def _stochastic_grad_accumulation(param: nn.Parameter) -> None:
-    if hasattr(param, "_accum_grad"):
-        grad_fp32 = param._accum_grad.clone().to(torch.float32)
-        grad_fp32.add_(param.grad.to(torch.float32))
-        _copy_stochastic(param._accum_grad, grad_fp32)
-        del grad_fp32
-        del param.grad
-    else:
-        param._accum_grad = param.grad.clone()
-        del param.grad
+# Note on stochastic-rounding grad accumulation:
+# Upstream (ostris/ai-toolkit, tdrussell/diffusion-pipe) registers a
+# post-accumulate-grad hook to do fp32 grad accumulation with stochastic
+# rounding. We deliberately do NOT enable that path because it silently
+# breaks two common training paths:
+#   1. torch.cuda.amp.GradScaler.unscale_ skips params where p.grad is None
+#      — the hook deletes p.grad after each backward, so unscale never runs
+#      and the optimizer would step on still-scaled gradients.
+#   2. torch.nn.utils.clip_grad_norm_ skips p.grad is None, so grad clipping
+#      becomes a no-op.
+# bf16 numerical stability is instead handled inside Automagic.step via
+# Kahan compensated summation (see `shift` buffer below). See upstream
+# diffusion-pipe optimizers/automagic.py:72-79 (commented out by author).
 
 
 class Automagic(Optimizer):
@@ -422,12 +459,6 @@ class Automagic(Optimizer):
             ),
         )
         self.base_lrs = [self.lr for _ in self.param_groups]
-        self.is_stochastic_rounding_accumulation = False
-        for group in self.param_groups:
-            for param in group["params"]:
-                if param.requires_grad and param.dtype != torch.float32:
-                    self.is_stochastic_rounding_accumulation = True
-                    param.register_post_accumulate_grad_hook(_stochastic_grad_accumulation)
 
     @staticmethod
     def _rms(tensor: torch.Tensor) -> torch.Tensor:
@@ -462,15 +493,6 @@ class Automagic(Optimizer):
         lrs = self.get_learning_rates()
         return sum(lrs) / len(lrs)
 
-    def step_hook(self) -> None:
-        if not self.is_stochastic_rounding_accumulation:
-            return
-        for group in self.param_groups:
-            for param in group["params"]:
-                if param.requires_grad and hasattr(param, "_accum_grad"):
-                    param.grad = param._accum_grad
-                    del param._accum_grad
-
     def initialize_state(self, p: nn.Parameter) -> None:
         state = self.state[p]
         state["step"] = 0
@@ -487,10 +509,14 @@ class Automagic(Optimizer):
         else:
             state["exp_avg_sq"] = torch.zeros_like(p)
         state["RMS"] = 0
+        # Kahan compensated summation for bf16 — keeps the rounded-off portion
+        # of each update so it can be applied on the next step. Aligns with
+        # upstream diffusion-pipe (optimizers/automagic.py:354-356).
+        if p.dtype == torch.bfloat16 and "shift" not in state:
+            state["shift"] = torch.zeros_like(p)
 
     @torch.no_grad()
     def step(self, closure=None):
-        self.step_hook()
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -559,11 +585,33 @@ class Automagic(Optimizer):
                 state["avg_lr"] = torch.mean(new_lr)
 
                 if group["weight_decay"] != 0:
-                    p_data_fp32.add_(p_data_fp32 * (-group["weight_decay"]) * new_lr)
-                p_data_fp32.add_(-update)
+                    weight_decay_update = p_data_fp32 * (-group["weight_decay"]) * new_lr
+                else:
+                    weight_decay_update = None
 
-                if p.dtype != torch.float32:
-                    _copy_stochastic(p, p_data_fp32)
+                if p.dtype == torch.bfloat16:
+                    # Kahan compensated summation — matches upstream
+                    # diffusion-pipe (optimizers/automagic.py:308-318). Trades
+                    # one extra bf16 buffer (`state['shift']`) for unbiased,
+                    # zero-variance accumulation over long bf16 training; the
+                    # alternative stochastic-rounding path injects ~scale/2
+                    # noise per step into the lr_mask sign-agreement signal.
+                    update.mul_(-1)
+                    if weight_decay_update is not None:
+                        update.add_(weight_decay_update)
+                    shift = state.setdefault("shift", torch.zeros_like(p))
+                    shift.add_(update)
+                    # Use grad tensor as scratch buffer for the pre-update p,
+                    # so shift carries forward only the bf16 rounding error.
+                    grad.copy_(p.detach())
+                    p.add_(shift)
+                    shift.add_(grad.sub_(p))
+                else:
+                    if weight_decay_update is not None:
+                        p_data_fp32.add_(weight_decay_update)
+                    p_data_fp32.add_(-update)
+                    if p.dtype != torch.float32:
+                        _copy_stochastic(p, p_data_fp32)
 
         return loss
 
@@ -603,6 +651,15 @@ def create_automagic(
     weight_decay: float = 0.0,
     **kwargs,
 ) -> Optimizer:
+    # Automagic 上游推荐 init lr=1e-6（每参数自适应起点）；> 1e-5 量级是 AdamW
+    # 风格 lr 误用，sign-agreement 调度需要很多 step 才能从过高起点收敛回工作区间。
+    # UI 切换 optimizer_type 时会自动改写 lr=1e-6；这里兜底 saved config / CLI 路径。
+    if lr > 1e-5:
+        logger.warning(
+            "Automagic 初始 lr=%.2e 远高于推荐 1e-6；sign-agreement 自适应从过高起点"
+            "收敛慢，建议设为 1e-6（per-param lr 由 [min_lr, max_lr] 自动调）",
+            lr,
+        )
     param_list = params if _is_param_groups(params) else list(params)
     optimizer = Automagic(
         param_list,
@@ -625,6 +682,19 @@ def create_automagic(
 
 
 class Lion(Optimizer):
+    """EvoLved Sign Momentum optimizer (Chen et al., 2023).
+
+    Paper: "Symbolic Discovery of Optimization Algorithms"
+        https://arxiv.org/abs/2302.06675  (Google Brain)
+
+    Reference implementations:
+    - Google official:    https://github.com/google/automl/tree/master/lion
+    - Community PyTorch:  https://github.com/lucidrains/lion-pytorch
+
+    This is a minimal re-implementation aligning with the paper's Algorithm 1
+    and Google's reference; no dependency on `lion-pytorch`.
+    """
+
     def __init__(
         self,
         params,
@@ -682,6 +752,16 @@ def create_lion(
     weight_decay: float = 0.0,
     **kwargs,
 ) -> Optimizer:
+    # Lion 论文（Chen et al. 2023, arxiv 2302.06675 §4.3）经验：lr ≈ AdamW lr / 3，
+    # weight_decay 3-10× AdamW。从 AdamW 默认 lr=1e-4 直切 Lion 容易发散；这里在
+    # lr 落在 AdamW 量级（1e-4 及以上）时提示一下。详细见 docs/user-guide/optimizers.md。
+    if lr >= 1e-4:
+        logger.warning(
+            "Lion lr=%.2e 接近/高于 AdamW 量级；论文推荐 lr ≈ AdamW lr / 3 "
+            "（如 AdamW 1e-4 → Lion ~3e-5）。继续训练但可能发散，详见 "
+            "docs/user-guide/optimizers.md",
+            lr,
+        )
     param_list = params if _is_param_groups(params) else list(params)
     optimizer = Lion(param_list, lr=lr, betas=betas, weight_decay=weight_decay, **kwargs)
     print(f"Creating Lion optimizer (lr={lr}, betas={betas}, weight_decay={weight_decay})")

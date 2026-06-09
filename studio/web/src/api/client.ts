@@ -292,16 +292,21 @@ export interface FlashAttnInstallResult {
   restart_required: boolean
 }
 
-/** PP8 — onnxruntime 装包状态 + nvidia-smi 检测结果。 */
+/** onnxruntime 装包状态 + nvidia-smi 检测 + 平台标识（前端用来按平台 disable 按钮）。 */
 export interface WD14Runtime {
-  installed: 'onnxruntime' | 'onnxruntime-gpu' | null
+  installed: 'onnxruntime' | 'onnxruntime-gpu' | 'onnxruntime-directml' | null
   version: string | null
   providers: string[]
   cuda_available: boolean
+  /** DirectML EP 可用（Windows + 装了 onnxruntime-directml 时为 true）。 */
+  directml_available: boolean
+  /** 后端 sys.platform：'win32' / 'linux' / 'darwin' 等。Settings UI 据此 disable
+   *  跨平台不可用的按钮（DirectML 仅 Windows；GPU + nvidia-* wheel 仅 Linux 最优）。 */
+  platform: string
   /** 装的包（dist-info）与当前进程已 import 的 .pyd 不一致 → 需重启 Studio。 */
   restart_required: boolean
   /** PP9.5 — InferenceSession 创建时实际 dlopen 报的错（如缺 libcurand.so.10）；
-   *  非 null 表示已自动降级到 CPU EP，UI 应提示用户装 CUDA 库。 */
+   *  非 null 表示已自动降级到 CPU EP，UI 应提示用户装 CUDA 库或换 DirectML。 */
   cuda_load_error: string | null
   /** PP9.5 — torch 自带 CUDA so 预加载结果（Linux 才会 applied=true）。 */
   preload?: {
@@ -371,6 +376,12 @@ export interface GenerateSecretsConfig {
   /** 注意力后端默认值（design 决策：用户配置一次，不每次出图都改）。
    * Generate 页 enqueue 自动注入；Settings 训练 tab 切换。 */
   attention_backend: AttentionBackend
+  /** 测试出图 daemon 闲置 N 分钟自动卸载模型释放 VRAM。0 = 关闭，模型常驻
+   * 直到手动点"清理显存"。计时只在 idle + 模型 loaded 时跑。 */
+  idle_timeout_minutes: number
+  /** 开后每次出图自动落盘到 studio_data/test/<date>/{single,xy}/image_N.png。
+   * 默认关；compare 模式始终不落盘。 */
+  save_test_images: boolean
 }
 
 /** 系统级偏好（ADR 0002 / 0005）。update_channel 是用户视图偏好（"stable" /
@@ -388,6 +399,26 @@ export interface ProxyConfig {
     http_proxy: string;
     https_proxy: string;
     no_proxy: string;
+}
+
+/** Tag 翻译词典 — meta 字段。kind=default：来自首启自动下载或用户点 "恢复默认"；
+ *  kind=user：用户手动上传。前端 Settings UI 用 source_name / entry_count 显示。 */
+export interface TagDictionaryMeta {
+  source_name: string
+  source_url: string
+  entry_count: number
+  downloaded_at: number
+  kind: 'default' | 'user'
+}
+
+export interface TagDictionaryMetaResponse {
+  loaded: boolean
+  meta: TagDictionaryMeta | null
+}
+
+export interface TagDictionaryPayload {
+  entries: Record<string, string[]>
+  meta: TagDictionaryMeta
 }
 
 export interface Secrets {
@@ -557,19 +588,21 @@ export type VersionStatus =
   | 'canceled'
 
 /** ADR-0007 §11.3-B 新模型：version 准备 cursor（仅 status=preparing 时有意义）。
- *  按 PHASE_ORDER 顺序：curating → tagging → editing → regularizing → ready。 */
+ *  按 PHASE_ORDER 顺序：curating → preprocessing → tagging → editing →
+ *  regularizing → ready（ADR 0010 amendment 加 preprocessing）。 */
 export type VersionPhase =
   | 'curating'
+  | 'preprocessing'
   | 'tagging'
   | 'editing'
   | 'regularizing'
   | 'ready'
 
 export const PHASE_ORDER: VersionPhase[] = [
-  'curating', 'tagging', 'editing', 'regularizing', 'ready',
+  'curating', 'preprocessing', 'tagging', 'editing', 'regularizing', 'ready',
 ]
 
-export const PHASE_SKIPPABLE: VersionPhase[] = ['regularizing']
+export const PHASE_SKIPPABLE: VersionPhase[] = ['preprocessing', 'regularizing']
 
 /** ADR-0007 §11.5-A: advance / skip phase endpoint response。 */
 export interface PhaseAdvanceResult {
@@ -677,51 +710,9 @@ export interface BundleImportResult {
   }
 }
 
-// ---- preprocess (放大第一阶段) ---------------------------------------------
+// ---- preprocess (ADR 0010 train scope) -----------------------------------
 
-/** 已处理图：manifest 里 kind=processed 的 entry 拼上磁盘 stat。
- *
- *  ADR 0004 之后状态走 `preprocess/manifest.json` 单文件（无 per-image sidecar），
- *  manifest 缺字段时 source/model/... 为 null（兼容迁移自老 sidecar 的旧 entry）。 */
-export interface PreprocessedItem {
-  name: string
-  mtime: number
-  size: number
-  /** 实际像素宽 / 高（后端 PIL 读图头）。损坏 / 不存在时为 null。 */
-  w: number | null
-  h: number | null
-  /** 派生根：download/ 下原始文件名。multi-crop 同一 origin 出 N 张 entry。
-   *  老 schema 字段叫 `source`，后端两个都填同样的值，前端优先读 origin。 */
-  origin: string | null
-  /** @deprecated 兼容 0.9.x 字段名；新代码读 origin。后端两个字段值相同。 */
-  source: string | null
-  /** 以下字段都仅老 schema entry 才有，新 schema entry 一律 null。 */
-  model: string | null
-  scale: number | null
-  /** 'resize' | 'upscale' | 'upscale+resize'，新 entry 为 null。 */
-  action: string | null
-  /** 目标像素面积；null = 关闭智能模式（老路径 4×）或新 schema。 */
-  target_area: number | null
-  src_size: [number, number] | null
-  dst_size: [number, number] | null
-  elapsed_seconds: number | null
-  /** 源图（download/{origin}）已被删 → orphan=true。 */
-  orphan: boolean
-}
-
-/** 未处理图：download/ 存在、manifest 没记的图（隐式 original）。 */
-export interface PreprocessPendingItem {
-  name: string
-  mtime: number
-  size: number
-  /** download/ 下原图像素尺寸（PIL 读图头）。损坏 / 读不到时 null。前端
-   *  像素分布 histogram 需要把 pending 一起统计 — 不然 200 张里只有几张
-   *  被放大的会让 histogram 看起来空荡荡。 */
-  w: number | null
-  h: number | null
-}
-
-/** 裁剪页工作集一项：preprocess/ 当前文件名 + 像素尺寸 + 是否已处理。 */
+/** 裁剪页工作集一项（train scope，rel path 形式）：name + 像素尺寸 + 是否已处理。 */
 export interface CropWorkspaceItem {
   name: string
   /** download/ 下原图名（origin）；下游还原走这个名。 */
@@ -746,6 +737,49 @@ export interface DuplicateRemovedItem {
   size: number
 }
 
+// ---- ADR 0010 train-scope types -----------------------------------------
+
+/** ADR 0010 train scope: 列 versions/{label}/train/ 全部图 + manifest 元数据。
+ *  替代老 `{processed, pending}` 双 list 概念——新模型下 train/ 即"训练集 grid"，
+ *  状态从字段差异隐含推断（详 ADR 0010 §Manifest schema v2 + backend
+ *  `_is_processed`：扩展名变 / `_cN` 后缀 / train size != download size）。 */
+export interface TrainImage {
+  /** POSIX rel path "{N_label}/{image}"（如 "1_data/X.png"）。 */
+  name: string
+  mtime: number
+  size: number
+  /** PIL 读图头；损坏 / 物理不存在 null。 */
+  w: number | null
+  h: number | null
+  /** download/ 下原图名（无 sub-folder 结构）；restore 反查走这个。 */
+  origin: string | null
+  /** @deprecated 兼容字段；后端两个字段值相同。 */
+  source: string | null
+  /** download/{origin} 物理缺失（restore 会落 no_origin）。 */
+  orphan: boolean
+  /** 人工去重审核标记。UI 区分"训练参与" vs "审核跳过"。 */
+  duplicate_removed: boolean
+  /** ADR 0010 状态推断（backend `_is_processed`）：upscale / crop / 转码过的 train
+   *  文件 → true；curate 时复制的原样副本 → false。UI 用这个画"已处理"徽章。 */
+  processed: boolean
+  /** 老 schema 透传字段（新 entry 一律 null；前端容忍）。 */
+  model: string | null
+  scale: number | null
+  action: string | null
+  target_area: number | null
+  src_size: [number, number] | null
+  dst_size: [number, number] | null
+  elapsed_seconds: number | null
+}
+
+/** ADR 0010 §Restore 语义：restore 返三组：成功 / manifest 无 entry / download
+ *  缺失。`no_origin` 给 UI 三选项 [拖入替换 / 保留 / 移除] 用。 */
+export interface TrainRestoreResult {
+  restored: string[]
+  missing: string[]
+  no_origin: string[]
+}
+
 // ---- curation (PP3) -------------------------------------------------------
 
 /**
@@ -756,6 +790,13 @@ export interface DuplicateRemovedItem {
 export interface CurationItem {
   name: string
   mtime: number
+  /** ADR 0010 fixup（2026-06-04）：train 区项目带 download 原图文件名（按
+   *  train manifest entry.origin 反查；老项目无 manifest → fallback 用 name
+   *  自身）。Curation 右侧 thumb 走 `download` bucket + 这个 origin，显示
+   *  **预处理前的样子**——避免 multi-crop fan-out / 去重 / upscale 改字节
+   *  让筛选页缩略图"位置移动"。预处理结果用 Preprocess Overview 看。
+   *  left 区项目（download 候选）这个字段缺失/无意义。 */
+  origin?: string
 }
 
 export interface CurationView {
@@ -1078,6 +1119,11 @@ export interface LoraEntry {
   /** 来自 picker 的项目 / 版本绑定；外部文件无 */
   project_id?: number | null
   version_id?: number | null
+  /** 仅 placeholder 状态用：历史回填时 resolve 失败保留原 basename
+   *  （如 "my-lora.safetensors"），让 SidebarLoras 渲染 ⚠ placeholder 卡片
+   *  提示用户重选。`path` 非空时此字段被忽略；submit 时 path='' 的 entry
+   *  会被 `.filter(l => l.path.trim())` 跳过，不影响 daemon。 */
+  name?: string | null
 }
 
 /** XY 矩阵：单 task 内循环全图，前端按 (yi, xi) 排成 grid。
@@ -1118,6 +1164,27 @@ export interface GenerateRequest {
   attention_backend?: AttentionBackend
   /** 设值时 prompts 限单条 + count=1（schema 校验） */
   xy_matrix?: XYMatrixSpec | null
+}
+
+/** 落盘测试图历史 entry（GET /api/generate/disk-history）。
+ *  params 是 GenerateParamsSnapshot（前端用 paramsSnapshot.ts 的类型解读），
+ *  这里用 unknown 让 api/client.ts 不依赖 pages 层类型。 */
+export interface DiskGenerateHistoryEntry {
+  /** 稳定 ID："disk:<date>:<mode>:image_<N>"；前端按此 dedup */
+  id: string
+  /** YYYY-MM-DD */
+  date: string
+  mode: 'single' | 'xy'
+  filename: string
+  /** 服务端绝对路径，用于和 IDB entry.diskPath 做 dedup */
+  path: string
+  /** /api/generate/disk-image/<date>/<mode>/<filename> */
+  url: string
+  /** Unix timestamp（sidecar 写入或 fallback 文件 mtime） */
+  created_at: number
+  schema_version: number
+  /** sidecar 里的 params object（前端按 GenerateParamsSnapshot 解读） */
+  params: Record<string, unknown>
 }
 
 /** version output/ 下扫到的 training_state_step*.pt（断点续训用）。 */
@@ -1564,6 +1631,40 @@ export const api = {
   // Secrets ------------------------------------------------------------
   getSecrets: () => req<Secrets>('/api/secrets'),
 
+  // Tag dictionary -----------------------------------------------------
+  /** 当前词典 meta + 是否已加载。Settings UI 启动时 ping，决定显示"未初始化"还是详情。 */
+  getTagDictionaryMeta: () =>
+    req<TagDictionaryMetaResponse>('/api/tag-dictionary/meta'),
+  /** 完整 dict JSON (~600KB gzip)。store.ts 启动拉一次后缓存内存。 */
+  getTagDictionaryData: () =>
+    req<TagDictionaryPayload>('/api/tag-dictionary/data'),
+  /** 上传 csv/txt 替换当前词典。返回新 meta。 */
+  uploadTagDictionary: async (file: File): Promise<TagDictionaryMetaResponse> => {
+    const fd = new FormData()
+    fd.append('file', file, file.name)
+    const resp = await fetch('/api/tag-dictionary/upload', { method: 'POST', body: fd })
+    if (!resp.ok) {
+      let message = `${resp.status} ${resp.statusText}`
+      let rawDetail: unknown = null
+      try {
+        const body = await resp.json()
+        if (typeof body?.detail === 'string') message = body.detail
+        else if (body?.detail && typeof body.detail === 'object') {
+          rawDetail = body.detail
+          message = (body.detail as { message?: string }).message ?? JSON.stringify(body.detail)
+        }
+      } catch { /* 非 JSON，保留 statusText */ }
+      const err = new Error(message) as ApiError
+      err.status = resp.status
+      err.detail = rawDetail
+      throw err
+    }
+    return (await resp.json()) as TagDictionaryMetaResponse
+  },
+  /** 重新从 GitHub 拉默认词典（首次失败 / 用户想重置都走这个）。 */
+  resetTagDictionary: () =>
+    req<TagDictionaryMetaResponse>('/api/tag-dictionary/reset', { method: 'POST' }),
+
   // Models management (PP7) ------------------------------------------------
   getModelsCatalog: () => req<ModelsCatalog>('/api/models/catalog'),
   /** 当前 Settings 算出的 4 个模型字段绝对路径。预设页 reset / 新建用。 */
@@ -1782,9 +1883,11 @@ export const api = {
     + (v ? `&v=${v}` : '')
     + (raw ? '&raw=1' : ''),
 
-  // Preprocess (放大 / 裁剪 / 涂抹) ----------------------------------------
-  startPreprocess: (
+  // ---- ADR 0010 train-scope endpoints -----------------------------------
+  // PR-3 加；PR-4 前端切到这套；后续 PR-5 删老的 (`/preprocess/*` without vid)。
+  startPreprocessTrain: (
     pid: number,
+    vid: number,
     body: {
       mode: 'all' | 'selected' | 'all_force'
       names?: string[]
@@ -1792,59 +1895,51 @@ export const api = {
       tile_size?: number
       tile_pad?: number
       device?: 'auto' | 'cuda' | 'cpu'
-      /** 目标像素面积。null = 关闭智能模式，纯 4× 输出。 */
       target_area?: number | null
     },
   ) =>
-    req<Job>(`/api/projects/${pid}/preprocess/start`, {
+    req<Job>(`/api/projects/${pid}/versions/${vid}/preprocess/start`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  getPreprocessStatus: (pid: number) =>
+  getPreprocessStatusTrain: (pid: number, vid: number) =>
     req<{
       job: Job | null
       log_tail: string
       summary: { image_count: number }
-    }>(`/api/projects/${pid}/preprocess/status`),
-  listPreprocessFiles: (pid: number) =>
+    }>(`/api/projects/${pid}/versions/${vid}/preprocess/status`),
+  listPreprocessFilesTrain: (pid: number, vid: number) =>
     req<{
-      processed: PreprocessedItem[]
-      pending: PreprocessPendingItem[]
+      images: TrainImage[]
       summary: { image_count: number }
-    }>(`/api/projects/${pid}/preprocess/files`),
-  /** 还原指定产物：删 manifest entry + 删 preprocess/{name} PNG。
-   *  还原后图回到「未处理」（隐式 original）。ADR 0004。 */
-  restorePreprocessFiles: (pid: number, names: string[]) =>
-    req<{ restored: string[]; missing: string[] }>(
-      `/api/projects/${pid}/preprocess/files/restore`,
+    }>(`/api/projects/${pid}/versions/${vid}/preprocess/files`),
+  /** ADR 0010 §Restore: 从 download/{entry.origin} 复制覆盖回 train/{name}；
+   *  download 缺失返 `no_origin` 列表（UI 给三选项 [拖入替换 / 保留 / 移除]）。 */
+  restorePreprocessFilesTrain: (pid: number, vid: number, names: string[]) =>
+    req<TrainRestoreResult>(
+      `/api/projects/${pid}/versions/${vid}/preprocess/files/restore`,
       { method: 'POST', body: JSON.stringify({ names }) },
     ),
-  /** 整项目预处理状态归零：删 manifest 所有 entry + 删 preprocess/ 所有 PNG。
-   *  「总览」tab 的「撤销全部」走这个。 */
-  resetPreprocessFiles: (pid: number) =>
-    req<{ ok: boolean }>(`/api/projects/${pid}/preprocess/files/reset`, {
-      method: 'POST',
-    }),
-  /** 裁剪页工作集：所有可裁剪的图 + 像素尺寸（来自 PIL 读头）。
-   *  preprocess/ 里已处理 + download/ 里未处理的合并列表。 */
-  listCropWorkspace: (pid: number) =>
+  /** 只清 train manifest，**不动** train/ 物理文件（train 是训练数据本身）。 */
+  resetPreprocessFilesTrain: (pid: number, vid: number) =>
+    req<{ ok: boolean }>(
+      `/api/projects/${pid}/versions/${vid}/preprocess/files/reset`,
+      { method: 'POST' },
+    ),
+  listCropWorkspaceTrain: (pid: number, vid: number) =>
     req<{ images: CropWorkspaceItem[] }>(
-      `/api/projects/${pid}/preprocess/crop/workspace`,
+      `/api/projects/${pid}/versions/${vid}/preprocess/crop/workspace`,
     ),
-  /** 总览页「已删除」tab：被去重审核标记 (kind=duplicate_removed) 的 entry 列表。
-   *  恢复走 restorePreprocessFiles（restore 对 duplicate_removed entry 也 work）。 */
-  listPreprocessDuplicatesRemoved: (pid: number) =>
+  listPreprocessDuplicatesRemovedTrain: (pid: number, vid: number) =>
     req<{ images: DuplicateRemovedItem[] }>(
-      `/api/projects/${pid}/preprocess/duplicates/removed`,
+      `/api/projects/${pid}/versions/${vid}/preprocess/duplicates/removed`,
     ),
-  /** 开始裁剪 job。`crops` 为 `{源文件名: [{x,y,w,h,label?}]}`，归一化 [0..1]。
-   *  N=1 覆盖 stem.png；N>1 输出 stem_c{0..N-1}.png 并删原 stem.png。
-   *  详见 docs/design/preprocess-crop-design.md。 */
-  startPreprocessCrop: (
+  startPreprocessCropTrain: (
     pid: number,
+    vid: number,
     crops: Record<string, { x: number; y: number; w: number; h: number; label?: string }[]>,
   ) =>
-    req<Job>(`/api/projects/${pid}/preprocess/crop`, {
+    req<Job>(`/api/projects/${pid}/versions/${vid}/preprocess/crop`, {
       method: 'POST',
       body: JSON.stringify({ crops }),
     }),
@@ -1878,6 +1973,11 @@ export const api = {
     body: {
       tagger: TaggerName
       output_format?: 'txt' | 'json'
+      /**
+       * 已有 caption 文件时的策略：overwrite（默认覆盖）/ skip（保留原文件）
+       * / append（tag 级 merge + dedupe 后写回原格式）。
+       */
+      on_existing?: 'overwrite' | 'skip' | 'append'
       /**
        * wd14 本次任务的临时覆盖；仅在 worker 进程生效，不写回 settings。
        * 字段为 undefined / null 时沿用全局 settings。
@@ -2041,6 +2141,11 @@ export const api = {
   /** PR-9 — 启动测试出图 task。Phase 2 起：图走 server 内存 cache，关页面即丢。 */
   enqueueGenerate: (body: GenerateRequest) =>
     req<Task>('/api/generate', { method: 'POST', body: JSON.stringify(body) }),
+  /** 落盘历史：扫 studio_data/test/&lt;date&gt;/{single,xy}/image_N.json sidecar，
+   *  按 created_at desc 返回；用于历史栏跨会话回看已落盘的测试图。
+   *  注意路径用 disk/ 子前缀避开 `/api/generate/{task_id}` 的单段 catch-all。 */
+  listDiskGenerateHistory: (limit = 500) =>
+    req<{ entries: DiskGenerateHistoryEntry[] }>(`/api/generate/disk/history?limit=${limit}`),
   /** 查询测试 task 状态。 */
   getGenerateTask: (id: number) => req<Task>(`/api/generate/${id}`),
   /** 测试出图单张 URL（task 跑中或刚完成时拉；客户端断连 30s + LRU 后 404）。 */
@@ -2129,14 +2234,23 @@ export const api = {
       `/api/projects/${pid}/versions/${vid}/curation/folder`,
       { method: 'POST', body: JSON.stringify(body) }
     ),
-  scanDuplicates: (pid: number, body: DuplicateScanOptions) =>
+  // ADR 0010 train scope duplicates
+  scanDuplicatesTrain: (
+    pid: number,
+    vid: number,
+    body: DuplicateScanOptions,
+  ) =>
     req<DuplicateScanResult>(
-      `/api/projects/${pid}/preprocess/duplicates/scan`,
+      `/api/projects/${pid}/versions/${vid}/preprocess/duplicates/scan`,
       { method: 'POST', body: JSON.stringify(body) }
     ),
-  applyDuplicateAction: (pid: number, body: { names: string[] }) =>
+  applyDuplicateActionTrain: (
+    pid: number,
+    vid: number,
+    body: { names: string[] },
+  ) =>
     req<DuplicateApplyResult>(
-      `/api/projects/${pid}/preprocess/duplicates/apply`,
+      `/api/projects/${pid}/versions/${vid}/preprocess/duplicates/apply`,
       { method: 'POST', body: JSON.stringify(body) }
     ),
   versionThumbUrl: (
@@ -2220,12 +2334,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ files: files && files.length > 0 ? Array.from(files) : null }),
     }),
+  /** 删除 output 目录下选中的文件（批量）。relative_paths 相对 output/。
+   *  任一不存在 → 后端 404 整批拒绝，前端 toast 错误后调用方 caller 应自行刷新。 */
+  deleteTaskOutputs: (id: number, files: ReadonlyArray<string>) =>
+    req<{ deleted: string[] }>(`/api/queue/${id}/outputs`, {
+      method: 'DELETE',
+      body: JSON.stringify({ files: Array.from(files) }),
+    }),
 
   // PP8 — WD14 运行时 / GPU 装包 ------------------------------------------
   /** 当前 onnxruntime 状态：包名 / 版本 / providers / nvidia-smi 检测结果。 */
   getWD14Runtime: () => req<WD14Runtime>('/api/wd14/runtime'),
   /** 切换 onnxruntime（同步 pip，几分钟级；UI 必须带 loading）。 */
-  installWD14Runtime: (target: 'auto' | 'gpu' | 'cpu') =>
+  installWD14Runtime: (target: 'auto' | 'gpu' | 'cpu' | 'directml') =>
     req<WD14InstallResult>('/api/wd14/install', {
       method: 'POST',
       body: JSON.stringify({ target }),

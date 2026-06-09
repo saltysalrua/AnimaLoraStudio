@@ -17,6 +17,9 @@ import ImageGrid, { applySelection } from '../../../components/ImageGrid'
 import ImagePreviewModal from '../../../components/ImagePreviewModal'
 import JobProgress from '../../../components/JobProgress'
 import StepShell from '../../../components/StepShell'
+import { TranslatedTag } from '../../../components/tagDisplay/TranslatedTag'
+import { TagSuggestList } from '../../../components/tagSuggest/TagSuggestList'
+import { useTagSuggest } from '../../../components/tagSuggest/useTagSuggest'
 import { useDialog } from '../../../components/Dialog'
 import { useToast } from '../../../components/Toast'
 import { useEventStream } from '../../../lib/useEventStream'
@@ -396,7 +399,6 @@ export default function RegularizationPage() {
             {source === 'ai' ? (
               <AiForm
                 trainTags={trainTags}
-                trainImageCount={trainImageCount}
                 excluded={excluded}
                 onToggleExcluded={toggleTag}
                 neg={aiNeg} onNegChange={setAiNeg}
@@ -809,7 +811,7 @@ function Field({
 
 // AI 表单 — grp 卡：出图（常用）/ 排除 tag / 采样（进阶）
 function AiForm({
-  trainTags, trainImageCount,
+  trainTags,
   excluded, onToggleExcluded,
   neg, onNegChange,
   width, onWidthChange,
@@ -820,7 +822,6 @@ function AiForm({
   incremental, onIncrementalChange,
 }: {
   trainTags: RegTagCount[]
-  trainImageCount: number
   excluded: Set<string>
   onToggleExcluded: (tag: string) => void
   neg: string
@@ -882,12 +883,10 @@ function AiForm({
         </Field>
       </GrpCard>
 
-      <ExcludeTagsTiered
+      <ExcludeTags
         trainTags={trainTags}
-        trainImageCount={trainImageCount}
         excluded={excluded}
         onToggle={onToggleExcluded}
-        modeHint={t('reg.excludeHintAi')}
       />
 
       <GrpCard
@@ -1039,9 +1038,8 @@ function BooruForm({
         </Field>
       </GrpCard>
 
-      <ExcludeTagsTiered
+      <ExcludeTags
         trainTags={trainTags}
-        trainImageCount={trainImageCount}
         excluded={excluded}
         onToggle={onToggleExcluded}
         modeHint={t('reg.excludeHintBooru')}
@@ -1130,31 +1128,25 @@ function CheckRow({
   )
 }
 
-// 排除 tag — 按 count / trainImageCount 比例分 3 档
-function ExcludeTagsTiered({
-  trainTags, trainImageCount, excluded, onToggle, modeHint,
+// 排除 tag — train 高频 tag 一栏列出 + 自定义排除一栏
+function ExcludeTags({
+  trainTags, excluded, onToggle, modeHint,
 }: {
   trainTags: RegTagCount[]
-  trainImageCount: number
   excluded: Set<string>
   onToggle: (tag: string) => void
   modeHint?: string
 }) {
   const { t } = useTranslation()
   const [draft, setDraft] = useState('')
-  const tiers = useMemo(() => {
-    const high: RegTagCount[] = []
-    const mid: RegTagCount[] = []
-    const low: RegTagCount[] = []
-    const n = Math.max(1, trainImageCount)
-    for (const tag of trainTags) {
-      const r = tag.count / n
-      if (r >= 0.9) high.push(tag)
-      else if (r >= 0.6) mid.push(tag)
-      else low.push(tag)
-    }
-    return { high, mid, low }
-  }, [trainTags, trainImageCount])
+  const inputRef = useRef<HTMLInputElement>(null)
+  const suggest = useTagSuggest({
+    value: draft,
+    inputRef,
+    wholeAsToken: true,
+    // 选中候选时把整段 draft 替换；用户再按 Enter 走 addCustom 走 normalize → 落 booru 形态
+    onPick: ({ suggestion }) => { setDraft(suggestion.tag) },
+  })
   const trainTagSet = useMemo(
     () => new Set(trainTags.map((t) => t.tag)),
     [trainTags]
@@ -1191,28 +1183,37 @@ function ExcludeTagsTiered({
       collapsible
       defaultOpen
     >
-      <TierGroup
-        label={t('reg.tierHigh')}
-        sub={t('reg.tierHighSub')}
-        leadColor
-        tags={tiers.high}
-        excluded={excluded}
-        onToggle={onToggle}
-      />
-      <TierGroup
-        label={t('reg.tierMid')}
-        sub={t('reg.tierMidSub')}
-        tags={tiers.mid}
-        excluded={excluded}
-        onToggle={onToggle}
-      />
-      <TierGroup
-        label={t('reg.tierLow')}
-        sub={t('reg.tierLowSub')}
-        tags={tiers.low}
-        excluded={excluded}
-        onToggle={onToggle}
-      />
+      {trainTags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {trainTags.map((info) => {
+            const on = excluded.has(info.tag)
+            return (
+              <button
+                key={info.tag}
+                onClick={() => onToggle(info.tag)}
+                className={
+                  'inline-flex items-center gap-1.5 h-6 px-2.5 rounded-md font-mono text-xs cursor-pointer transition-colors border ' +
+                  (on
+                    ? 'text-accent-hover'
+                    : 'bg-sunken text-fg-secondary hover:text-fg-primary')
+                }
+                style={
+                  on
+                    ? { background: 'var(--accent-soft)', borderColor: 'rgba(237,107,58,0.42)' }
+                    : { borderColor: 'var(--border-default)' }
+                }
+                title={on ? t('reg.excludeUnclick') : t('reg.excludeClick')}
+              >
+                <span className={on ? 'text-accent' : 'text-fg-tertiary'}>
+                  {on ? '✕' : '+'}
+                </span>
+                <TranslatedTag tag={info.tag.replace(/_/g, ' ')} />
+                <span className="text-fg-disabled text-2xs">×{info.count}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       <div className="font-mono text-2xs uppercase tracking-wider text-fg-tertiary mt-4 mb-2 flex items-center gap-2">
         <span>{t('reg.tierCustom')}</span>
         <span className="flex-1 h-px bg-subtle" />
@@ -1229,7 +1230,7 @@ function ExcludeTagsTiered({
                 color: 'var(--warn)',
               }}
             >
-              {tag.replace(/_/g, ' ')}
+              <TranslatedTag tag={tag.replace(/_/g, ' ')} />
               <button
                 onClick={() => onToggle(tag)}
                 className="bg-transparent border-none cursor-pointer p-0 text-warn opacity-80"
@@ -1242,18 +1243,34 @@ function ExcludeTagsTiered({
         </div>
       )}
       <div className="flex gap-2 mt-3">
-        <input
-          className="input font-mono flex-1 text-sm"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              addCustom()
-            }
-          }}
-          placeholder={t('reg.excludePlaceholder')}
-        />
+        <div className="relative flex-1">
+          <input
+            ref={inputRef}
+            className="input font-mono w-full text-sm"
+            value={draft}
+            onChange={(e) => { setDraft(e.target.value); suggest.notifyChange() }}
+            onKeyDown={(e) => {
+              if (suggest.handleKeyDown(e)) return
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                addCustom()
+              }
+            }}
+            onFocus={() => suggest.notifyFocus()}
+            onBlur={() => suggest.notifyBlur()}
+            placeholder={t('reg.excludePlaceholder')}
+          />
+          <TagSuggestList
+            open={suggest.open}
+            suggestions={suggest.suggestions}
+            activeIdx={suggest.activeIdx}
+            onPick={(s) => suggest.pickAt(suggest.suggestions.indexOf(s))}
+            onHover={suggest.setActiveIdx}
+            inputRef={inputRef}
+            cursor={suggest.cursor}
+            positionDeps={[draft]}
+          />
+        </div>
         <button
           onClick={addCustom}
           disabled={!draft.trim()}
@@ -1263,59 +1280,6 @@ function ExcludeTagsTiered({
         </button>
       </div>
     </GrpCard>
-  )
-}
-
-function TierGroup({
-  label, sub, leadColor, tags, excluded, onToggle,
-}: {
-  label: string
-  sub?: string
-  leadColor?: boolean
-  tags: RegTagCount[]
-  excluded: Set<string>
-  onToggle: (tag: string) => void
-}) {
-  if (tags.length === 0) return null
-  return (
-    <div className="mt-3.5 first:mt-0">
-      <div className="font-mono text-2xs uppercase tracking-wider text-fg-tertiary mb-2 flex items-center gap-2">
-        <span style={leadColor ? { color: 'var(--accent)' } : undefined}>
-          {label}
-        </span>
-        {sub && <span>· {sub}</span>}
-        <span className="flex-1 h-px bg-subtle" />
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {tags.map((info) => {
-          const on = excluded.has(info.tag)
-          return (
-            <button
-              key={info.tag}
-              onClick={() => onToggle(info.tag)}
-              className={
-                'inline-flex items-center gap-1.5 h-6 px-2.5 rounded-md font-mono text-xs cursor-pointer transition-colors border ' +
-                (on
-                  ? 'text-accent-hover'
-                  : 'bg-sunken text-fg-secondary hover:text-fg-primary')
-              }
-              style={
-                on
-                  ? { background: 'var(--accent-soft)', borderColor: 'rgba(237,107,58,0.42)' }
-                  : { borderColor: 'var(--border-default)' }
-              }
-              title={on ? '点击取消排除' : '点击加入排除'}
-            >
-              <span className={on ? 'text-accent' : 'text-fg-tertiary'}>
-                {on ? '✕' : '+'}
-              </span>
-              {info.tag.replace(/_/g, ' ')}
-              <span className="text-fg-disabled text-2xs">×{info.count}</span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
   )
 }
 

@@ -55,6 +55,7 @@ def test_schema_is_complete() -> None:
     lora_options = getattr(lora_annotation, "__args__", ())
     assert "ortho" in lora_options
     assert "tlora" in lora_options
+
     # optimizer_type Literal 包含 Lion / PPSF
     scheduler_annotation = fields["lr_scheduler"].annotation
     scheduler_options = getattr(scheduler_annotation, "__args__", ())
@@ -97,6 +98,7 @@ def test_schema_carries_ui_metadata(client: TestClient) -> None:
     assert props["tlora_min_rank"]["show_when"] == "lora_type==tlora"
     assert props["tlora_alpha_rank_scale"]["show_when"] == "lora_type==tlora"
     assert props["tlora_use_ortho"]["show_when"] == "lora_type==tlora"
+
     assert props["lion_beta1"]["show_when"] == "optimizer_type==lion"
     assert props["lion_beta2"]["show_when"] == "optimizer_type==lion"
     assert "automagic" not in props["learning_rate"]["disable_when"]
@@ -104,6 +106,7 @@ def test_schema_carries_ui_metadata(client: TestClient) -> None:
     assert props["lr_scheduler_warmup_steps"]["show_when"] == "lr_scheduler==cosine_with_warmup"
     assert props["automagic_min_lr"]["show_when"] == "optimizer_type==automagic"
     assert props["automagic_max_lr"]["show_when"] == "optimizer_type==automagic"
+
     # PPSF 字段都按 optimizer_type==prodigy_plus_schedulefree 显示
     for ppsf_field in (
         "ppsf_d_coef", "ppsf_prodigy_steps", "ppsf_beta1", "ppsf_beta2",
@@ -376,6 +379,7 @@ def test_get_preset_with_warnings_reports_defaulted(
     """字段值不合法时回退默认值并列入 defaulted_fields。"""
     payload = _payload()
     payload["optimizer_type"] = "not-real"
+
     yaml_bytes = yaml.safe_dump(payload, allow_unicode=True).encode("utf-8")
     (presets_dir / "badval.yaml").write_bytes(yaml_bytes)
 
@@ -384,6 +388,7 @@ def test_get_preset_with_warnings_reports_defaulted(
     body = resp.json()
     assert "optimizer_type" in body["defaulted_fields"]
     assert body["config"]["optimizer_type"] != "not-real"
+
 
 
 def test_get_preset_without_warnings_returns_flat(
@@ -403,6 +408,7 @@ def test_tolerant_load_invalid_values(
     """跨分支预设：未知字段 + 非法值 → 都能加载，不会 500。"""
     payload = _payload()
     payload["optimizer_type"] = "lion"
+
     payload["infonoise_K"] = 0
     raw = {**payload, "nonexistent_thing": True}
     yaml_bytes = yaml.safe_dump(raw, allow_unicode=True).encode("utf-8")

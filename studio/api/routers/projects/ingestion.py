@@ -30,10 +30,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
 
 from ...errors import _validate_component_or_400  # noqa: F401  reserved for future use
-from ...responses import _thumb_response
 from ...schemas.ingestion import (
     DownloadRequest,
     EstimateRequest,
@@ -44,8 +42,7 @@ from ...schemas.ingestion import (
 )
 from ._shared import _publish_job_state, _publish_project_state
 from .... import db, secrets
-from ....services.projects import jobs as project_jobs, projects
-from ....services.dataset import scan as datasets
+from ....services.projects import jobs as project_jobs, projects, versions
 from ....paths import REPO_ROOT
 from ....services.preprocess import core as preprocess_svc
 from ....services import model_downloader
@@ -153,6 +150,10 @@ async def upload_local_files(
 
     与 booru 下载共用同一份「全量备份」目录；上传不走 job 系统，端点同步处理
     并返回 added / skipped 列表。任一文件成功即把项目 stage 推到 downloading。
+
+    复用 `gelbooru.convert_to_png` / `remove_alpha_channel` 设置：开启时上传图
+    也归一到 PNG（同 stem 加 `_1` 后缀避免 caption 撞车），与 booru 下载链路
+    保持一致。
     """
     if not files:
         raise HTTPException(400, "没有上传文件")
@@ -168,7 +169,12 @@ async def upload_local_files(
     for f in files:
         data = await f.read()
         pairs.append((f.filename or "", io.BytesIO(data)))
-    result = uploads_svc.accept_many(pairs, pdir)
+    sec = secrets.load()
+    result = uploads_svc.accept_many(
+        pairs, pdir,
+        convert_to_png=sec.gelbooru.convert_to_png,
+        remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
+    )
     return _apply_project_upload_result(pid, result)
 
 
@@ -189,8 +195,13 @@ def upload_local_file_from_path(pid: int, body: UploadFromPathBody) -> dict[str,
     if not src.is_file():
         raise HTTPException(400, "请选择文件")
     pdir = projects.project_dir(p["id"], p["slug"]) / "download"
+    sec = secrets.load()
     with src.open("rb") as fh:
-        result = uploads_svc.accept_many([(src.name, fh)], pdir)
+        result = uploads_svc.accept_many(
+            [(src.name, fh)], pdir,
+            convert_to_png=sec.gelbooru.convert_to_png,
+            remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
+        )
     return _apply_project_upload_result(pid, result)
 
 
@@ -214,17 +225,33 @@ def download_status(pid: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# /api/projects/{pid}/preprocess/* — 预处理阶段（下载与筛选之间）
-# 第一阶段只做放大（spandrel + 4x-AnimeSharp）；裁剪 / 涂抹后续 PR。
+# ADR 0010 — train-scope preprocess endpoint 群
+#
+# `/api/projects/{pid}/versions/{vid}/preprocess/*` —— scope 收窄到 train 集合，
+# 调 *_train 服务函数。
 # ---------------------------------------------------------------------------
 
 
-@router.post("/api/projects/{pid}/preprocess/start")
-def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
-    """开始预处理 job（当前只放大）。
+def _resolve_pv_or_404(pid: int, vid: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """拿 (project, version) 校验项目+版本存在且 vid 属于 pid。"""
+    with db.connection_for() as conn:
+        p = projects.get_project(conn, pid)
+        if not p:
+            raise HTTPException(404, f"项目不存在: id={pid}")
+        v = versions.get_version(conn, vid)
+        if not v or v["project_id"] != pid:
+            raise HTTPException(404, f"版本不存在: id={vid}")
+    return p, v
 
-    mode='all' 增量跳过已处理；'all_force' 全部重跑；'selected' 处理 names。
-    返回新建的 job 行。
+
+@router.post("/api/projects/{pid}/versions/{vid}/preprocess/start")
+def start_preprocess_train(
+    pid: int, vid: int, body: PreprocessStartRequest,
+) -> dict[str, Any]:
+    """ADR 0010 train scope: 对 versions/{label}/train/{folder}/ 跑 upscale。
+
+    跟老 `start_preprocess` 同样的 body schema + validation；worker 看
+    job.version_id 派发到 _run_upscale_train。
     """
     if body.mode not in ("all", "selected", "all_force"):
         raise HTTPException(400, f"未知 mode: {body.mode}")
@@ -232,15 +259,10 @@ def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
         raise HTTPException(400, "tile_size 必须 > 0")
     if body.device not in ("auto", "cuda", "cpu"):
         raise HTTPException(400, f"未知 device: {body.device}")
-    # 边界：合理面积区间 256² ~ 4096²（再大就该自己写脚本了），None 表示关闭智能模式
     if body.target_area is not None and (
         body.target_area < 256 * 256 or body.target_area > 4096 * 4096
     ):
         raise HTTPException(400, f"target_area 超出范围: {body.target_area}")
-
-    # 模型权重必须先下载（避免 worker 启起来才报错）。
-    # body.model 可以是预设 label 或 custom filename（带扩展名）；
-    # upscaler_target 内部做穿越保护 + 扩展名白名单。
     try:
         target = model_downloader.upscaler_target(body.model)
     except ValueError as exc:
@@ -251,13 +273,13 @@ def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
             f"放大器权重未下载: {body.model}（请先到「设置 → 预处理」下载）",
         )
 
+    p, v = _resolve_pv_or_404(pid, vid)
     with db.connection_for() as conn:
-        if not projects.get_project(conn, pid):
-            raise HTTPException(404, f"项目不存在: id={pid}")
         try:
-            job = preprocess_svc.start_job(
+            job = preprocess_svc.start_job_train(
                 conn,
                 project_id=pid,
+                version_id=vid,
                 mode=body.mode,
                 names=body.names,
                 model=body.model,
@@ -272,15 +294,14 @@ def start_preprocess(pid: int, body: PreprocessStartRequest) -> dict[str, Any]:
     return job
 
 
-@router.get("/api/projects/{pid}/preprocess/status")
-def preprocess_status(pid: int) -> dict[str, Any]:
-    """返回最新 preprocess job + 日志尾 + 概要统计。"""
+@router.get("/api/projects/{pid}/versions/{vid}/preprocess/status")
+def preprocess_status_train(pid: int, vid: int) -> dict[str, Any]:
+    """最新 train-scope preprocess job + 日志尾 + train summary。"""
+    p, v = _resolve_pv_or_404(pid, vid)
     with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-        if not p:
-            raise HTTPException(404, f"项目不存在: id={pid}")
         job = project_jobs.latest_for(
-            conn, project_id=pid, kind=preprocess_svc.PREPROCESS_KIND
+            conn, project_id=pid, version_id=vid,
+            kind=preprocess_svc.PREPROCESS_KIND,
         )
     log_tail = ""
     if job:
@@ -289,87 +310,66 @@ def preprocess_status(pid: int) -> dict[str, Any]:
             try:
                 text = log_path.read_text(encoding="utf-8", errors="replace")
                 log_tail = "\n".join(text.splitlines()[-50:])
-            except Exception:
+            except Exception:  # noqa: BLE001
                 log_tail = ""
     return {
         "job": job,
         "log_tail": log_tail,
-        "summary": preprocess_svc.summary(p),
+        "summary": preprocess_svc.summary_train(p, v["label"]),
     }
 
 
-@router.get("/api/projects/{pid}/preprocess/files")
-def list_preprocess_files(pid: int) -> dict[str, Any]:
-    """返回 preprocess/ 已处理产物 + download/ 里还没处理的源。"""
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
+@router.get("/api/projects/{pid}/versions/{vid}/preprocess/files")
+def list_preprocess_files_train(pid: int, vid: int) -> dict[str, Any]:
+    """train scope: 列 versions/{label}/train/ 全部图 + manifest 元数据。
+
+    新模型下 list_pending / list_processed 二元概念消失（详 ADR 0010
+    §Manifest schema v2）；统一返回 `images` 列表，前端按 entry 字段差异
+    渲染状态徽章。response 仍含 `summary` 跟老 endpoint 一致。
+    """
+    p, v = _resolve_pv_or_404(pid, vid)
     return {
-        "processed": preprocess_svc.list_processed(p),
-        "pending": preprocess_svc.list_pending(p),
-        "summary": preprocess_svc.summary(p),
+        "images": preprocess_svc.list_train_images(p, v["label"]),
+        "summary": preprocess_svc.summary_train(p, v["label"]),
     }
 
 
-@router.get("/api/projects/{pid}/preprocess/duplicates/removed")
-def list_duplicate_removed(pid: int) -> dict[str, Any]:
-    """总览页「已删除」tab：列出被去重审核标记的 manifest entries。
-
-    返回 `{images: [{name, source, w, h, mtime, size}, ...]}`。物理图仍在
-    `download/{source}`，缩略图按 download bucket + source 取。恢复走
-    `POST /api/projects/{pid}/preprocess/files/restore`（restore() 对
-    duplicate_removed entry 也 work：删 entry，没 PNG 时静默跳过）。
-    """
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
-    return {"images": preprocess_svc.list_duplicate_removed_workspace(p)}
+@router.get("/api/projects/{pid}/versions/{vid}/preprocess/duplicates/removed")
+def list_duplicate_removed_train(pid: int, vid: int) -> dict[str, Any]:
+    """train scope: 「已删除」tab 列被去重审核标记的 manifest entries。"""
+    p, v = _resolve_pv_or_404(pid, vid)
+    return {
+        "images": preprocess_svc.list_duplicate_removed_workspace_train(
+            p, v["label"]
+        ),
+    }
 
 
-@router.get("/api/projects/{pid}/preprocess/crop/workspace")
-def list_crop_workspace(pid: int) -> dict[str, Any]:
-    """裁剪页工作集：返回所有可裁剪的图 + 像素尺寸。
-
-    包含两类：
-    - preprocess/ 里已处理的图（origin 指 download/ 原图）
-    - download/ 里未处理的图（裁剪页把"未放大"图当 1× pass-through）
-
-    返回 `{images: [{name, source, w, h, mtime, size, processed}, ...]}`。
-    """
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
-    return {"images": preprocess_svc.list_crop_workspace(p)}
+@router.get("/api/projects/{pid}/versions/{vid}/preprocess/crop/workspace")
+def list_crop_workspace_train_endpoint(pid: int, vid: int) -> dict[str, Any]:
+    """train scope: 裁剪页工作集 = train/{folder}/{image} 全部 + 像素尺寸 +
+    processed 标记。"""
+    p, v = _resolve_pv_or_404(pid, vid)
+    return {"images": preprocess_svc.list_crop_workspace_train(p, v["label"])}
 
 
-@router.post("/api/projects/{pid}/preprocess/crop")
-def start_preprocess_crop(
-    pid: int, body: PreprocessCropRequest,
+@router.post("/api/projects/{pid}/versions/{vid}/preprocess/crop")
+def start_preprocess_crop_train(
+    pid: int, vid: int, body: PreprocessCropRequest,
 ) -> dict[str, Any]:
-    """开始裁剪 job。
-
-    `crops`: `{源文件名: [{x,y,w,h,label?}], ...}`，每条 rect 归一化 [0..1]。
-    源文件名为 preprocess/ 下当前文件名（worker 兜底 download/）。
-
-    返回新建的 job 行。worker 切 PNG + 更新 manifest（多裁剪走 fan-out 命名
-    `{stem}_c{n}.png` 并删原 `{stem}.png`）。详见 docs/design/preprocess-crop-design.md。
-    """
+    """train scope: 创建 crop job。`crops` 的源文件名是 train rel path
+    （`"1_data/X.png"`，跟 list_crop_workspace_train 返回 `name` 一致）。"""
     if not body.crops:
         raise HTTPException(400, "crops 不能为空")
+    _resolve_pv_or_404(pid, vid)
+    crops_payload: dict[str, list[dict[str, Any]]] = {
+        name: [r.model_dump() for r in rects]
+        for name, rects in body.crops.items()
+    }
     with db.connection_for() as conn:
-        if not projects.get_project(conn, pid):
-            raise HTTPException(404, f"项目不存在: id={pid}")
-        # Pydantic 模型转成 dict 喂业务层（业务层会再做一次校验 + clamp）
-        crops_payload: dict[str, list[dict[str, Any]]] = {
-            name: [r.model_dump() for r in rects]
-            for name, rects in body.crops.items()
-        }
         try:
-            job = preprocess_svc.start_crop_job(
-                conn, project_id=pid, crops=crops_payload,
+            job = preprocess_svc.start_crop_job_train(
+                conn, project_id=pid, version_id=vid, crops=crops_payload,
             )
         except preprocess_svc.PreprocessError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -377,40 +377,32 @@ def start_preprocess_crop(
     return job
 
 
-@router.post("/api/projects/{pid}/preprocess/files/reset")
-def reset_preprocess_files(pid: int) -> dict[str, Any]:
-    """整项目预处理状态归零：删 manifest 所有 entry + 删 preprocess/ 所有 PNG。
-
-    工具栏「总览」tab 的「撤销全部」走这个；下游 resolver 回看 download/ 原图。
-    `preprocess_manifest.clear_all` 已存在；这里只是 HTTP 入口 + 项目存在校验。
+@router.post("/api/projects/{pid}/versions/{vid}/preprocess/files/reset")
+def reset_preprocess_files_train(pid: int, vid: int) -> dict[str, Any]:
+    """train scope: 清空 train manifest 状态（**不动** train/ 物理文件，详
+    ADR 0010 §train_clear_all 决策）。下游 list_train_images 仍能列物理图，
+    只是 entry 元数据没了；UI 走未处理状态徽章。
     """
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
+    p, v = _resolve_pv_or_404(pid, vid)
     pdir = projects.project_dir(p["id"], p["slug"])
-    preprocess_manifest.clear_all(pdir)
+    preprocess_manifest.train_clear_all(pdir, v["label"])
     _publish_project_state(p)
     return {"ok": True}
 
 
-@router.post("/api/projects/{pid}/preprocess/files/restore")
-def restore_preprocess_files(
-    pid: int, body: PreprocessRestoreRequest,
+@router.post("/api/projects/{pid}/versions/{vid}/preprocess/files/restore")
+def restore_preprocess_files_train(
+    pid: int, vid: int, body: PreprocessRestoreRequest,
 ) -> dict[str, Any]:
-    """还原指定产物：删 manifest entry + 删 preprocess/{name} PNG。
-
-    还原后图回到「未处理」（隐式 original）状态。下游 resolver 重新指向
-    download/{原名}。见 ADR 0004。
+    """train scope restore: 从 `download/{entry.origin}` 复制覆盖回
+    `train/{name}`。返回 `{restored, missing, no_origin}` 三组（详 ADR 0010
+    §Restore 语义）；`no_origin` 给前端三选项 UI [拖入替换 / 保留 / 移除] 用。
     """
     if not body.names:
-        return {"restored": [], "missing": []}
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
+        return {"restored": [], "missing": [], "no_origin": []}
+    p, v = _resolve_pv_or_404(pid, vid)
     try:
-        res = preprocess_svc.restore_products(p, body.names)
+        res = preprocess_svc.restore_products_train(p, v["label"], body.names)
     except preprocess_svc.PreprocessError as exc:
         raise HTTPException(400, str(exc)) from exc
     if res["restored"]:
@@ -418,25 +410,3 @@ def restore_preprocess_files(
     return res
 
 
-@router.get("/api/projects/{pid}/preprocess/thumb")
-def preprocess_thumb(
-    pid: int, name: str = "", size: int = 256,
-) -> FileResponse:
-    """[Deprecated] preprocess/ 目录的缩略图。
-
-    ADR 0004 之后 `/api/projects/{pid}/thumb?bucket=download&name=<original>`
-    自带 manifest resolve，前端走那个就够；此端点保留只为兼容旧 URL（仍按
-    传入的 preprocess/{name} 直读，不绕 manifest）。
-    """
-    if "/" in name or "\\" in name or ".." in name or not name:
-        raise HTTPException(400, "invalid name")
-    with db.connection_for() as conn:
-        p = projects.get_project(conn, pid)
-    if not p:
-        raise HTTPException(404, f"项目不存在: id={pid}")
-    _, pre = preprocess_svc.project_paths(p)
-    f = pre / name
-    if not f.exists() or f.suffix.lower() not in datasets.IMAGE_EXTS:
-        logger.info("preprocess thumb 404: pid=%s name=%s -> %s", pid, name, f)
-        raise HTTPException(404)
-    return _thumb_response(f, size)

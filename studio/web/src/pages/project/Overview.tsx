@@ -25,6 +25,7 @@ import {
 } from '../../api/client'
 import VersionStatusBadge from '../../components/VersionStatusBadge'
 import BarHistogram from '../../components/BarHistogram'
+import { TranslatedTag } from '../../components/tagDisplay/TranslatedTag'
 import ImageGrid, { type ImageGridItem } from '../../components/ImageGrid'
 import ImagePreviewModal from '../../components/ImagePreviewModal'
 import { OutputsTab } from '../QueueDetail'
@@ -311,11 +312,12 @@ function BannerProgress({
 }
 
 const PHASE_ORDER_TIMELINE: { id: VersionPhase; n: string; key: string }[] = [
-  { id: 'curating',     n: '①', key: 'nav.curate' },
-  { id: 'tagging',      n: '②', key: 'nav.tag' },
-  { id: 'editing',      n: '③', key: 'nav.tagEdit' },
-  { id: 'regularizing', n: '④', key: 'nav.reg' },
-  { id: 'ready',        n: '⑤', key: 'nav.train' },
+  { id: 'curating',      n: '①', key: 'nav.curate' },
+  { id: 'preprocessing', n: '②', key: 'nav.preprocess' },
+  { id: 'tagging',       n: '③', key: 'nav.tag' },
+  { id: 'editing',       n: '④', key: 'nav.tagEdit' },
+  { id: 'regularizing',  n: '⑤', key: 'nav.reg' },
+  { id: 'ready',         n: '⑥', key: 'nav.train' },
 ]
 
 function PhaseTimeline({
@@ -599,11 +601,12 @@ function StatusBanner({
 
 /** phase enum → URL step key（StatusBanner 内用，独立于 sidebar 的同名 map）。 */
 const PHASE_TO_STEP_LOCAL: Record<VersionPhase, string> = {
-  curating:     'curate',
-  tagging:      'tag',
-  editing:      'edit',
-  regularizing: 'reg',
-  ready:        'train',
+  curating:      'curate',
+  preprocessing: 'preprocess',
+  tagging:       'tag',
+  editing:       'edit',
+  regularizing:  'reg',
+  ready:         'train',
 }
 
 /** cursor 校验：preparing 态下只允许 cursor 及之前的 phase（cursor+1 也禁，
@@ -929,7 +932,7 @@ function TagDistCard({ project, version }: { project: ProjectDetail; version: Ve
                   color: isTrigger ? 'var(--accent)' : 'var(--fg-primary)',
                   fontWeight: isTrigger ? 700 : 500,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>{isTrigger ? '★ ' : ''}{row.tag}</span>
+                }}>{isTrigger ? '★ ' : ''}<TranslatedTag tag={row.tag} /></span>
                 <span style={{
                   position: 'relative', zIndex: 1,
                   fontSize: 'var(--t-xs)',
@@ -1023,32 +1026,36 @@ function RegTileCard({
 function DetailGrid({ project, version }: { project: ProjectDetail; version: Version | null }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const vid = version?.id
 
-  // preprocess 项目级 — 像素 hist 数据源
+  // ADR 0010: preprocess 已下沉 version scope；project 概览 hist 用 active
+  // version 的 train 数据。没 active version → 空。
   const [preprocessItems, setPreprocessItems] = useState<Array<{ w: number | null; h: number | null }>>([])
   useEffect(() => {
+    if (vid == null) { setPreprocessItems([]); return }
     let cancelled = false
-    void api.listPreprocessFiles(project.id)
+    void api.listPreprocessFilesTrain(project.id, vid)
       .then((res) => {
         if (cancelled) return
-        setPreprocessItems([...res.processed, ...res.pending])
+        setPreprocessItems(res.images.map((i) => ({ w: i.w, h: i.h })))
       })
       .catch(() => { if (!cancelled) setPreprocessItems([]) })
     return () => { cancelled = true }
-  }, [project.id])
+  }, [project.id, vid])
 
-  // crop workspace 项目级 — 长宽比 hist 数据源
+  // crop workspace - 长宽比 hist 数据源（train scope）
   const [cropItems, setCropItems] = useState<Array<{ w: number; h: number }>>([])
   useEffect(() => {
+    if (vid == null) { setCropItems([]); return }
     let cancelled = false
-    void api.listCropWorkspace(project.id)
+    void api.listCropWorkspaceTrain(project.id, vid)
       .then((res) => {
         if (cancelled) return
         setCropItems(res.images.map((i) => ({ w: i.w, h: i.h })))
       })
       .catch(() => { if (!cancelled) setCropItems([]) })
     return () => { cancelled = true }
-  }, [project.id])
+  }, [project.id, vid])
 
   const pixelBins = useMemo(
     () => computePixelHist(preprocessItems).map((b) => ({ key: b.id, label: b.label, n: b.n })),
@@ -1080,14 +1087,14 @@ function DetailGrid({ project, version }: { project: ProjectDetail; version: Ver
           title={t('overview.detail.resolutionDist')}
           bins={pixelBins}
           emptyHint={t('overview.detail.emptyResolution')}
-          action={{ label: `② ${t('nav.preprocess')}`, onClick: () => navigate(`/projects/${project.id}/preprocess?tool=upscale`) }}
+          action={version ? { label: `② ${t('nav.preprocess')}`, onClick: () => navigate(`/projects/${project.id}/v/${version.id}/preprocess?tool=upscale`) } : undefined}
           phase={`② ${t('nav.preprocess')}`}
         />
         <HistTileCard
           title={t('overview.detail.aspectDist')}
           bins={arBins}
           emptyHint={t('overview.detail.emptyAspect')}
-          action={{ label: `② ${t('nav.preprocess')}`, onClick: () => navigate(`/projects/${project.id}/preprocess?tool=crop`) }}
+          action={version ? { label: `② ${t('nav.preprocess')}`, onClick: () => navigate(`/projects/${project.id}/v/${version.id}/preprocess?tool=crop`) } : undefined}
           phase={`② ${t('nav.preprocess')}`}
         />
         <RegTileCard

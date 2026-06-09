@@ -6,6 +6,295 @@
 
 ---
 
+## [0.12.0] — 2026-06-05
+
+预处理范围下沉到 train version（ADR 0010）+ Lion / Automagic 优化器 + tag 翻译词典 / 全前端 autocomplete + WandB artifact 上传 + InfoNoise 算法对齐
+
+### 新增
+
+- **Lion / Automagic 优化器 + cosine_with_warmup scheduler（#214）**
+  - **Lion**（Chen et al. 2023, arxiv 2302.06675）：sign-momentum 优化器，状态比 AdamW 少一半显存；公式逐行对齐 Google reference impl 与 lucidrains/lion-pytorch。
+  - **Automagic**：AI Toolkit 风格 per-parameter adaptive lr + sign-agreement 追踪 + Adafactor factored 2nd moment + 8-bit lr_mask；核心 1:1 对齐 tdrussell/diffusion-pipe `optimizers/automagic.py`。新增依赖 `optimum-quanto>=0.2.0`。bf16 path 用 Kahan compensated summation 替代 stochastic rounding，避免每步 ~scale/2 噪声注入 lr_mask；故意不注册 `grad-accum hook`，绕过上游会与 `GradScaler.unscale_` / `clip_grad_norm_` 静默失效的冲突。
+  - **cosine_with_warmup**：LambdaLR-based cosine schedule + linear warmup + eta_min floor；warmup 用 step 0-indexed，与 transformers / diffusers / PEFT / sd-scripts 全社区约定一致。
+
+- **Tag 翻译词典 + 全前端 autocomplete（#225）**
+  - **默认词典**：首次启动后台拉 Physton/sd-webui-prompt-all-in-one-assets `danbooru.zh_CN.csv`（~25k 条 zh 翻译，~3MB，**不进仓库**），失败时 Settings 提供「恢复默认词典」重试。
+  - **chip 翻译显示**：TagEditor / TagsInput / BulkActionBar dropdown / TagStatsPanel / Overview 标签分布 / Regularization 排除 tag 6 处统一显示中文翻译；首次按 i18n 语言决定默认是否开（`zh*` → on，否则 off）。
+  - **Autocomplete 输入**：6 处 input/textarea 接补全 — TagEditor chip + 文本模式、TagsInput（Settings + Tagging blacklist）、TagStatsPanel inline rename、Regularization 自定义排除、Generate 正向 / 负向 prompt；中文输入支持反向查英文 tag。
+  - **Settings 新增 tag-dictionary section**：当前词典 meta / 上传 csv 替换 / 恢复默认 / 显示翻译 toggle。
+
+- **WandB 加 LoRA / training state artifact 上传 + Settings / preset 覆盖（#146）**
+  WandB 集成不只是 metrics / sample log：
+  - 新增三类 artifact 上传：LoRA 模型、手动 training state、自动 training state。
+  - per-category retention：`all` 保留全部版本 / `last` 仅保留最新（旧版本在新版本上传成功后从 artifact collection 自动清理）。
+  - 配置可在全局 Settings 设默认，preset 字段留空自动回退到 Settings，便携 / 云端 preset 不必重复填 WandB 配置。
+  - 上传路径用 `run.log_artifact(...).wait()` 等完成才清理，避免对 draft artifact 操作；大文件加周期性进度日志。
+
+- **Outputs 加批量删除 + 复制路径 / 打开文件夹按钮文案样式统一（#217, #224）**
+  Queue 任务详情页 + 项目 Overview 共用的「输出」面板：
+  - 批量模式新增「删除所选 (n)」，二次确认后按相对路径删；任一文件不存在 → 整批 404 拒绝不留半删状态。
+  - 按钮文案：「复制」→「复制路径」、「打开」→「打开文件夹」。
+  - 按钮样式：「打开文件夹」从 `btn-secondary` 改 `btn-ghost`，跟旁边复制 / 刷新对齐；「删除所选」从 `btn-danger` 红填充改 `btn-ghost text-err`，危险提示只留文字色。
+
+- **训练 / 预设页右栏加 SchemaForm 章节锚点 nav（#224）**
+  - 训练页右栏 stats panel 之下、预设页右侧新增 sticky 章节索引；点击平滑滚动到 SchemaForm 对应 group，scroll 时当前 group 自动高亮。
+  - 训练 / 预设页主区比例从 `1.5fr:1fr` 调整为 `3fr:1fr`，给字段输入框更多舒展空间。
+
+### 变更
+
+- **预处理范围下沉到 train version + 加 preprocessing phase（ADR 0010）（#209-#213）**
+  ADR 0010 把预处理（去重 / 放大 / 裁剪）的工作范围从项目级 `download/` 整集下沉到训练 version 级 `train/`，路径与服务端 API 全套切换。
+
+  - **Sidebar 步骤顺序换**：① 下载 / ② 筛选 / ③ 预处理（可选）/ ④ 打标 ... ⑦ 训练。预处理从「下载之后整集做」变成「筛选完每个 train version 自己做」，跟正则集同 pattern「可选 + 可跳过」。
+  - **预处理 grid 是当前 version 的 train 集**：不再展示 download 全集；同一项目不同 version 可独立去重 / 放大 / 裁剪。
+  - **路径变化**：URL 从 `/projects/:pid/preprocess` 改 `/projects/:pid/v/:vid/preprocess`；老书签自动 redirect 到当前 active version。
+  - **老项目自动迁移**：进入新版本后 `_v11` 迁移把已有 `train/{sub-folder}/` 非空的 version phase 从 `curating` 推进到 `preprocessing`，旧 `projects/{id}/preprocess/manifest.json` 在选 version 时被 lazy 转换成 `versions/{label}/train/manifest.json`，无感知。
+  - **restore 行为改**：恢复某张图时，从 `download/{origin}` 复制覆盖回 `train/{name}`；若 download 已不存在，UI 列出「无 origin」列表让用户决定拖入替换 / 保留 / 移除（老版本会直接报 missing）。
+  - 旧 `/api/projects/{pid}/preprocess/*` 端点 / 老 `preprocess_worker.run` project-scope 分发整套删除（ADR 0010 PR-5）。第三方脚本调老 URL 的需切到 version-scope 路径。
+
+- **noise_enhancement 描述重写 + pyramid 默认 0.5 + 与 InfoNoise 加互斥（#220）**
+  三轮经验性调研后改写 `noise_enhancement_type` / `noise_offset` / `pyramid_noise_*` 描述与默认值：
+  - **`pyramid_noise_discount` 默认 0.35 → 0.5**：旧默认让 `noise_enhancement_type=pyramid` 实际无 op（anima 的 `cur / cur.std()` 归一化会把 ≤0.4 discount 抵消回 baseline）；0.5 起 pyramid noise 才真生效。已显式填值的 yaml 不动；只有 fallback-to-default 才漂移。
+  - **描述去 SD/DDPM 时代经验**：`noise_offset` 明示 0-0.2 范围，<0.05 等同 off，>0.1 显著抬初始 loss；`pyramid_noise_iters` 明示 0-6 控制频段覆盖；`pyramid_noise_discount` 明示 0.1-0.4 等同 off，0.5-0.7 显著改低频结构。
+  - **`noise_enhancement_type != none` 与 InfoNoise 加 schema 互斥**：补完 InfoNoise 4 对互斥（与 `loss_weighting` / `loss_type=huber` / `timestep_schedule_shift` 已在 #216 落地）。InfoNoise 的 I-MMSE 推导假设标准高斯噪声 — `noise_enhancement_type` 会改噪声场让学到的 schedule 偏离 paper-optimal 形态。
+  - **老 config 不自动迁移**：旧 yaml 同时 `infonoise_enabled=true` + 4 个互斥字段任一在 `TrainingConfig(...)` 实例化时直接 `ValueError`；报错文案点出冲突字段并给二选一选项「(a) 关 InfoNoise 保留 X；或 (b) X 改回默认走 InfoNoise」。
+
+- **Reg 排除 train top tag 改单列频次降序 + 删 hint（#218）**
+  Reg 页「排除 train top tag」卡之前按出现率分高 / 中 / 低三档显示并带副标题；用户反馈分档对实际选择无帮助。本版改成一栏按 count 降序铺开 tag chip，AI 模式 meta 行去掉「反向出图把概念推回 base」hint，只留「已排除 N」计数。
+
+### 改进
+
+- **lycoris LoRA forward 默认走 bypass_mode，约 1.8x 加速（#196）**
+  Issue #182：相同模型 / 配置（rank=8 / batch=1 / Anima 1024）AnimaLoraStudio 0.11 it/s 比 sd-scripts 0.19 it/s 慢约 1.8x。根因 lycoris `LoConModule.forward` 默认路径每步做一遍 full-rank `F.linear` + 重建 `(out, in)` ΔW 矩阵；280 层 patch 累计开销显著。本版默认走 lycoris 自带 `bypass_mode=True` (`org_forward(x) + lora_up(lora_down(x)) * scale`)，与 LoRA 论文 / sd-scripts / PEFT / diffusers 全社区标准 forward 一致；数学等价，速度回归到 sd-scripts 量级。
+
+- **SettingsDrawer 关闭后卸载 + 去 backdrop blur + 输入框本地态消除卡顿（#208）**
+  - 抽屉关闭过渡完成后从 DOM 卸载，不再为整 viewport 维持 `backdrop-filter: blur(0px)` 合成层。
+  - 遮罩 `backdrop-blur-sm` 改纯半透明色过渡，消除 GPU 实时模糊在 2K/4K / 核显 / 缩放场景的滚动掉帧。
+  - 新增 `SettingsInput` 本地态输入：打字时只更内部 state，`onBlur` / Enter 才一次性 sync 父组件 `draft`，4200 行 SettingsPage 不再每键击就整页 re-render。
+
+- **训练子进程加 expandable_segments 减少 CUDA 碎片避免低显存 OOM（#205）**
+  8GB 显存 + LoKr full-matrix 模式（27.5M 参数）下 PyTorch 默认 caching allocator 的「reserved 但 unallocated」内存累积，allocated + reserved 接近显存上限就会 OOM。本版训练子进程在 `import torch` 前 `os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")`，只影响训练 subprocess 不影响 shell 环境；用 `setdefault` 不覆盖用户已设值。
+
+### 修复
+
+- **InfoNoise 核心算法多处修正 + reg 样本按 is_reg 排除（#216, #223）**
+  端到端 mock simulation（96 配置 × 4 mmse 形状 × 3 grad_accum × 2 baseline × 4 pivot 策略）暴露默认 InfoNoise 把 99% 概率质量塞到 σ_min 四分位区，自适应 sampler 实际从未生效。本次同时修复 4 处算法层 + 1 处 reg 集污染：
+
+  - **gate pivot `c` 默认 0.15**（论文 §5 CIFAR 报告值）：旧 `above.argmax()` 因 1/σ³ 通用尾在低 σ 端饱和 `r_norm` 到 1.0（论文 §B.6 警告点），永远返 `c ≈ σ_min`，gate `σ³/(σ³+c³)` 退化为近似恒等。新增 `infonoise_gate_pivot_c` 字段做 escape hatch，填 `0` 走 paper-faithful 的动态 Eq 87，填正值显式 override。
+  - **`r̂_k = mse / σ²`**（论文 Appendix B.2 Eq 61，log-σ 熵率）：旧 `mse / σ³` 来自 VE channel（Eq 59），与 `Δlog σ` 求和不一致；漏的 Jacobian 正是让通用尾主导归一化的根因。
+  - **`maybe_refresh` 按 `global_step` gate**（optimizer step），不再按 `_internal_step`（micro-batch count）：`N_warm` 与默认 `total_steps × 20%` 都假设 optimizer step，`grad_accum=4` 时会让 warmup 提前 4 倍退出，跑到 EMA 还没收敛就开自适应。
+  - **`state_dict __version__ = 2`**：σ³ → σ² 是语义破坏；resume 读到 v1 ckpt 时 cold-start 重新累 EMA 并打 warning，不抛异常，长 run 升级安全。
+  - **Reg 样本按 `is_reg` flag 硬排除 InfoNoise record**（#223）：之前用 `loss_weight >= 0.99` 阈值跳过 reg 样本，`reg_weight=1.0` 边界让 reg 仍进 record 污染 schedule。改成 dataset 层透传 `is_reg` flag 到 batch，loop 用 `~batch["is_reg"]` mask，跟 `loss_weight` 解耦。reg 样本仍照常进梯度按 `reg_weight` 加权，只是不进 InfoNoise schedule 学习。
+
+- **InfoNoise 4 对互斥字段前端实时锁 + 老 config 容错关 + 顶部 banner（#221, #226）**
+  InfoNoise 与 `noise_enhancement_type` / `loss_weighting` / `loss_type=huber` / `timestep_schedule_shift` 的 4 对 schema 互斥之前只有后端 validator，前端无 disable_when。用户操作时不被拦截，得等 600ms debounce auto-save 后弹 `train.saveFailed` toast，表单仍 dirty。
+
+  - **对称锁，先非默认的赢**：4 个被控字段装 `disable_when=infonoise_enabled==true`；`infonoise_enabled` 装反向复合 OR `disable_when`，任一冲突字段非默认时 checkbox 灰显锁住。实时切换时另一侧自动 reset 到默认。
+  - **老 config 容错**：旧 yaml 同时 `infonoise=on` + 任一冲突字段非默认进入 Train 页时，后端 `_tolerant_validate` 自动关掉 InfoNoise 保留用户原值，避免 4 个字段同时灰显锁死无法编辑。
+  - **顶部 banner 提示**：「已重置：infonoise_enabled」横幅在初次 config load 也亮起（不只 fork preset / save as preset 路径），用户能立刻看到被自动改了什么字段。
+  - 「严格保存」路径（前端绕过 disable_when 直接 PUT）仍报错防 silent 改值。
+
+- **VAE 整图 decode OOM 自动回退分块 decode（#207）**
+  8GB 显存跑 1024×1024 reg 生成时，VAE decode 工作峰值可吃满剩余显存第一张就 OOM。本版在 `VAEWrapper.decode` 入口加 try-full + `torch.cuda.OutOfMemoryError` fallback 走 `_tiled_decode`（tile=64 latent / 512 px，stride=48，cosine blend mask，fp32 accumulator 防 bf16 精度损失）。
+
+  - **大显存零成本**：try 一次就过，永远不进 tile fallback。
+  - **小显存 fallback**：单 tile 工作峰值 ~75 MB，每张图慢约 30%，能跑完。
+  - **6 处调用点全自动受益**：reg_ai / generate CLI / generate XY / daemon generate / daemon XY / training sample preview 共用 `sample_image` 走同一入口。
+
+- **cache_latents 按 npz 去重避免 repeat 文件夹重复 VAE encode（#199）**
+  Kohya 风格 per-folder repeat（`5_concept` 前缀）会把同一张图按 N 倍展开到 `samples`，旧 `_build_cache` 直接遍历 `samples` 收集 `to_encode`，同一张图被 VAE encode N 次反复覆盖同一个 npz；`flip_augment` 模式下还要再乘 2。改成按 `npz_path` 去重，首次建 cache 时间按唯一图数量计；二次运行（cache 命中）行为不变。
+
+- **Reg AI 先验支持 JSON caption + tag 保留空格不转下划线（#185）**
+  AI 先验生成之前只读 `.txt` caption 且自动把空格转下划线，导致 JSON caption 训练集无法被 AI 先验读取，prompt 也会变成 `brown_hair` 不符合 Anima 推荐的空格 tag 格式。本版：
+  - 读取 `.json / .txt / .caption` 三种 caption 格式，prompt 保留空格 tag 形态；
+  - `excluded_tags` 同步写回 reg sidecar（JSON 结构化删除字段保留原形态和 `nl` 自然语言；TXT 删除后写回）；
+  - excluded tag 匹配兼容空格 / 下划线，旧的 booru / UI 风格排除项不会失效；
+  - full 模式先清空旧 reg 输出避免旧 caption 混入训练；incremental 模式只补新图。
+
+- **CLI argparse 兼容 py3.13+ + description 裸 % 自动转义（#201）**
+  Issue #170：py3.13+ 跑 `anima_train.py` 撞 `ValueError: invalid option name '--no-progress' for BooleanOptionalAction`（argparse 收紧不再允许 flag 本身就以 `--no-` 开头）。本版 schema bool 字段名以 `no_` 开头时改用一对 `store_true` / `store_false` 替代 `BooleanOptionalAction`，CLI 行为不变（`--no-progress` → True，`--progress` → False）。顺手把 description 里裸 `%` 自动转义为 `%%`，避免 argparse `format_help()` 把 description 当 printf 模板崩。
+
+- **数据集上传走 convert_to_png + 同 stem 文件自动加后缀（#222）**
+  `gelbooru.convert_to_png` 开启时，booru 下载会归一为 `.png`，但 dataset 上传 / 服务端路径导入是 raw bytes 透传 — 既下载又上传时 `download/` 会同时存在 `1.png` 和 `1.jpg`（不同图），后续 `{stem}.txt` caption 配对捕捉不到。本版上传 / zip 内 entry / 服务端路径导入全套走 PIL 解码 + PNG 重编码 + 同 stem 冲突加 `_1` / `_2` 后缀（不再因撞名跳过用户图）。设置仍复用 `gelbooru.convert_to_png` / `gelbooru.remove_alpha_channel`（命名搬家留单独 PR）。
+
+---
+
+## [0.11.1] — 2026-06-01
+
+Hotfix — v0.10.2 用户 webui 自更新链路双重失败
+
+### 修复
+
+- **v0.10.2 用户检查新版本永远显示「已是最新」，看不到 v0.11.0+（#198）**
+  装了 v0.10.2 的用户点 Settings → 系统 → 检查新版本，即便 v0.11.0 已经发布也会显示「已是最新版本」，按钮置灰。受影响：所有 v0.10.2 安装看不到后续任何版本，包括新功能和重要修复。
+
+  临时绕过办法（v0.11.1 起不再需要）：删除安装目录的 `.git/` 文件夹再重启 Studio。启动期会自动重新初始化仓库并拉齐所有版本标签，再点检查就能看到新版本，然后正常走 webui 升级即可。
+
+- **v0.10.2 用户点确认更新被 preflight 误判「目标版本早于自更新 feature」阻断（#198）**
+  v0.10.2 用户即便看到 v0.11.0（如用上面那条临时办法绕过），点「确认更新 → v0.11.0」时也会被 preflight 弹出红色 X「目标版本早于 webui 自更新 feature — 切过去后只能 CLI / shell 升级（webui 无救援能力）」并禁用确认按钮，没法继续。
+
+  v0.11.0 服务端文件搬位置后 v0.10.2 client 用旧路径找不到自更新检测标志导致的误判 — 已发布的 v0.10.2 client 没法热修，本版本在仓库里保留兼容文件让旧 client 的检测能通过。升上来之后下一次再升级走正常路径，不会再撞这个问题。
+
+---
+
+## [0.11.0] — 2026-06-01
+
+正则集编辑工具 + 测试页推理对齐 ComfyUI + flip_augment / LoRA 加载修复 + 日志错误体系（ADR 0009）
+
+### 新增
+
+- **正则集改可编辑：删图 / 自动去重 / 双 tagger / mirror+flat / 目标数量（#171, #172, #173）**
+  正则集从「生成完只能整集清空再重建」演进成可编辑、可去重、可选 tagger 的编辑器，并把生成路线扩展为来源 + 结构两个选择。
+
+  - **删特定图片**：`RegPreview` 按 `5_concept` / `1_data` 等子文件夹分 tab，多选删除生效到当前 tab；删的 booru ID 写入 `reg/.deleted_ids.json`，下次增量补足时自动 exclude，删掉的图不会再被拉回来。
+  - **自动去重循环**：build 完后内置 dedup 循环最多 3 轮（扫重复 → 每组留 1 张 → 不够则自动 incremental 补足），默认开。手动入口「自动去重」按钮保留。
+  - **打标方式可选**：auto-tag 复选框旁加 WD14 / CLTagger 二选一下拉（reg 图量大不适合默认走 LLM / JoyCaption，留单独 PR）。
+  - **mirror 与 flat 结构**：新增 `结构` 下拉。mirror 沿用旧行为按 train 子文件夹镜像；flat（默认）一桶 `1_data/`，配合「目标数量」输入按数量拉，与 train 张数解耦。
+  - **AI 先验默认 + 来源 picker**：deep research 结论 + 用户决策，`generation_method="ai_base"` 升为默认（唯一对齐 DreamBooth 原论文 neutral prior）；顶部 radio 切 booru / AI 来源，按 source 渲染 BooruConfig 区或 AiGenPanel，单一「开始生成」按钮派发。
+  - **find_best_match 排序公式归一化**：旧公式 `tag_score + res_score * 0.1` 实际 res 反主导排序，新公式按 tag 归一化后 `0.7 * tag_norm + 0.3 * res_score`，让 aspect 真能影响选图（reg 集要跟 train 落同一个 ARB 桶）。
+  - 「正则集」改名「正则集（可选）」明示不强制（现代 DiT 训练实际不依赖 reg 集）。
+  - `docs/user-guide/training-tips.md` 加 Caption 策略章节，固化人物 / 画风 / 人物+衣服 LoRA 与 reg 集如何配合实现 trigger-as-switch 效果。
+
+- **PPSF / Prodigy 优化器实际学习率 + d 值监控曲线（#127）**
+  Prodigy / PPSF 常见配置把 base lr 设为 1，旧监控图因此容易看起来「学习率完全不变」 — 即使实际 schedule 已经通过 `d` 发生收缩或跳变。本次在 Monitor 和 WandB 日志里暴露 PPSF / Prodigy 的真实学习率行为：派生后的实际 lr、`d`、base lr、effective lr，以及可用时的共享分组 `d`。Studio Monitor 加 d 曲线图。
+
+  同时把 `ppsf_prodigy_steps=0` 恢复 PPSF 上游语义 — 训练全程不冻结 `d`；用户显式填具体步数时才开启冻结。旧默认值反向冻结了 `d`，对小数据集 LoRA 系统性低估 lr。
+
+- **预处理去重审核加模糊候选 + 裁剪 / 缩放关系报告（#161）**
+  预处理「去重审核」工具在已有完全重复 / 近似重复审核基础上，新增两类质量报告：
+
+  - **模糊 / 低细节候选**：用全局 Laplacian variance + 12×12 局部低细节区域 + 最大连通区域比例，避免只看整图均值漏掉局部低细节图。
+  - **裁剪 / 缩放关系**：检测一张图是另一张的裁剪 / 局部放大 / 裁剪后重新缩放保存。用 crop-resistant hash + 结构 hash 预筛，灰度窗口匹配 + 局部精修验证，返回源图 + 候选 + 窗口坐标 + 匹配分 + 关系类型（`crop_smaller` / `crop_upscaled` / `crop_same_area`）。
+
+  参数区加模糊分数 / 局部模糊 / 裁剪分数 / 裁剪 Hash / 裁剪边长等高级阈值，以及裁剪线程 / 裁剪分段 / 分段覆盖 / 裁剪宽高比 / 每图候选等性能 / 召回控制。质量候选默认只是报告不自动入移除队列，用户逐张标记或一键批量选中，仍需点「确认去除」才写入 manifest 的 `duplicate_removed`。
+
+- **CLTagger 加 Copyright / Meta / Quality 等 5 类 category 开关（#184）**
+  CLTagger 模型输出 7 个 category（General / Character / Copyright / Meta / Model / Rating / Quality），此前只对 Rating / Model 提供开关，其余 5 类全部隐式走通用阈值。结果 LoRA caption 默认会混进 `highres` / `lowres`（Meta）、`best quality`（Quality）、`fate_series`（Copyright）这些 LoRA 训练通常不想要的标。
+
+  新增 3 个 checkbox：`add_copyright_tag`（默认开）、`add_meta_tag`（默认关）、`add_quality_tag`（默认关），加上原有的 rating / model 共 5 类 gate。General / Character 由阈值控制不加 checkbox。Tagging 页 + Settings 全局两处 UI 同步暴露。
+
+  升级后默认 caption 不再包含 `highres` / `best quality` / `explicit` / `lora_v1` 这类标；Copyright（作品名）保留是 LoRA 标准 caption 形态。要恢复任意 category 在 Settings 或 Tagging 页勾上即可。
+
+- **后端 + 前端日志 / 错误体系统一（ADR 0009）（#155, #156, #157）**
+  按 [ADR 0009](docs/adr/0009-logging-error-system.md) 把后端 + 前端 + CLI 的日志 / 错误处理收编到统一基础设施。用户能感知到的变化：
+
+  - **错误 toast / ErrorBoundary 带 trace ID 后 8 位**：API 4xx / 5xx 出错时 toast 末尾显示 `trace ab12cd34`，前端崩溃 ErrorBoundary 也显示同一 trace；截图给开发能直接定位后端日志条目。
+  - **前端崩溃自动上报**：`window.error` / `unhandledrejection` / `ErrorBoundary` 三路全局错误捕获，POST `/api/client-errors`（per-IP 10/min 限流），后端落 `studio.client` logger。tab 关闭瞬间也尽量送出（`fetch keepalive: true`）。
+  - **后端 trace_id 全链路**：每个请求在 middleware 生成 trace_id（X-Trace-Id header 回带），跨进程通过 env 传到 worker 子进程，落进 `studio_data/logs/studio.log` 的 JSON 行，方便 `jq '.trace_id'` 过滤一条请求的全部日志。
+  - **CLI 输出统一**：`python -m studio` 命令 48 处 `print("[studio] ...")` 收编到 `_say()` wrapper，终端看到的 `[studio] X` 格式不变，新加内容也走它。
+  - **error_msg 写回 db**：训练 / tagging 等 worker 顶层异常 traceback 写进 `tasks.error_msg`，任务详情页能直接看到失败原因而不是仅「exit code 1」。
+
+- **新建预设改一键创建并套用，删两步式草稿表单（#177）**
+  旧流程：项目页 Train 点「+ 新建预设」会进入「内联草稿表单」状态（仅 React state flag，零持久化），用户填字段后切到别的页面会把整个草稿丢光 — `savePreset` 一次都没调，再回来又显示「请选择预设」。底部的「创建并套用到当前 version」按钮才是真正的保存入口，但 `noConfigHint` 文案让用户以为点「+ 新建预设」就在创建了。
+
+  新流程：点「+ 新建预设」直接创建并套用 — 自动生成名称 `<项目 slug>_<版本 label>`，重名加 `_1` / `_2` 后缀，配置取 schema 默认（开启「自动同步模型路径」时项目路径覆盖），写入全局预设池并 fork 到当前 version。version 已有 config 时弹覆盖 confirm。删除内联草稿表单与相关 state，UX 陷阱消失。
+
+- **浏览器原生上传进度条 + 网速 + ETA（#139）**
+  三处上传（项目本地图 / zip、训练集 bundle import、train zip import）从 `fetch` 迁到 `XMLHttpRequest` 拿到 body progress 事件（fetch 无此能力），显示进度条 + 网速 + 剩余时间。1.5s 滑动窗口算速度，`loaded === total` 后自动切到「服务器处理中」状态区分上传完成与解 zip / 落盘等待。Bundle import dialog 改为上传期间保持打开显示进度条，成功后才关闭。
+
+### 变更
+
+- **`noise_offset` 与金字塔噪声从同开改为互斥单选，对齐 kohya 上游（#175）**
+  kohya-ss/sd-scripts PR #477（2023-05）在 SD1 / SDXL / SD3 / Flux 全模型层面禁止 `noise_offset` 与 `multires_noise_iterations` 同开 — 两者都向噪声注入低频成分，pyramid 最低分辨率那层 ≈ noise_offset 等价物，叠加导致低频双倍灌入。Anima 旧实现没禁，且 `make_noise` 末尾的归一化会稀释先加的 noise_offset 常数偏移 — 用户以为两者都生效，实际等效「只 pyramid 在跑、offset 被吃掉」，比 kohya 报错更隐蔽。
+
+  新增 `noise_enhancement_type: "none" | "offset" | "pyramid"` 字段（前端 dropdown），互斥反组字段自动隐藏并强制清零。老 yaml 自动迁移：两者都 > 0 时按 pyramid 优先（旧实现里 pyramid 才是实际生效的），offset 字段清零。
+
+- **Settings 改右滑抽屉，全局可调起 + 不打断当前页（#132, #133）**
+  Settings 页（原路由 `/tools/settings`）改成右侧滑出抽屉，宽度 `max(1024px, 70vw)`，关闭支持点 backdrop / ESC / 标题栏 ×。8 处入口（侧栏「设置」/ Topbar / CommandPalette / Train / Presets / Tagging 4 处）改为打开抽屉而非跳转路由，旧 URL 由兼容 redirect 落地。抽屉打开时侧栏仍可点（切项目 / 切版本 / 切主题不必先关），dirty 状态关抽屉弹 confirm。
+
+  数据层提到根级 Provider（secrets / catalog / SSE 持久化），抽屉 mount / unmount 不再重拉 secrets。Settings 改 `React.lazy` 独立分包（~116KB / gzip 27KB），不进首屏 bundle。
+
+- **task 档案搬到 tasks/id/ — 同 version 多 task 不再串台 + 删 version 不丢历史（#166, #192）**
+  训练 task 的 monitor state / 采样图 / run log 从 `versions/<v>/monitor/task_<id>/` 搬到 `studio_data/tasks/<id>/`，跟 task config snapshot 同根：
+
+  ```
+  tasks/<id>/snapshot/config.yaml    ← task 启动 freeze 的 config
+  tasks/<id>/monitor/state.json      ← loss / LR / sample 索引
+  tasks/<id>/samples/*.png           ← 训练采样图
+  tasks/<id>/run.log                 ← worker stdout/stderr
+  ```
+
+  - 删 version 不再丢历史 task：回头想看「上次跑这套配置的 loss 曲线 / 采样图」不必为此保留对应 version。
+  - 同 version 下连跑多个 task 不再串台：旧实现里第二个 task 的 monitor state 会盖掉第一个，点 task1 「查看」看到的是 task2，本 release 修复。
+  - 留在 version 级：`reg/`（多 task 复用）、`output/*.safetensors`（version 交付物）、`config.yaml`、`train/`、`caption_snapshots/`。
+  - 老 task 兼容：DB `monitor_state_path` 列保留旧值不动，sample / log 读端保留对旧路径的 fallback 候选，pre-PP6.1 (< v0.5.0) 历史 task 仍可读。
+
+- **schema 字段说明全量审阅 + 修 4 处方向反的描述 + `noise_schedule` 拆 3 组（#194）**
+  - **4 处方向反的描述修正**：`ppsf_d_coef` / `prodigy_d_coef` 旧说「过拟合 → 2.0」反了，正确是欠拟合调高、过拟合调低；`huber_c` 旧说反了 δ 大小方向（δ 越大越接近 MSE，越小越宽容 outlier）；`min_snr_gamma` 抑制的是低 t 端高 SNR 简单步（rectified flow 下 SNR 与 t 反向）。按旧描述调参的用户实际把方向反了。
+  - **`noise_schedule` 组拆 3 组**：原 22 项实际混了 3 个关注点，拆为 `noise_augmentation`（4 项 noise_offset / pyramid）/ `timestep_sampling`（11 项 timestep + InfoNoise）/ `loss`（7 项 huber / min_snr / detail_inv_t）。前端配置页对应改 3 个 group label。
+  - **用语清理**：删 dev-note（「kohya 上游同样禁止同开」等内部参考）、删 PR 作者主观经验（「雾蒙蒙画风建议 3」等无 paper 支持的断言）、可调数值参数统一补「越大 / 越小有什么表现」、无上界字段补典型范围警告。
+
+- **「全局代理」改名「Booru 代理」+ 移到数据集 tab + 删独立网络 tab（#191）**
+  v0.10.3 加的「全局代理」section 在 UI 上叫「全局代理」，但实际数据流只接 booru 下载链路（ModelScope / HuggingFace 下载都不走它）。原版本里有段试图把代理灌进 hf_hub httpx client 的代码 import 了 hf_hub 里不存在的符号，hotfix #165 删掉后只剩 booru 一条链路在用。
+
+  UI 改：section 改名「Booru 代理」、移到数据集 tab 末尾（与 Gelbooru / Danbooru 同 tab）、删独立的「网络」tab、文案明示「仅覆盖 Booru 下载链路，模型下载不走此代理」。不动 `secrets.proxy` schema，用户已存配置不丢，老 localStorage 残留的 `activeTab="network"` 自动降级到默认 tab。模型下载走代理仍需 OS 层 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量或 `HF_ENDPOINT` 镜像。
+
+### 改进
+
+- **监控页 charts / 采样图 / 配置字段顺序 / 打标 blacklist 输入修复（#166, #186, #187, #189）**
+  监控页和打标页一组 UI 修复，多轮迭代逐步收敛：
+
+  - **chart 兼顾大小屏**：右列三图改 `useLayoutEffect` + `ResizeObserver` 测真实像素尺寸，SVG 1:1 渲染，文字 / 线宽 / 圆点不再被父容器宽高比扭曲；xy 轴字号 9 → 13、padding 加大让 `0.0796` 这种 6 字宽 y-label 不越界；首 / 末 x-tick 改 `start` / `end` 锚点防边缘字一半溢出；右三卡夹在 `[140, 300]px` 防 4K 比例失衡；1080p 不再多余滚动条。
+  - **d 曲线独立成第三张卡**：之前夹在 LR 内部时 50px 高度被压扁，独立成卡后高度跟 loss / LR 对齐。
+  - **smooth slider 分开**：loss 默认 0.02、LR / d 默认 off（LR / d 本身已是 EMA 派生量，再叠 EMA 失真）。
+  - **采样图点击放大**：监控页采样大图原来点击无反应，现在加 `cursor-zoom-in` + 全屏预览 + ← / → 在采样序列前后切。
+  - **采样图卡片不再被原图撑爆**：sample 大图 img 改 `absolute inset-0` 脱 in-flow，避免浏览器把 1024×* 原图 intrinsic 尺寸当作父容器 min-content 把 sample 卡顶到原图高度。
+  - **VersionRail 切版本同步 sidebar**：项目概览页 VersionRail 切版本时漏调 `ctx.onSelectVersion`，sidebar 的 phase nav 不联动；补一行调用即修。
+  - **打标 blacklist 输入打不进逗号 / 空格**：受控输入每次按键都把文本 split → trim → filter 回数组，逗号产生的空段被 filter 掉，尾随空格被 trim 掉，连 `blue eyes` 都打不出。抽 `TagsInput` 组件：编辑态（focus）纯文本，blur 时再渲染成 chip。Tagging 页 + Settings 全局两处同步。
+
+### 修复
+
+- **测试页推理与 ComfyUI 出图对齐 + LoRA DoRA / rs_lora 不再静默失效（#169）**
+  用户反馈两个独立现象：测试页出图「LoRA 完全没生效」、同样配置下 Studio 出图与 ComfyUI 差别明显。逐项排查 ComfyUI 原生 Anima 实现后确认是 4 个不同层面的对齐 bug。
+
+  - **LoRA DoRA / rs_lora 透传**：`read_lora_meta` 漏读 `ss_network_args` 里的 `weight_decompose`（DoRA）和 `rs_lora` 两个字段，`apply_loras` 构造网络结构与训练时不一致 — DoRA 的 280 个 `dora_scale` 张量全部 unexpected 跳过，rs_lora 的 α 缩放被砍到训练时的 1/8。两者叠加后用户感知就是「LoRA 完全没生效」。
+  - **T5 token 权重生效**：`(tag:1.3)` 这类 T5 token 权重语法之前算出来后被 `preprocess_text_embeds` 丢弃，权重无效；现在按 ComfyUI 在 LLMAdapter 输出后乘 t5xxl_weights。
+  - **初始噪声跨硬件复现**：`torch.randn(device='cuda')` 走 cuRAND（跨硬件不一致），改成 CPU generator + `.to(device)`，同 seed 跨平台可复现。
+  - **默认负面 prompt**：用户填空时不再偷塞 `"worst quality, low quality, score_1, ..."` 一长串，CFG 锚点跟 ComfyUI 一致。
+
+  平行用多个 agent 逐文件对比 ComfyUI 原生 Anima 实现（VAE / DiT 685 key / RoPE 3D / Sampler / Scheduler / CFG）后确认其余路径完全等价，本次只改这 4 处。
+
+- **cache_latents 与 flip_augment 同开导致 50% 数据被永久镜像污染（#176）**
+  `CachedLatentDataset` cache 阶段调 `ImageDataset.__getitem__` 拿 pixel，但 base dataset 里的 `if flip_augment and random.random() > 0.5: img.transpose(...)` 在 cache 阶段就掷骰子 — 每张图永久编码成翻转 / 不翻转其中一个状态，之后训练只读 npz 不再 invoke base flip。后果：flip_augment 静默失效（用户以为有数据增强，实际没有），并且 50% 数据被永久镜像污染（每次启训随机一半图被翻成镜像）。
+
+  按 kohya-ss/sd-scripts 的 `ImageInfo.latents / latents_flipped` 双份 latent 方案修复：cache 阶段按 `flip_augment` 决定单 / 双份编码（双份存 npz 的 `latent` + `latent_flipped` 两键），训练时 `__getitem__` 按 `random.random() > 0.5` 选哪个键。代价：`flip_augment=True` 时编码时间和 cache 大小都 ×2，但训练里 flip 真生效。
+
+  老 cache 自动修复：`_is_cache_valid` 检测 `flip_augment=True` 但 npz 缺 `latent_flipped` 键时失效重 encode；反向 `flip_augment=False` 时双份仍有效（超集），切开关不反复重编码。
+
+- **测试页 XY 图混入未选过的 LoRA（孤儿 anchor 沉积，自 v0.8.0 起）（#167）**
+  XY 模式下用户反复看到「混进没选过的 LoRA」：XY 轴选了 chenbin V3.4，结果每个 cell 都被钉上没选过的 chen-bin v3.2 或跨 mode 的 hoshi。清 localStorage / 换匿名浏览器都复现，与前端缓存无关。
+
+  根因（自 v0.8.0 XY 功能起就在）：XY 模式往 LoRA 桶加 anchor 的唯一入口是 `lora_ckpt` 轴 picker，但它「只 push 不 prune」 — 切项目 / 切轴类型 / 删 Y 轴只清轴绑定，桶里的 anchor 不动。XY 侧栏没有 base-LoRA 列表 UI，用户看不到也删不掉。提交时旧逻辑把整桶当 base LoRA 发，后端把它们叠到每个 cell，孤儿 LoRA 就恒定出现在所有图里。历次修复（包括最近的双桶 split）只解了跨 mode 串味，从没碰桶内孤儿沉积 + 整桶当 base 发这一层。
+
+  修复：抽出纯函数 `buildXYMatrix`，提交时只保留被 X / Y 轴 `loraIndex` 引用的 anchor，按出现序重映射索引，孤儿丢弃；非 lora_ckpt 轴时 `lora_configs` 为空。
+
+- **测试页生成入队竞态 (`config not found`) + 跨 single / xy 模式 LoRA 串味（#159）**
+  - **入队竞态**：`enqueue_generate` 先把任务落成 `pending+generate` 即可被派发，随后才构建 config（含耗时的 `detect_attention_backend`）并写 `config_path`。supervisor 每 1s tick，若在「`task_type` 已是 generate、`config_path` 还是 NULL」的窗口派发，daemon 读到空路径直接 failed。改为 `_dispatch_generate` 跳过 `config_path` 未落库的任务（下个 tick 再派），config 构建失败时把任务标 failed 避免永远 pending。
+  - **single / xy 模式 LoRA 串味**：`loras` 持久化为单份共享数组，single 加 A 切到 xy 加 B，xy 生成吃 A+B，切回 single 又显示 A+B。拆成 `singleLoras` / `xyLoras` 双桶按 mode 路由（compare 共用 xy 桶），老配置自动迁移到两桶各一份不丢已选。
+
+- **XY lora_ckpt 轴按 ckpt 展示序排列，不再随点击顺序乱跳（#164）**
+  测试页 XY 图的 `lora_ckpt` 轴（扫同一 LoRA 不同 epoch / step ckpt 找过拟合拐点）选中多个 ckpt 时，轴值按用户点击 chip 的先后顺序排，不是 epoch / step 顺序。后果：选 ep80 / ep60 / ep40 如果点击顺序乱（80 → 40 → 60），网格列就排成 `[80, 40, 60]`，ep60 落到末尾，肉眼对不上「训练越往后越过拟合」的趋势，拐点读不出来。
+
+  根因：`InlineLoraPicker` 多选用 `Set<string>` 存，commit 时 `Array.from(set)` 取的是 Set 插入顺序 = 点击顺序。改为按后端 `list_lora_ckpts` 已经算好的 canonical sort（`final → step↓ → epoch↓ → other 自然序`，picker 本来就按这个顺序渲染 chip）。
+
+- **`sample_seed=0` 训练开始时 resolve，跨 epoch 同 prompt 同噪声（#193）**
+  `sample_seed=0` 的语义是「随机种子」（schema description 明示），但旧实现 `if s_seed:` 直接跳过 set seed，全程靠 global torch RNG。global RNG 在每个训练 step 都被 dropout / timestep / noise / dataloader 消耗，不同 epoch 落到采样点时 state 完全不同 — 同 prompt 不同 epoch 出图不一样。跨 epoch 采样图本来是看「收敛过程 / 过拟合趋势」的，前提是噪声固定只看模型变化，旧行为把噪声也一起变了对比就废了。
+
+  参考 kohya-ss/sd-scripts 标准做法：训练 bootstrap 阶段若 `sample_seed` 是 0 / 缺省，抽一次随机种子写回 `args.sample_seed` 并 log 出来，整轮训练同 prompt 同 seed。pause / resume 经 snapshot freeze，跨暂停仍用同一 seed；用户重起 task 时若 yaml 仍为 0 会重抽新随机。
+
+- **Windows 启动 npm 报 WinError 193（npm 解析优先 `.cmd`）（#140）**
+  Windows 启动 `python -m studio` 报 `OSError: [WinError 193] %1 不是有效的 Win32 应用程序`，栈打到 `subprocess.Popen([npm, ...])`。根因：`find_npm` 候选顺序让 `shutil.which("npm")` 优先匹配到 `C:\Program Files\nodejs\npm` — 这是 Node.js 官方装包给 Git Bash / MSYS 用的 bash 脚本（无扩展名），`CreateProcess` 没法直接拉起。
+
+  修法：Windows 候选改为 `.cmd` 优先 → `.ps1` → 裸名兜底；命中 `.ps1` 时自动包 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`。Linux / Mac 按 `os.name` 收窄到 `("npm",)`，行为完全不变。
+
+- **`studio.sh` 启动错误时也 pause 不闪退（双击启动用户能看到错误）（#174）**
+  `studio.sh` 在没装 Node.js 时只打一行 `Exit code 2` 就 exit，从文件管理器双击或非持久终端启动的用户看不到错误就闪退。`studio.bat` 早就有 `pause >nul` 兜底，本次给 `studio.sh` 补对应处理 — 非零 rc + TTY 时提示按 Enter 后退出；正常退出 / Ctrl+C / 非 TTY（CI / 管道）跳过避免误卡。
+
+- **SOCKS5 代理依赖缺失致主模型下载报 `socksio not installed`（#190）**
+  用户配 `socks5://...` 代理后下载主模型报 `Using SOCKS proxy, but the 'socksio' package is not installed`。根因：`requirements.txt` 没声明 SOCKS5 所需 extras。两条下载链路用不同 HTTP 客户端，各自需要不同 SOCKS backend — HuggingFace（httpx）需 `socksio`、booru / ModelScope（requests）需 `PySocks`。`requirements.txt` 改为 `requests[socks]>=2.31.0` + 显式 `httpx[socks]>=0.27`，两个 extras 各自服务于对应链路，无 C 扩展跨平台 OK。
+
+---
+
 ## [0.10.3] — 2026-05-29
 
 新增全局 HTTP/HTTPS 代理配置（覆盖 booru 下载链路）

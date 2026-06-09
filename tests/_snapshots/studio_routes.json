@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generated_from": "studio.server.app",
-  "count": 163,
+  "count": 173,
   "routes": [
     {
       "path": "/",
@@ -127,6 +127,70 @@
         "POST"
       ],
       "name": "unload_daemon",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/history",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_disk_history",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/image/{date_str}/xy/{folder}/{filename}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_disk_xy_image",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/image/{date_str}/{mode}/{filename}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_disk_image",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/thumb/{date_str}/xy/{folder}/{filename}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_disk_xy_thumb",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/thumb/{date_str}/{mode}/{filename}",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_disk_thumb",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/{date_str}/xy/{folder}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_disk_xy_folder",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/disk/{date_str}/{mode}/{filename}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_disk_image",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/generate/save",
+      "methods": [
+        "POST"
+      ],
+      "name": "save_test_image",
       "type": "APIRoute"
     },
     {
@@ -410,22 +474,6 @@
       "type": "APIRoute"
     },
     {
-      "path": "/api/projects/{pid}/duplicates/apply",
-      "methods": [
-        "POST"
-      ],
-      "name": "apply_project_duplicates",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/duplicates/scan",
-      "methods": [
-        "POST"
-      ],
-      "name": "scan_project_duplicates",
-      "type": "APIRoute"
-    },
-    {
       "path": "/api/projects/{pid}/files",
       "methods": [
         "GET"
@@ -447,94 +495,6 @@
         "GET"
       ],
       "name": "list_project_lora_ckpts",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/crop",
-      "methods": [
-        "POST"
-      ],
-      "name": "start_preprocess_crop",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/crop/workspace",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_crop_workspace",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/duplicates/apply",
-      "methods": [
-        "POST"
-      ],
-      "name": "apply_preprocess_duplicates",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/duplicates/removed",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_duplicate_removed",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/duplicates/scan",
-      "methods": [
-        "POST"
-      ],
-      "name": "scan_preprocess_duplicates",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/files",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_preprocess_files",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/files/reset",
-      "methods": [
-        "POST"
-      ],
-      "name": "reset_preprocess_files",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/files/restore",
-      "methods": [
-        "POST"
-      ],
-      "name": "restore_preprocess_files",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/start",
-      "methods": [
-        "POST"
-      ],
-      "name": "start_preprocess",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/status",
-      "methods": [
-        "GET"
-      ],
-      "name": "preprocess_status",
-      "type": "APIRoute"
-    },
-    {
-      "path": "/api/projects/{pid}/preprocess/thumb",
-      "methods": [
-        "GET"
-      ],
-      "name": "preprocess_thumb",
       "type": "APIRoute"
     },
     {
@@ -794,6 +754,86 @@
       "type": "APIRoute"
     },
     {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/crop",
+      "methods": [
+        "POST"
+      ],
+      "name": "start_preprocess_crop_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/crop/workspace",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_crop_workspace_train_endpoint",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/duplicates/apply",
+      "methods": [
+        "POST"
+      ],
+      "name": "apply_preprocess_duplicates_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/duplicates/removed",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_duplicate_removed_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/duplicates/scan",
+      "methods": [
+        "POST"
+      ],
+      "name": "scan_preprocess_duplicates_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/files",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_preprocess_files_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/files/reset",
+      "methods": [
+        "POST"
+      ],
+      "name": "reset_preprocess_files_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/files/restore",
+      "methods": [
+        "POST"
+      ],
+      "name": "restore_preprocess_files_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/start",
+      "methods": [
+        "POST"
+      ],
+      "name": "start_preprocess_train",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/projects/{pid}/versions/{vid}/preprocess/status",
+      "methods": [
+        "GET"
+      ],
+      "name": "preprocess_status_train",
+      "type": "APIRoute"
+    },
+    {
       "path": "/api/projects/{pid}/versions/{vid}/queue",
       "methods": [
         "POST"
@@ -1020,6 +1060,14 @@
     {
       "path": "/api/queue/{task_id}/outputs",
       "methods": [
+        "DELETE"
+      ],
+      "name": "delete_task_output_files",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/queue/{task_id}/outputs",
+      "methods": [
         "GET"
       ],
       "name": "list_task_outputs",
@@ -1191,6 +1239,38 @@
         "GET"
       ],
       "name": "system_version",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/tag-dictionary/data",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_data",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/tag-dictionary/meta",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_meta",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/tag-dictionary/reset",
+      "methods": [
+        "POST"
+      ],
+      "name": "reset",
+      "type": "APIRoute"
+    },
+    {
+      "path": "/api/tag-dictionary/upload",
+      "methods": [
+        "POST"
+      ],
+      "name": "upload",
       "type": "APIRoute"
     },
     {
