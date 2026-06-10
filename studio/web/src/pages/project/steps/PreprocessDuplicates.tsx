@@ -77,6 +77,9 @@ export default function PreprocessDuplicatesPage() {
       : [],
     [result],
   )
+  const hasQualityCandidates = !!result && (
+    result.blur_candidates.length > 0 || result.crop_relations.length > 0
+  )
 
   const scan = async () => {
     if (busy) return
@@ -172,34 +175,40 @@ export default function PreprocessDuplicatesPage() {
               onApply={apply}
             />
             {scanLogVisible && <DuplicateLogStrip logs={logs} busy={busy} />}
-            <DuplicateReviewPanel
-              projectId={project.id}
-              versionId={vid}
-              result={result}
-              selected={selected}
-              busy={busy}
-              onSelect={setSelected}
-              onPreview={openPreview}
-            />
-            <QualityReviewPanel
-              projectId={project.id}
-              versionId={vid}
-              result={result}
-              selected={selected}
-              busy={busy}
-              onSelectNames={(names) => {
-                const next = new Set(selected)
-                names.forEach((name) => next.add(name))
-                setSelected(next)
-              }}
-              onToggle={(name) => {
-                const next = new Set(selected)
-                if (next.has(name)) next.delete(name)
-                else next.add(name)
-                setSelected(next)
-              }}
-              onPreview={openPreview}
-            />
+            <div className={
+              hasQualityCandidates
+                ? 'grid gap-2 flex-1 min-h-0 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]'
+                : 'flex flex-col flex-1 min-h-0'
+            }>
+              <DuplicateReviewPanel
+                projectId={project.id}
+                versionId={vid}
+                result={result}
+                selected={selected}
+                busy={busy}
+                onSelect={setSelected}
+                onPreview={openPreview}
+              />
+              <QualityReviewPanel
+                projectId={project.id}
+                versionId={vid}
+                result={result}
+                selected={selected}
+                busy={busy}
+                onSelectNames={(names) => {
+                  const next = new Set(selected)
+                  names.forEach((name) => next.add(name))
+                  setSelected(next)
+                }}
+                onToggle={(name) => {
+                  const next = new Set(selected)
+                  if (next.has(name)) next.delete(name)
+                  else next.add(name)
+                  setSelected(next)
+                }}
+                onPreview={openPreview}
+              />
+            </div>
           </div>
           <DuplicateStatsSidebar
             result={result}
@@ -517,7 +526,7 @@ function QualityReviewPanel({
   )
   if (!result || (blurCandidates.length === 0 && cropRelations.length === 0)) return null
   return (
-    <section className="flex flex-col rounded-md border border-subtle bg-surface overflow-hidden shrink-0">
+    <section className="flex flex-col min-h-0 rounded-md border border-subtle bg-surface overflow-hidden">
       <div className="h-0.5 bg-accent" />
       <header className="flex flex-wrap items-center gap-2 px-2.5 py-1.5 border-b border-subtle text-sm">
         <h3 className="font-semibold">{t('duplicates.qualityTitle')}</h3>
@@ -562,56 +571,60 @@ function QualityReviewPanel({
           </button>
         </div>
       </header>
-      <div className="grid gap-2 p-2 lg:grid-cols-2">
-        <QualitySection
-          title={t('duplicates.blurTitle')}
-          empty={t('duplicates.blurEmpty')}
-          items={blurCandidates.map((item) => ({
-            key: item.name,
-            images: [{ name: item.name }],
-            meta: `${item.width}x${item.height} · ${item.filesize_kb}KB`,
-            score: t('duplicates.blurMetric', {
-              score: Math.round(item.blur_score),
-              local: Math.round(item.largest_blur_region_ratio * 100),
-            }),
-            note: item.reason,
-          }))}
-          projectId={projectId}
-          versionId={versionId}
-          selected={selected}
-          busy={busy}
-          onToggle={onToggle}
-          onPreview={onPreview}
-        />
-        <QualitySection
-          title={t('duplicates.cropTitle')}
-          empty={t('duplicates.cropEmpty')}
-          items={cropRelations.map((item, index) => ({
-            key: `${item.source}:${item.crop_candidate}:${index}`,
-            images: [
-              { name: item.source, label: t('duplicates.cropSource') },
-              { name: item.crop_candidate, label: t('duplicates.cropCandidate') },
-            ],
-            meta: `${item.source_width}x${item.source_height} → ${item.crop_width}x${item.crop_height}`,
-            score: t('duplicates.cropMetric', {
-              score: Math.round(item.score * 100),
-              area: Math.round(item.window_ratio * 100),
-            }),
-            note: [
-              cropRelationKindLabel(item.relation_kind),
-              cropLargerLabel(item.larger_image),
-              t('duplicates.cropAreaRatio', { ratio: item.area_ratio.toFixed(2) }),
-              `${item.source_window.x},${item.source_window.y},${item.source_window.width},${item.source_window.height}`,
-              item.note,
-            ].join(' · '),
-          }))}
-          projectId={projectId}
-          versionId={versionId}
-          selected={selected}
-          busy={busy}
-          onToggle={onToggle}
-          onPreview={onPreview}
-        />
+      <div className="grid grid-cols-1 gap-2 p-2 min-h-0 overflow-y-auto">
+        {blurCandidates.length > 0 && (
+          <QualitySection
+            title={t('duplicates.blurTitle')}
+            empty={t('duplicates.blurEmpty')}
+            items={blurCandidates.map((item) => ({
+              key: item.name,
+              images: [{ name: item.name }],
+              meta: `${item.width}x${item.height} · ${item.filesize_kb}KB`,
+              score: t('duplicates.blurMetric', {
+                score: Math.round(item.blur_score),
+                local: Math.round(item.largest_blur_region_ratio * 100),
+              }),
+              note: item.reason,
+            }))}
+            projectId={projectId}
+            versionId={versionId}
+            selected={selected}
+            busy={busy}
+            onToggle={onToggle}
+            onPreview={onPreview}
+          />
+        )}
+        {cropRelations.length > 0 && (
+          <QualitySection
+            title={t('duplicates.cropTitle')}
+            empty={t('duplicates.cropEmpty')}
+            items={cropRelations.map((item, index) => ({
+              key: `${item.source}:${item.crop_candidate}:${index}`,
+              images: [
+                { name: item.source, label: t('duplicates.cropSource') },
+                { name: item.crop_candidate, label: t('duplicates.cropCandidate') },
+              ],
+              meta: `${item.source_width}x${item.source_height} → ${item.crop_width}x${item.crop_height}`,
+              score: t('duplicates.cropMetric', {
+                score: Math.round(item.score * 100),
+                area: Math.round(item.window_ratio * 100),
+              }),
+              note: [
+                cropRelationKindLabel(item.relation_kind),
+                cropLargerLabel(item.larger_image),
+                t('duplicates.cropAreaRatio', { ratio: item.area_ratio.toFixed(2) }),
+                `${item.source_window.x},${item.source_window.y},${item.source_window.width},${item.source_window.height}`,
+                item.note,
+              ].join(' · '),
+            }))}
+            projectId={projectId}
+            versionId={versionId}
+            selected={selected}
+            busy={busy}
+            onToggle={onToggle}
+            onPreview={onPreview}
+          />
+        )}
       </div>
     </section>
   )
