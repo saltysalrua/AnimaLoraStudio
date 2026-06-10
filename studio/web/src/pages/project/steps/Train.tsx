@@ -113,11 +113,6 @@ export default function TrainPage() {
     }
   }, [project.id, vid, toast, setConfigSync, t, applyPresetWarnings])
 
-  const applyPresetWarnings = useCallback((r: { dropped_fields?: string[]; defaulted_fields?: string[] }) => {
-    setDroppedFields(r.dropped_fields ?? [])
-    setDefaultedFields(r.defaulted_fields ?? [])
-  }, [])
-
   useEffect(() => {
     api.schema().then(setSchema).catch((e) => toast(t('train.loadSchemaFailed', { error: e }), 'error'))
     api.listPresets().then(setPresets).catch(() => setPresets([]))
