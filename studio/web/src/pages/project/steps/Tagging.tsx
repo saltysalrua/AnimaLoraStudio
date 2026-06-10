@@ -350,9 +350,9 @@ export default function TaggingPage() {
 
       <div className="grid gap-3 flex-1 min-h-0" style={{ gridTemplateColumns: '1.5fr 1fr' }}>
 
-        {/* 左栏 */}
-        <div className="flex flex-col gap-3 min-h-0 min-w-0 overflow-y-auto">
-
+        {/* 左栏：参数区可滚动，日志区固定在底部，避免高级选项展开后把日志挤出视口。 */}
+        <div className="flex flex-col gap-3 min-h-0 min-w-0">
+          <div className="flex flex-col gap-3 flex-1 min-h-0 min-w-0 overflow-y-auto pr-1">
           <section className="rounded-md border border-subtle bg-surface px-3 py-2 flex flex-wrap items-center gap-2 shrink-0 text-sm">
             <span className="text-fg-tertiary">tagger</span>
             <select
@@ -482,19 +482,23 @@ export default function TaggingPage() {
             />
           )}
 
+          </div>
+
           {job && (
-            <JobProgress
-              job={job}
-              logs={logs}
-              onCancel={async () => {
-                try {
-                  await api.cancelJob(job.id)
-                  toast(t('tag.cancelToast'), 'success')
-                } catch (e) {
-                  toast(String(e), 'error')
-                }
-              }}
-            />
+            <div className="shrink-0">
+              <JobProgress
+                job={job}
+                logs={logs}
+                onCancel={async () => {
+                  try {
+                    await api.cancelJob(job.id)
+                    toast(t('tag.cancelToast'), 'success')
+                  } catch (e) {
+                    toast(String(e), 'error')
+                  }
+                }}
+              />
+            </div>
           )}
         </div>
 
