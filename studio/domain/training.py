@@ -114,9 +114,14 @@ class TrainingConfig(BaseModel):
         description="缓存 VAE latent 加速训练",
         json_schema_extra=_meta("system"),
     )
+    vae_cache_batch_size: int = Field(
+        4, ge=1,
+        description="VAE latent 缓存编码批次大小；调大可加速首次缓存，显存不足时调回 1",
+        json_schema_extra=_meta("system", advanced=True),
+    )
 
     # ------------------------------------------------------------------- LoRA
-    lora_type: Literal["lora", "lokr", "loha"] = Field(
+    lora_type: Literal["lora", "lokr", "loha", "ortho", "tlora"] = Field(
         "lokr",
         description="适配器算法。lokr Kronecker 分解参数最省（默认）；lora 经典低秩通用；loha Hadamard 积，表达力较高但参数较多",
         json_schema_extra=_meta("lora"),
@@ -135,6 +140,21 @@ class TrainingConfig(BaseModel):
         8, ge=2,
         description="LoKr 矩阵分解因子：越大压缩越强、参数越少；越小参数越多。默认 8 适合大多数场景",
         json_schema_extra=_meta("lora", show_when="lora_type==lokr"),
+    )
+    tlora_min_rank: int = Field(
+        1, ge=1,
+        description="T-LoRA 高噪声时保留的最小 active rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_alpha_rank_scale: float = Field(
+        1.0, ge=0.0,
+        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向低噪声端才开高 rank",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
+    )
+    tlora_use_ortho: bool = Field(
+        False,
+        description="T-LoRA 专属：启用 OrthoLoRA 的 SVD/Cayley 正交参数化；关闭时使用普通 T-LoRA",
+        json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     lora_dora: bool = Field(
         False,
@@ -766,6 +786,11 @@ class TrainingConfig(BaseModel):
         0, ge=0,
         description="每 N step 采样（0=禁用）",
         json_schema_extra=_meta("sample"),
+    )
+    sample_on_start: bool = Field(
+        False,
+        description="启动训练前先生成 step 0 baseline 采样图；会明显增加起步时间",
+        json_schema_extra=_meta("sample", advanced=True),
     )
     sample_infer_steps: int = Field(
         25, ge=1,
