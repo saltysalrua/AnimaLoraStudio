@@ -60,6 +60,10 @@ export function evalShowWhen(
   if (branches.length > 1) {
     return branches.some((branch) => evalShowWhen(branch, values))
   }
+  const ands = expr.split('&&').map((part) => part.trim()).filter(Boolean)
+  if (ands.length > 1) {
+    return ands.every((clause) => evalShowWhen(clause, values))
+  }
   const eq = expr.split('==')
   if (eq.length === 2) {
     return String(values[eq[0].trim()]) === eq[1].trim()
