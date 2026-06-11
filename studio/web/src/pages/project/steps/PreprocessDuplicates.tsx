@@ -81,13 +81,9 @@ export default function PreprocessDuplicatesPage() {
   const hasQualityCandidates = !!result && (
     result.blur_candidates.length > 0 || result.crop_relations.length > 0
   )
+  // 渲染期推导兜底：质量候选清空后自动落回 groups，不需要 effect 改 state
+  //（scan() 重置 reviewMode，质量计数只会在重扫时变化）。
   const activeReviewMode = reviewMode === 'quality' && hasQualityCandidates ? 'quality' : 'groups'
-
-  useEffect(() => {
-    if (!hasQualityCandidates && reviewMode === 'quality') {
-      setReviewMode('groups')
-    }
-  }, [hasQualityCandidates, reviewMode])
 
   const scan = async () => {
     if (busy) return
@@ -571,14 +567,9 @@ function QualityReviewPanel({
       ? t('duplicates.cropLargerSameArea')
       : t('duplicates.cropLarger', { name })
   )
-  useEffect(() => {
-    if (blurCandidates.length === 0 && cropRelations.length > 0) {
-      setActiveTab('crop')
-    } else if (blurCandidates.length > 0 && cropRelations.length === 0) {
-      setActiveTab('blur')
-    }
-  }, [blurCandidates.length, cropRelations.length])
   if (!result || (blurCandidates.length === 0 && cropRelations.length === 0)) return null
+  // 渲染期推导：某一侧为空时强制落到另一侧（tab 按钮对空侧也是 disabled），
+  // 不用 effect 写回 state。
   const activeQualityTab =
     blurCandidates.length === 0 && cropRelations.length > 0
       ? 'crop'

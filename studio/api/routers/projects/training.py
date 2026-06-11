@@ -446,7 +446,7 @@ def get_latest_reg_prior_task(pid: int, vid: int) -> dict[str, Any]:
             """
             SELECT * FROM tasks
             WHERE project_id = ? AND version_id = ? AND task_type = 'reg_ai'
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
             (pid, vid),

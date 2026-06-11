@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import {
@@ -21,6 +21,7 @@ import StepShell from '../../../components/StepShell'
 import { useToast } from '../../../components/Toast'
 import { useSettingsDrawer } from '../../../lib/SettingsDrawer'
 import { useEventStream } from '../../../lib/useEventStream'
+import { useLatestJobReplay } from '../../../lib/useLatestJobReplay'
 
 interface Ctx {
   project: ProjectDetail
@@ -122,8 +123,6 @@ function fromLLMPreset(p: LLMPreset): LLMTaggerForm {
   }
 }
 
-const splitLog = (log: string): string[] => (log ? log.split('\n') : [])
-
 export default function TaggingPage() {
   const { t } = useTranslation()
   const { project, activeVersion, reload } = useOutletContext<Ctx>()
@@ -146,14 +145,18 @@ export default function TaggingPage() {
   const [llmForm, setLlmForm] = useState<LLMTaggerForm | null>(null)
   const [advOpen, setAdvOpen] = useState(false)
 
-  const [job, setJob] = useState<Job | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
-  const jobRef = useRef<Job | null>(null)
-  const logsRef = useRef<string[]>([])
-  const jobIdRef = useRef<number | null>(null)
-  jobRef.current = job
-  logsRef.current = logs
-  jobIdRef.current = job?.id ?? null
+  const vid = activeVersion?.id ?? null
+
+  const {
+    item: job,
+    logs,
+    setItem: setJob,
+    setLogs,
+    itemIdRef: jobIdRef,
+    refresh: refreshLatestTagJob,
+  } = useLatestJobReplay<Job>(vid, (v) =>
+    api.getLatestVersionJob(project.id, v, 'tag').then((r) => ({ item: r.job, log: r.log })),
+  )
 
   useEffect(() => {
     void api
@@ -181,36 +184,7 @@ export default function TaggingPage() {
       )
   }, [tagger])
 
-  const vid = activeVersion?.id ?? null
-
-  const refreshLatestTagJob = useCallback(async () => {
-    if (!vid) return
-    try {
-      const r = await api.getLatestVersionJob(project.id, vid, 'tag')
-      if (!r.job) {
-        if (jobRef.current?.version_id !== vid) {
-          setJob(null)
-          setLogs([])
-        }
-        return
-      }
-      const current = jobRef.current
-      if (
-        current?.version_id === vid &&
-        current.id !== r.job.id &&
-        (current.status === 'pending' || current.status === 'running')
-      ) return
-      const hydratedLogs = splitLog(r.log)
-      if (
-        current?.version_id === vid &&
-        current.id === r.job.id &&
-        logsRef.current.length > hydratedLogs.length
-      ) return
-      setJob(r.job)
-      setLogs(hydratedLogs)
-    } catch { /* hydrate failure should not block tagging controls */ }
-  }, [project.id, vid])
-
+  // 刷新 / 进入页面时回放最近一次打标 job：锁回 id + 回放历史日志。
   useEffect(() => {
     void refreshLatestTagJob()
   }, [refreshLatestTagJob])

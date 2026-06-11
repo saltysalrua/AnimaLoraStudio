@@ -267,7 +267,6 @@ def test_export_bundle_records_version_and_preset_names(isolated, tmp_path: Path
     source = result["manifest"]["source"]
     assert source["version_label"] == "anime-v2"
     assert source["preset_name"] == "style_preset"
-    assert source["config_name"] == "style_preset"
 
     with zipfile.ZipFile(dest) as zf:
         manifest = json.loads(zf.read("manifest.json"))
@@ -275,7 +274,7 @@ def test_export_bundle_records_version_and_preset_names(isolated, tmp_path: Path
     assert manifest["source"]["preset_name"] == "style_preset"
 
 
-def test_import_bundle_restores_version_and_preset_names(isolated, tmp_path: Path) -> None:
+def _named_bundle(tmp_path: Path, *, with_preset: bool) -> Path:
     bundle = tmp_path / "named.bundle.zip"
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr(
@@ -288,10 +287,24 @@ def test_import_bundle_restores_version_and_preset_names(isolated, tmp_path: Pat
                     "version_label": "anime-v2",
                     "preset_name": "style_preset",
                 },
-                "includes": {"train": True},
+                "includes": {"train": True, "presets": with_preset},
             }),
         )
         zf.writestr("train/1_data/a.png", b"fake")
+        if with_preset:
+            import yaml
+            from studio.schema import TrainingConfig
+
+            zf.writestr(
+                "presets/style_preset.yaml",
+                yaml.safe_dump(TrainingConfig().model_dump(mode="python"),
+                               allow_unicode=True, sort_keys=False),
+            )
+    return bundle
+
+
+def test_import_bundle_restores_version_and_preset_names(isolated, tmp_path: Path) -> None:
+    bundle = _named_bundle(tmp_path, with_preset=True)
 
     with db.connection_for(isolated["db"]) as conn:
         result = train_io.import_bundle(conn, bundle, presets_base=tmp_path / "presets")
@@ -304,6 +317,17 @@ def test_import_bundle_restores_version_and_preset_names(isolated, tmp_path: Pat
         "anime-v2",
     ) / "train"
     assert (train_dir / "1_data" / "a.png").exists()
+
+
+def test_import_bundle_skips_preset_name_when_preset_missing(isolated, tmp_path: Path) -> None:
+    """bundle 没带预设、本机也没有 → config_name 不回填，避免悬空引用。"""
+    bundle = _named_bundle(tmp_path, with_preset=False)
+
+    with db.connection_for(isolated["db"]) as conn:
+        result = train_io.import_bundle(conn, bundle, presets_base=tmp_path / "presets")
+
+    assert result["version"]["label"] == "anime-v2"
+    assert result["version"]["config_name"] is None
 
 
 def test_import_bundle_rejects_dot_version_label(isolated, tmp_path: Path) -> None:
