@@ -39,7 +39,10 @@ def run(ctx: TrainingContext) -> None:
     args = ctx.args
 
     # 数据集
-    ctx.bucket_mgr = BucketManager(args.resolution)
+    ctx.bucket_mgr = BucketManager(
+        args.resolution,
+        constant_token_mode=getattr(args, "torch_compile", False),
+    )
     ctx.base_dataset = ImageDataset(
         args.data_dir, args.resolution, ctx.bucket_mgr,
         shuffle_caption=args.shuffle_caption,
