@@ -21,6 +21,35 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
+# Constant-token bucket tables for torch.compile mode.
+# Each family guarantees (W/16)*(H/16) == fixed token count, so compiled graphs
+# are reused across all aspect ratios within the same family.
+# Two families (4032, 4200) cover common AR range 0.57-1.75 with 12 resolutions.
+CONSTANT_TOKEN_BUCKETS = {
+    4032: [
+        (1024, 1008),  # 64×63  ~1:1
+        (1008, 1024),  # 63×64  ~1:1
+        (1152, 896),   # 72×56  ~1.29:1
+        (896, 1152),   # 56×72  ~0.78:1
+        (1344, 768),   # 84×48  ~1.75:1
+        (768, 1344),   # 48×84  ~0.57:1
+    ],
+    4200: [
+        (1120, 960),   # 70×60  ~1.17:1
+        (960, 1120),   # 60×70  ~0.86:1
+        (1200, 896),   # 75×56  ~1.34:1
+        (896, 1200),   # 56×75  ~0.75:1
+        (1344, 800),   # 84×50  ~1.68:1
+        (800, 1344),   # 50×84  ~0.60:1
+    ],
+}
+
+# Flat list for BucketManager constant_token_mode
+CONSTANT_TOKEN_BUCKET_LIST = [
+    reso for family in CONSTANT_TOKEN_BUCKETS.values() for reso in family
+]
+
+
 class BucketManager:
     """ARB 分桶管理.
 
@@ -36,9 +65,13 @@ class BucketManager:
     See ``docs/design/preprocess-crop-design.md`` §7 for the UX policy and
     rationale.
     """
-    def __init__(self, base_reso=1024, min_reso=512, max_reso=2048, step=64):
+    def __init__(self, base_reso=1024, min_reso=512, max_reso=2048, step=64, constant_token_mode=False):
         self.base_reso = base_reso
-        self.buckets = self._generate(min_reso, max_reso, step, base_reso)
+        self.constant_token_mode = constant_token_mode
+        if constant_token_mode:
+            self.buckets = list(CONSTANT_TOKEN_BUCKET_LIST)
+        else:
+            self.buckets = self._generate(min_reso, max_reso, step, base_reso)
 
     def _generate(self, min_r, max_r, step, base):
         # Keep algorithm identical to trainBuckets.generateBuckets() in TS:
