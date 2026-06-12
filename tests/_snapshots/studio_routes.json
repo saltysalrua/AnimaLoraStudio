@@ -1396,12 +1396,6 @@
       ],
       "name": "get_sample",
       "type": "APIRoute"
-    },
-    {
-      "path": "/studio",
-      "methods": [],
-      "name": "studio",
-      "type": "Mount"
     }
   ]
 }
