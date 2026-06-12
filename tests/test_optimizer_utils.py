@@ -3,7 +3,7 @@
 - optimizer_eval_mode context manager 对 PPSF / 非 PPSF 行为
 - create_prodigy_plus_schedulefree 工厂在依赖缺失时友好报错
 - 工厂 lr 强制 1.0 + betas 默认覆盖逻辑
-- Automagic v1: step、bf16 Kahan (fp32 shift)、state_dict roundtrip
+- Automagic v1: step、bf16 Kahan（shift 同 param dtype，对齐 diffusion-pipe）、state_dict roundtrip
 - Automagic v2: fused backward hook、scalar lr
 """
 from __future__ import annotations
@@ -230,7 +230,7 @@ def test_automagic_bf16_step_runs_finite() -> None:
         assert torch.isfinite(p).all(), "bf16 Kahan path produced non-finite p"
         # Kahan 路径必须建出 shift state
         assert "shift" in optim.state[p]
-        assert optim.state[p]["shift"].dtype == torch.float32
+        assert optim.state[p]["shift"].dtype == torch.bfloat16
 
 
 def test_automagic_state_dict_roundtrip() -> None:
@@ -424,63 +424,27 @@ def test_create_ppsf_exposes_train_eval_methods() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_automagic_optimizer_updates_parameters() -> None:
-    """Automagic v1 基本 step 能跑通 — 参数发生变化。"""
-    torch.manual_seed(42)
-    model = nn.Linear(4, 4, bias=False)
-    p_before = model.weight.data.clone()
-
-    optim = create_automagic(model.parameters(), lr=1e-4)
-    # 模拟 5 步训练
-    for _ in range(5):
-        out = model(torch.randn(2, 4))
-        loss = out.sum()
-        loss.backward()
-        optim.step()
-        optim.zero_grad()
-
-    assert not torch.allclose(model.weight.data, p_before), "5 步后参数应该有变化"
-
-
-def test_automagic_bf16_shift_is_fp32() -> None:
-    """核心修复验证：bf16 参数的 Kahan shift buffer 必须是 fp32。"""
+def test_automagic_bf16_shift_dtype_stable_across_resume() -> None:
+    """bf16 参数的 Kahan shift buffer 与上游 diffusion-pipe 对齐：同 param dtype
+    （bf16）。关键性质是 resume 稳定 —— PyTorch load_state_dict 会把 float state
+    cast 到 param dtype，bf16 shift 在 roundtrip 后 dtype 不变（fp32 shift 则会被
+    静默降成 bf16，行为漂移）。"""
     p = nn.Parameter(torch.randn(8, 8, dtype=torch.bfloat16))
     optim = Automagic([p], lr=1e-4)
 
-    # 手动触发一步让 state 初始化
     p.grad = torch.randn_like(p)
     optim.step()
 
     state = optim.state[p]
     assert "shift" in state, "bf16 参数应该创建 shift buffer"
-    assert state["shift"].dtype == torch.float32, (
-        f"shift 应为 fp32，实际 {state['shift'].dtype}"
-    )
+    assert state["shift"].dtype == p.dtype
 
-
-def test_automagic_state_dict_roundtrip() -> None:
-    """lr_mask (Auto8bitTensor) 序列化/反序列化后数值不丢失。"""
-    torch.manual_seed(0)
-    p = nn.Parameter(torch.randn(16, 16))
-    optim = Automagic([p], lr=1e-4)
-
-    # 跑几步让 lr_mask 积累非零值
-    for _ in range(10):
-        p.grad = torch.randn_like(p)
-        optim.step()
-        p.grad = None
-
+    # state_dict roundtrip 后 dtype 不漂移
     sd = optim.state_dict()
-
-    # 新建实例并 load
-    p2 = nn.Parameter(torch.randn(16, 16))
+    p2 = nn.Parameter(torch.randn(8, 8, dtype=torch.bfloat16))
     optim2 = Automagic([p2], lr=1e-4)
     optim2.load_state_dict(sd)
-
-    # 比较 lr_mask 数值
-    orig_lr = optim.state[p]["lr_mask"].dequantize()
-    loaded_lr = optim2.state[p2]["lr_mask"].dequantize()
-    assert torch.allclose(orig_lr, loaded_lr, atol=1e-6), "lr_mask roundtrip 应保持数值一致"
+    assert optim2.state[p2]["shift"].dtype == p2.dtype
 
 
 # ---------------------------------------------------------------------------
@@ -557,3 +521,47 @@ def test_create_optimizer_dispatches_automagic_v2() -> None:
     model = nn.Linear(4, 4)
     optim = create_optimizer("automagic_v2", model.parameters(), learning_rate=1e-3)
     assert isinstance(optim, Automagic2)
+
+
+# ---------------------------------------------------------------------------
+# Automagic v2 守卫（followup：fused 路径自卫）
+# ---------------------------------------------------------------------------
+
+
+def test_automagic_v2_skips_nonfinite_grad() -> None:
+    """fused 路径绕过训练循环的 step 边界 NaN 检查，必须在 hook 内自卫。"""
+    p = nn.Parameter(torch.ones(4, 4))
+    optim = Automagic2([p], lr=1e-4)
+    before = p.detach().clone()
+    p.grad = torch.full_like(p, float("nan"))
+    optim._update_param(p, optim.param_groups[0])
+    assert torch.equal(p.detach(), before), "NaN 梯度不应触碰参数"
+    assert p.grad is None, "坏梯度应被丢弃"
+
+
+def test_automagic_v2_second_moment_fp32_under_bf16() -> None:
+    """二阶矩固定 fp32：bf16 存储会让 (1-beta2)=1e-3 的 EMA 增量被 round 吞掉。"""
+    p = nn.Parameter(torch.randn(4, 4, dtype=torch.bfloat16))
+    optim = Automagic2([p], lr=1e-6)
+    p.grad = torch.randn_like(p)
+    optim._update_param(p, optim.param_groups[0])
+    st = optim.state[p]
+    assert st["exp_avg_sq_row"].dtype == torch.float32
+    assert st["exp_avg_sq_col"].dtype == torch.float32
+    assert st["lr"].dtype == torch.float32
+
+
+def test_automagic_v2_validate_rejects_grad_accum() -> None:
+    """v2 fused backward 与梯度累积语义冲突，启动期必须拦截。"""
+    from types import SimpleNamespace
+    from training.optimizers import automagic as automagic_builder
+
+    args = SimpleNamespace(
+        lr_scheduler="none", automagic_variant="v2",
+        mixed_precision="bf16", grad_clip_max_norm=0, grad_accum=4,
+    )
+    with pytest.raises(ValueError, match="grad_accum"):
+        automagic_builder.validate(args)
+
+    args.grad_accum = 1
+    automagic_builder.validate(args)  # 不应抛

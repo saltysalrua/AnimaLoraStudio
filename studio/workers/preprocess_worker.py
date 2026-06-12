@@ -400,6 +400,9 @@ def _run_crop_train(
 
             # 输出可能换成 .png 或 fan-out 成多张；源不再属于 outputs 时必须删，
             # 否则从 bundle/版本复制来的 train-only 数据会同时保留原图 + 裁剪图。
+            # 已知边界（沿袭旧行为）：`{stem}.png` 进 stale 集是为了清掉历史
+            # N=1 crop 的产物；若 train 里恰好有同 stem 的两张独立图
+            # （X.jpg + X.png），对 X.jpg fan-out 会把无关的 X.png 一并删掉。
             stale_rels = {src_rel, f"{folder}/{src_stem}.png"} - set(out_rels)
             output_stems = {Path(rel).stem for rel in out_rels}
             for stale_rel in sorted(stale_rels):

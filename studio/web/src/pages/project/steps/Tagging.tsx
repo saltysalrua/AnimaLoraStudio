@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useOutletContext } from 'react-router-dom'
 import {
@@ -16,11 +16,11 @@ import {
 } from '../../../api/client'
 import LLMMessagesEditor from '../../../components/LLMMessagesEditor'
 import TagsInput from '../../../components/TagsInput'
-import JobProgress from '../../../components/JobProgress'
 import StepShell from '../../../components/StepShell'
 import { useToast } from '../../../components/Toast'
 import { useSettingsDrawer } from '../../../lib/SettingsDrawer'
 import { useEventStream } from '../../../lib/useEventStream'
+import { useLatestJobReplay } from '../../../lib/useLatestJobReplay'
 
 interface Ctx {
   project: ProjectDetail
@@ -122,8 +122,6 @@ function fromLLMPreset(p: LLMPreset): LLMTaggerForm {
   }
 }
 
-const splitLog = (log: string): string[] => (log ? log.split('\n') : [])
-
 export default function TaggingPage() {
   const { t } = useTranslation()
   const { project, activeVersion, reload } = useOutletContext<Ctx>()
@@ -146,14 +144,18 @@ export default function TaggingPage() {
   const [llmForm, setLlmForm] = useState<LLMTaggerForm | null>(null)
   const [advOpen, setAdvOpen] = useState(false)
 
-  const [job, setJob] = useState<Job | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
-  const jobRef = useRef<Job | null>(null)
-  const logsRef = useRef<string[]>([])
-  const jobIdRef = useRef<number | null>(null)
-  jobRef.current = job
-  logsRef.current = logs
-  jobIdRef.current = job?.id ?? null
+  const vid = activeVersion?.id ?? null
+
+  const {
+    item: job,
+    logs,
+    setItem: setJob,
+    setLogs,
+    itemIdRef: jobIdRef,
+    refresh: refreshLatestTagJob,
+  } = useLatestJobReplay<Job>(vid, (v) =>
+    api.getLatestVersionJob(project.id, v, 'tag').then((r) => ({ item: r.job, log: r.log })),
+  )
 
   useEffect(() => {
     void api
@@ -181,36 +183,7 @@ export default function TaggingPage() {
       )
   }, [tagger])
 
-  const vid = activeVersion?.id ?? null
-
-  const refreshLatestTagJob = useCallback(async () => {
-    if (!vid) return
-    try {
-      const r = await api.getLatestVersionJob(project.id, vid, 'tag')
-      if (!r.job) {
-        if (jobRef.current?.version_id !== vid) {
-          setJob(null)
-          setLogs([])
-        }
-        return
-      }
-      const current = jobRef.current
-      if (
-        current?.version_id === vid &&
-        current.id !== r.job.id &&
-        (current.status === 'pending' || current.status === 'running')
-      ) return
-      const hydratedLogs = splitLog(r.log)
-      if (
-        current?.version_id === vid &&
-        current.id === r.job.id &&
-        logsRef.current.length > hydratedLogs.length
-      ) return
-      setJob(r.job)
-      setLogs(hydratedLogs)
-    } catch { /* hydrate failure should not block tagging controls */ }
-  }, [project.id, vid])
-
+  // 刷新 / 进入页面时回放最近一次打标 job：锁回 id + 回放历史日志。
   useEffect(() => {
     void refreshLatestTagJob()
   }, [refreshLatestTagJob])
@@ -336,6 +309,22 @@ export default function TaggingPage() {
       idx={3}
       title={t('steps.tag.title')}
       subtitle={t('steps.tag.subtitle')}
+      logSources={[
+        job && {
+          key: 'tag',
+          label: t('logDrawer.tag'),
+          status: job.status,
+          lines: logs,
+          startedAt: job.started_at,
+          finishedAt: job.finished_at,
+          onCancel: () => {
+            void api
+              .cancelJob(job.id)
+              .then(() => toast(t('tag.cancelToast'), 'success'))
+              .catch((e) => toast(String(e), 'error'))
+          },
+        },
+      ]}
       actions={
         <button
           onClick={startTagging}
@@ -350,9 +339,8 @@ export default function TaggingPage() {
 
       <div className="grid gap-3 flex-1 min-h-0" style={{ gridTemplateColumns: '1.5fr 1fr' }}>
 
-        {/* 左栏：参数区可滚动，日志区固定在底部，避免高级选项展开后把日志挤出视口。 */}
-        <div className="flex flex-col gap-3 min-h-0 min-w-0">
-          <div className="flex flex-col gap-3 flex-1 min-h-0 min-w-0 overflow-y-auto pr-1">
+        {/* 左栏：参数区整体滚动；任务日志走 StepShell 的统一抽屉（issue #251） */}
+        <div className="flex flex-col gap-3 min-h-0 min-w-0 overflow-y-auto">
           <section className="rounded-md border border-subtle bg-surface px-3 py-2 flex flex-wrap items-center gap-2 shrink-0 text-sm">
             <span className="text-fg-tertiary">tagger</span>
             <select
@@ -482,24 +470,6 @@ export default function TaggingPage() {
             />
           )}
 
-          </div>
-
-          {job && (
-            <div className="shrink-0">
-              <JobProgress
-                job={job}
-                logs={logs}
-                onCancel={async () => {
-                  try {
-                    await api.cancelJob(job.id)
-                    toast(t('tag.cancelToast'), 'success')
-                  } catch (e) {
-                    toast(String(e), 'error')
-                  }
-                }}
-              />
-            </div>
-          )}
         </div>
 
         {/* 右栏：预览面板 */}

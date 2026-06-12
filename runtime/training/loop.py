@@ -31,6 +31,7 @@ from training.state import save_training_state
 from training.text_encoding import (
     _build_qwen_text_from_prompt,
     encode_qwen,
+    tokenize_t5_comfy_literal,
     tokenize_t5_weighted,
 )
 from utils.optimizer_utils import get_optimizer_monitor_metrics, optimizer_eval_mode
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 def run(ctx: TrainingContext) -> None:
     """跑训练直到 args.epochs 或 args.max_steps 上限。"""
     args = ctx.args
+
+    if getattr(args, "kv_trim", False) and getattr(args, "torch_compile", False):
+        logger.warning("kv_trim 已被 torch_compile 静默禁用（动态 seq 维度导致 recompile）")
 
     step_start_time = time.perf_counter()
 
@@ -71,10 +75,20 @@ def run(ctx: TrainingContext) -> None:
 
             # 文本编码
             with torch.no_grad():
-                # 参考指南/ComfyUI：Qwen 通道不传权重；T5 通道提供 token 权重
-                qwen_texts = [_build_qwen_text_from_prompt(c) for c in captions]
-                qwen_emb, qwen_attn = encode_qwen(ctx.qwen_model, ctx.qwen_tok, qwen_texts, ctx.device)
-                t5_ids, t5_attn, t5_w = tokenize_t5_weighted(ctx.t5_tok, captions, max_length=512)
+                if bool(getattr(args, "caption_comfy_encoding", True)):
+                    # Comfy-style（默认）：raw caption 进 Qwen（不清洗）；T5 整段
+                    # 字面 tokenize，不解析权重语法——booru 括号 tag 保持字面，
+                    # 等价于 CUI 用户推理时转义后 T5 看到的序列。与测试出图 /
+                    # 训练预览的 conditioning 同一链路。
+                    qwen_texts = [str(c) for c in captions]
+                    qwen_emb, qwen_attn = encode_qwen(ctx.qwen_model, ctx.qwen_tok, qwen_texts, ctx.device)
+                    t5_ids, t5_attn, t5_w = tokenize_t5_comfy_literal(ctx.t5_tok, captions, max_length=512)
+                else:
+                    # legacy（A/B 对照 / 旧 state 续训）：清洗 Qwen 文本；T5 按
+                    # 逗号逐 tag 分词 + (tag:1.3) 权重语法
+                    qwen_texts = [_build_qwen_text_from_prompt(c) for c in captions]
+                    qwen_emb, qwen_attn = encode_qwen(ctx.qwen_model, ctx.qwen_tok, qwen_texts, ctx.device)
+                    t5_ids, t5_attn, t5_w = tokenize_t5_weighted(ctx.t5_tok, captions, max_length=512)
                 t5_ids = t5_ids.to(ctx.device)
                 t5_attn = t5_attn.to(ctx.device)
                 t5_w = t5_w.to(ctx.device, dtype=torch.float32)
@@ -85,7 +99,8 @@ def run(ctx: TrainingContext) -> None:
                     cross = F.pad(cross, (0, 0, 0, 512 - cross.shape[1]))
                 # KV trim：把 padding 截到最近有效 token bucket（64/128/256/512）
                 # t5_attn=1 表示有效 token；取批次内最大实际长度再 round up
-                if getattr(args, "kv_trim", False):
+                # torch.compile 模式禁用 kv_trim（trim 引入动态 seq 维度，导致 recompile）
+                if getattr(args, "kv_trim", False) and not getattr(args, "torch_compile", False):
                     _actual = int(t5_attn.sum(dim=-1).max().item())
                     _bucket = 512  # _actual > 512 时兜底（不裁，保持原行为）
                     for _b in (64, 128, 256, 512):

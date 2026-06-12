@@ -65,7 +65,11 @@ class TrainingConfig(BaseModel):
     resolution: int = Field(
         1024, ge=256, le=4096,
         description="训练分辨率",
-        json_schema_extra=_meta("dataset"),
+        json_schema_extra=_meta(
+            "dataset",
+            alt_description="训练分辨率（torch.compile 模式下使用 constant-token bucket 表，实际分辨率由 token 数决定而非自由 ARB）",
+            alt_description_when="torch_compile==true",
+        ),
     )
     reg_data_dir: Optional[str] = Field(
         None,
@@ -109,21 +113,28 @@ class TrainingConfig(BaseModel):
         description="优先使用 JSON 标签文件（推荐，支持分类 shuffle）",
         json_schema_extra=_meta("caption"),
     )
+    caption_comfy_encoding: bool = Field(
+        True,
+        description="标签按 ComfyUI 方式编码文本（与测试出图、采样预览同一条编码链路，"
+                    "推荐保持开启）；关闭走旧版逐 tag 编码，用于新旧编码 A/B 对比，"
+                    "或继续用旧编码训练的断点状态",
+        json_schema_extra=_meta("caption", advanced=True),
+    )
     cache_latents: bool = Field(
         True,
         description="缓存 VAE latent 加速训练",
         json_schema_extra=_meta("system"),
     )
     vae_cache_batch_size: int = Field(
-        4, ge=1,
-        description="VAE latent 缓存编码批次大小；调大可加速首次缓存，显存不足时调回 1",
+        0, ge=0,
+        description="VAE latent 缓存编码批次大小；0=跟随训练 batch size，显存不足时设为 1 逐张编码",
         json_schema_extra=_meta("system", advanced=True),
     )
 
     # ------------------------------------------------------------------- LoRA
     lora_type: Literal["lora", "lokr", "loha", "ortho", "tlora"] = Field(
         "lokr",
-        description="适配器算法。lokr Kronecker 分解参数最省（默认）；lora 经典低秩通用；loha Hadamard 积，表达力较高但参数较多",
+        description="适配器算法。lokr Kronecker 分解参数最省（默认）；lora 经典低秩通用；loha Hadamard 积，表达力较高但参数较多；ortho SVD/Cayley 正交参数化；tlora 时间步自适应 rank",
         json_schema_extra=_meta("lora"),
     )
     lora_rank: int = Field(
@@ -143,12 +154,16 @@ class TrainingConfig(BaseModel):
     )
     tlora_min_rank: int = Field(
         1, ge=1,
-        description="T-LoRA 高噪声时保留的最小 active rank",
+        description="T-LoRA 高噪声时保留的最小 active rank（与论文 ControlGenAI/T-LoRA 对齐，默认 1）",
         json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     tlora_alpha_rank_scale: float = Field(
         1.0, ge=0.0,
-        description="T-LoRA timestep 到 active rank 的幂次缩放；越大越偏向低噪声端才开高 rank",
+        description=(
+            "T-LoRA 幂次缩放（对齐官方 SDXL `alpha_rank_scale`）：1.0=线性 schedule；"
+            ">1 越偏向低噪声端才开高 rank；<1 越早开高 rank。"
+            "公式 r=(1-t)^α·(rank-min_rank)+min_rank，t 为 noise level (0=clean, 1=noisy)"
+        ),
         json_schema_extra=_meta("lora", show_when="lora_type==tlora", advanced=True),
     )
     tlora_use_ortho: bool = Field(
@@ -232,7 +247,7 @@ class TrainingConfig(BaseModel):
             "training",
             disable_when="optimizer_type==automagic||optimizer_type==prodigy||optimizer_type==prodigy_plus_schedulefree",
             disable_value="none",
-            disable_hint="此优化器固定为常数学习率",
+            disable_hint="自适应优化器固定为常数学习率",
         ),
     )
     lr_scheduler_t0: int = Field(
@@ -260,47 +275,6 @@ class TrainingConfig(BaseModel):
         description="优化器。adamw 标准基线；automagic 自适应每参数 lr（推荐 lr=1e-6）；lion 显存约 AdamW 一半（推荐 lr=AdamW lr / 3）；prodigy / prodigy_plus_schedulefree 自适应估 lr（lr 填 1.0）",
         json_schema_extra=_meta("training"),
     )
-    # ---------------- Automagic 专属字段 ----------------
-    automagic_variant: Literal["v1", "v2"] = Field(
-        "v1",
-        description="v1: per-element lr mask（经典）；v2: per-param scalar lr + fused backward（省 VRAM，不兼容 grad_clip）",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic"),
-    )
-    automagic_min_lr: float = Field(
-        1e-7, ge=0.0,
-        description="自适应 lr 下界；低于此值时停止降低",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
-    )
-    automagic_max_lr: float = Field(
-        1e-3, gt=0.0,
-        description="自适应 lr 上界；高于此值时停止升高",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
-    )
-    automagic_lr_bump: float = Field(
-        1e-6, gt=0.0,
-        description="每步 lr 涨/降幅度",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
-    )
-    automagic_beta2: float = Field(
-        0.999, ge=0.0, lt=1.0,
-        description="二阶矩 EMA 衰减率",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
-    )
-    automagic_clip_threshold: float = Field(
-        1.0, gt=0.0,
-        description="RMS 裁剪阈值（内部梯度归一化）",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
-    )
-    automagic_agreement_threshold: float = Field(
-        0.5, ge=0.0, le=1.0,
-        description="v2 符号一致率阈值：超过此比例认为方向一致 → 涨 lr",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic&&automagic_variant==v2", advanced=True),
-    )
-    automagic_eps: float = Field(
-        1e-30, gt=0.0,
-        description="数值稳定性 epsilon（极少需要修改）",
-        json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True, hidden=True),
-    )
     prodigy_d_coef: float = Field(
         1.0, ge=0.1, le=10.0,
         description="Prodigy 估出的 d 整体缩放系数；越大有效 lr 越大。欠拟合时调高（2.0+），过拟合 / 小数据集时调低（0.5）",
@@ -320,6 +294,11 @@ class TrainingConfig(BaseModel):
         0.99, ge=0.0, lt=1.0,
         description="Lion β2（动量累计系数）",
         json_schema_extra=_meta("training", show_when="optimizer_type==lion", advanced=True),
+    )
+    automagic_variant: Literal["v1", "v2"] = Field(
+        "v1",
+        description="v1: per-element lr mask（经典，推荐）；v2: per-param scalar lr + fused backward（实验性，省显存；与 grad_accum / grad_clip / fp16 不兼容）",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic"),
     )
     automagic_min_lr: float = Field(
         1e-7, ge=0.0,
@@ -350,6 +329,11 @@ class TrainingConfig(BaseModel):
         1.0, gt=0.0,
         description="Automagic update RMS 裁剪阈值",
         json_schema_extra=_meta("training", show_when="optimizer_type==automagic", advanced=True),
+    )
+    automagic_agreement_threshold: float = Field(
+        0.5, ge=0.0, le=1.0,
+        description="v2 符号一致率阈值：超过此比例认为方向一致 → 涨 lr",
+        json_schema_extra=_meta("training", show_when="optimizer_type==automagic&&automagic_variant==v2", advanced=True),
     )
     # ---------------- ProdigyPlusScheduleFree (PPSF) 专属字段 ----------------
     # 选 PPSF 时 lr_scheduler 必须为 none（Schedule-Free 不需要 scheduler，
@@ -407,7 +391,12 @@ class TrainingConfig(BaseModel):
     kv_trim: bool = Field(
         False,
         description="Cross-attention KV trim：按实际 token 数裁到最近 bucket（64/128/256/512），减少 padding 计算量",
-        json_schema_extra=_meta("system", advanced=True),
+        json_schema_extra=_meta(
+            "system", advanced=True,
+            disable_when="torch_compile==true",
+            disable_value=False,
+            disable_hint="torch.compile 模式需要固定序列维度，已自动禁用 KV trim",
+        ),
     )
     noise_enhancement_type: Literal["none", "offset", "pyramid"] = Field(
         "none",
@@ -578,36 +567,6 @@ class TrainingConfig(BaseModel):
         description="detail_inv_t 权重上限。默认 5.0；降低（如 3）减弱细节强化，提高（如 8）激进强化细节",
         json_schema_extra=_meta("loss", show_when="loss_weighting==detail_inv_t", advanced=True),
     )
-    leap_enabled: bool = Field(
-        False,
-        description="【LeapAlign 自蒸馏】启用两步跳跃自蒸馏（去奖励模型版）：每步用真实 latent 当 x0，per-sample 采两个时刻 (k>j) 做两步跳跃，loss=MSE(两步预测的 x̂0, 真实 x0)。本质是 shortcut/consistency 式自蒸馏，每步 2 次前向（约 2× 标准训练算力）。与 InfoNoise/loss_weighting 互斥",
-        json_schema_extra=_meta("loss"),
-    )
-    leap_ratio: float = Field(
-        1.0, ge=0.0, le=1.0,
-        description="【LeapAlign 混合训练】每步按此概率走 leap 自蒸馏、其余走传统 rectified flow：1.0 纯 leap（管全局结构）；0.0 纯传统（管细节锐度）；0.6 大头吃 leap 全局对齐、留点传统精修兜住细节。两股梯度叠在同一组 LoRA 权重上各取所长",
-        json_schema_extra=_meta("loss", show_when="leap_enabled==true", advanced=True),
-    )
-    leap_nested_grad_coe: float = Field(
-        0.3, ge=0.0, le=1.0,
-        description="【LeapAlign】梯度折扣 α（论文 Eq 9）：缩放第二跳对 x_j 的嵌套梯度。0=砍掉嵌套梯度（最省显存），1=不折扣（梯度最完整但易爆）。论文最优 0.3",
-        json_schema_extra=_meta("loss", show_when="leap_enabled==true", advanced=True),
-    )
-    leap_min_gap: float = Field(
-        0.1, ge=0.01, le=0.9,
-        description="【LeapAlign】两个采样时刻 (k,j) 的最小间隔：越大跳跃跨度越大、自蒸馏越激进但误差累积越多。典型 0.1-0.3",
-        json_schema_extra=_meta("loss", show_when="leap_enabled==true", advanced=True),
-    )
-    leap_traj_sim_weighting: bool = Field(
-        False,
-        description="【LeapAlign】轨迹相似度加权（论文 Eq 12）：跳跃越贴近真实路径权重越高，抑制大跨度跳跃的离谱预测主导 loss。默认关",
-        json_schema_extra=_meta("loss", show_when="leap_enabled==true", advanced=True),
-    )
-    leap_traj_sim_min: float = Field(
-        0.1, ge=1e-4,
-        description="【LeapAlign】轨迹相似度加权下限 τ：防止近乎相同的跳跃对被 1/d 过度放大。越小越激进。典型 0.05-0.2",
-        json_schema_extra=_meta("loss", show_when="leap_traj_sim_weighting==true", advanced=True),
-    )
     grad_clip_max_norm: float = Field(
         1.0, ge=0.0,
         description="梯度裁剪最大范数：当本步所有可训练参数的梯度全局范数超过该值时按比例缩到该值，防止单步极端梯度把模型推飞；默认 1.0 适合绝大多数场景，bf16+DoRA/LoKr 不稳可降到 0.5，0=禁用",
@@ -623,7 +582,16 @@ class TrainingConfig(BaseModel):
     attention_backend: AttentionBackend = Field(
         "flash_attn",
         description="Attention 后端。none = PyTorch SDPA 默认；xformers 显存更省；flash_attn 最快（需 Ampere+ GPU 支持）",
-        json_schema_extra=_meta("system"),
+        json_schema_extra=_meta(
+            "system",
+            alt_description="Attention 后端（torch.compile 模式下 block 内部走 compile-friendly SDPA 路径，此选项仅影响未编译的部分）",
+            alt_description_when="torch_compile==true",
+        ),
+    )
+    torch_compile: bool = Field(
+        False,
+        description="启用 torch.compile 加速（实验性）。自动启用 constant-token bucketing + per-block Inductor 编译。需要 Ampere+ GPU、CUDA toolkit。首步有 ~30s 编译预热",
+        json_schema_extra=_meta("system", advanced=True),
     )
     num_workers: int = Field(
         0, ge=0,
@@ -641,13 +609,26 @@ class TrainingConfig(BaseModel):
     def _migrate_noise_enhancement(cls, data: Any) -> Any:
         return migrate_noise_enhancement_type(data)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_sample_sampler_scheduler(cls, data: Any) -> Any:
+        """sampler/scheduler 收紧为 Literal 前是自由文本，旧 preset / 旧版本
+        config 可能存了其他值（如 euler，当年走 inline Euler 兜底）。统一
+        归并到默认值而不是让整个 config 加载失败。"""
+        if isinstance(data, dict):
+            if data.get("sample_sampler_name") not in (None, "er_sde", "dpmpp_3m_sde"):
+                data["sample_sampler_name"] = "er_sde"
+            if data.get("sample_scheduler") not in (None, "simple", "sgm_uniform"):
+                data["sample_scheduler"] = "simple"
+        return data
+
     @model_validator(mode="after")
     def _validate_prodigy_scheduler(self) -> "TrainingConfig":
         """Prodigy / Automagic 系列固定使用常数学习率，外部 scheduler 统一拦截。"""
         if self.optimizer_type in {"automagic", "prodigy", "prodigy_plus_schedulefree"} and self.lr_scheduler != "none":
             raise ValueError(
                 f"optimizer_type={self.optimizer_type} requires lr_scheduler=none "
-                "(此优化器内部管理学习率)."
+                "(自适应优化器固定使用常数学习率)."
             )
         return self
 
@@ -740,36 +721,6 @@ class TrainingConfig(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def _validate_leap_exclusive(self) -> "TrainingConfig":
-        """LeapAlign 自蒸馏与 InfoNoise / loss_weighting 互斥。
-
-        leap 路径每步 per-sample 采两个时刻 (k,j) 做两步跳跃，单步只有 (k,j) 这对
-        timestep，不存在标准路径里那个唯一的 t：
-        - InfoNoise：用单一 t 的 raw MSE 学 I-MMSE schedule，双 timestep 无从 record；
-          且 leap 的 loss 是 x̂0 自蒸馏 MSE，不是 v 预测 MSE，语义也不匹配。
-        - loss_weighting：min_snr / detail_inv_t / cosmap 全都按单一 t 算 SNR 权重，
-          双 timestep 没有定义；leap 自带 traj_sim_weighting 做轨迹质量加权。
-        故 leap 路径在 loop.py 里有意跳过这两个机制，这里强制配置层面关闭，避免用户
-        以为开了却被静默忽略。
-        """
-        if self.leap_enabled:
-            if self.infonoise_enabled:
-                raise ValueError(
-                    "leap_enabled=true 与 infonoise_enabled=true 互斥：leap 每步采两个时刻 "
-                    "(k,j) 做两步跳跃，没有 InfoNoise 学 I-MMSE 所需的单一 t，且 loss 是 x̂0 "
-                    "自蒸馏而非 v 预测 MSE。请二选一：(a) 关闭 leap 用 InfoNoise；"
-                    "或 (b) 设 infonoise_enabled=false 走 leap 自蒸馏。"
-                )
-            if self.loss_weighting != "none":
-                raise ValueError(
-                    f"leap_enabled=true 与 loss_weighting={self.loss_weighting!r} 互斥：loss 加权"
-                    "按单一 t 算 SNR 权重，leap 的双 timestep 无从定义；leap 用 "
-                    "leap_traj_sim_weighting 做轨迹质量加权。请二选一：(a) 关闭 leap；"
-                    "或 (b) 设 loss_weighting=none 走 leap 自蒸馏。"
-                )
-        return self
-
     # ---------------------------------------------------------------- 输出/保存
     output_dir: str = Field(
         "./output",
@@ -828,11 +779,6 @@ class TrainingConfig(BaseModel):
         description="每 N step 采样（0=禁用）",
         json_schema_extra=_meta("sample"),
     )
-    sample_on_start: bool = Field(
-        False,
-        description="启动训练前先生成 step 0 baseline 采样图；会明显增加起步时间",
-        json_schema_extra=_meta("sample", advanced=True),
-    )
     sample_infer_steps: int = Field(
         25, ge=1,
         description="推理步数",
@@ -843,14 +789,15 @@ class TrainingConfig(BaseModel):
         description="CFG Scale",
         json_schema_extra=_meta("sample"),
     )
-    sample_sampler_name: str = Field(
+    sample_sampler_name: Literal["er_sde", "dpmpp_3m_sde"] = Field(
         "er_sde",
-        description="采样器",
+        description="采样器。er_sde 默认；dpmpp_3m_sde 与 ComfyUI 同款"
+                    "（BrownianTree 噪声，需要 torchsde）",
         json_schema_extra=_meta("sample"),
     )
-    sample_scheduler: str = Field(
+    sample_scheduler: Literal["simple", "sgm_uniform"] = Field(
         "simple",
-        description="调度器",
+        description="调度器。simple 默认；sgm_uniform 为 ComfyUI 的 SGM 均匀切分",
         json_schema_extra=_meta("sample"),
     )
     sample_width: int = Field(

@@ -21,6 +21,47 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
+# Constant-token bucket tables for torch.compile mode.
+# Each family guarantees (W/16)*(H/16) == fixed token count, so compiled graphs
+# are reused across all aspect ratios within the same family.
+# Two families (4032, 4200) cover AR range 0.25-3.94 with 24 resolutions.
+CONSTANT_TOKEN_BUCKETS = {
+    4032: [
+        (1008, 1024),  # 63×64  ar 0.98
+        (1024, 1008),  # 64×63  ar 1.02
+        (896, 1152),   # 56×72  ar 0.78
+        (1152, 896),   # 72×56  ar 1.29
+        (768, 1344),   # 48×84  ar 0.57
+        (1344, 768),   # 84×48  ar 1.75
+        (672, 1536),   # 42×96  ar 0.44
+        (1536, 672),   # 96×42  ar 2.29
+        (576, 1792),   # 36×112 ar 0.32
+        (1792, 576),   # 112×36 ar 3.11
+        (512, 2016),   # 32×126 ar 0.25
+        (2016, 512),   # 126×32 ar 3.94
+    ],
+    4200: [
+        (960, 1120),   # 60×70  ar 0.86
+        (1120, 960),   # 70×60  ar 1.17
+        (896, 1200),   # 56×75  ar 0.75
+        (1200, 896),   # 75×56  ar 1.34
+        (800, 1344),   # 50×84  ar 0.60
+        (1344, 800),   # 84×50  ar 1.68
+        (672, 1600),   # 42×100 ar 0.42
+        (1600, 672),   # 100×42 ar 2.38
+        (640, 1680),   # 40×105 ar 0.38
+        (1680, 640),   # 105×40 ar 2.62
+        (560, 1920),   # 35×120 ar 0.29
+        (1920, 560),   # 120×35 ar 3.43
+    ],
+}
+
+# Flat list for BucketManager constant_token_mode
+CONSTANT_TOKEN_BUCKET_LIST = [
+    reso for family in CONSTANT_TOKEN_BUCKETS.values() for reso in family
+]
+
+
 class BucketManager:
     """ARB 分桶管理.
 
@@ -36,9 +77,13 @@ class BucketManager:
     See ``docs/design/preprocess-crop-design.md`` §7 for the UX policy and
     rationale.
     """
-    def __init__(self, base_reso=1024, min_reso=512, max_reso=2048, step=64):
+    def __init__(self, base_reso=1024, min_reso=512, max_reso=2048, step=64, constant_token_mode=False):
         self.base_reso = base_reso
-        self.buckets = self._generate(min_reso, max_reso, step, base_reso)
+        self.constant_token_mode = constant_token_mode
+        if constant_token_mode:
+            self.buckets = list(CONSTANT_TOKEN_BUCKET_LIST)
+        else:
+            self.buckets = self._generate(min_reso, max_reso, step, base_reso)
 
     def _generate(self, min_r, max_r, step, base):
         # Keep algorithm identical to trainBuckets.generateBuckets() in TS:
@@ -486,7 +531,7 @@ class CachedLatentDataset(Dataset):
     50% 数据被永久镜像污染；新版通过 _is_cache_valid 检测缺 latent_flipped
     键，自动重 encode 修复。
     """
-    def __init__(self, base_dataset, vae, device, dtype, cache_dir=None, cache_batch_size=4):
+    def __init__(self, base_dataset, vae, device, dtype, cache_dir=None, cache_batch_size=1):
         import numpy as np
         self.base_dataset = base_dataset
         self.base_image_dataset = self._get_base_image_dataset(base_dataset)

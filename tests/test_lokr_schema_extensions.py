@@ -13,6 +13,7 @@ def test_lora_type_accepts_loha():
 def test_lora_type_accepts_tlora():
     cfg = TrainingConfig(lora_type="tlora")
     assert cfg.lora_type == "tlora"
+    # 与官方 ControlGenAI/T-LoRA argparse default 对齐
     assert cfg.tlora_min_rank == 1
     assert cfg.tlora_alpha_rank_scale == 1.0
     assert cfg.tlora_use_ortho is False

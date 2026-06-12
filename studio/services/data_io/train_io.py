@@ -32,7 +32,6 @@ slug 冲突自动加 -imported-{ts}。
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import time
 import zipfile
@@ -51,7 +50,6 @@ TRAIN_PREFIX = "train/"
 REG_PREFIX = "reg/"
 PRESETS_PREFIX = "presets/"
 CAPTION_EXTS = {".txt"}
-VERSION_LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 VERSION_CONFIG_ARC = "presets/config.yaml"
@@ -459,7 +457,6 @@ def export_bundle(
             "version_label": v["label"],
             "slug": p["slug"],
             "preset_name": v.get("config_name"),
-            "config_name": v.get("config_name"),
         },
         "includes": {
             "train": opts.train,
@@ -527,8 +524,10 @@ def _safe_arc_bundle(name: str) -> Optional[tuple[str, str]]:
 
 
 def _bundle_source_version_label(source: dict[str, Any]) -> str:
+    """manifest 是不可信输入 — 校验走 versions 同一套规则（含拒绝 "." / ".."），
+    不合法回退 v1 而不是报错，保证老 / 手改 bundle 仍可导入。"""
     raw = str(source.get("version_label") or "v1").strip()
-    return raw if VERSION_LABEL_RE.fullmatch(raw) else "v1"
+    return raw if versions.is_valid_label(raw) else "v1"
 
 
 def _bundle_source_preset_name(source: dict[str, Any]) -> Optional[str]:
@@ -537,6 +536,26 @@ def _bundle_source_preset_name(source: dict[str, Any]) -> Optional[str]:
         return None
     name = str(raw).strip()
     return name or None
+
+
+def _restore_preset_name(
+    conn: sqlite3.Connection,
+    version_id: int,
+    preset_name: Optional[str],
+    presets_base: Path,
+) -> Optional[dict[str, Any]]:
+    """preset 真实存在（本机原有，或刚从 bundle 解出）才回填 config_name，
+    避免 version 指向不存在的预设；preset_path 自带名字校验，非法名
+    （路径分隔符等）按不存在处理。返回更新后的 version；没动返回 None。"""
+    if not preset_name:
+        return None
+    from ..presets import io as _presets_io
+    try:
+        if not _presets_io.preset_path(preset_name, presets_base).exists():
+            return None
+    except _presets_io.PresetError:
+        return None
+    return versions.update_version(conn, version_id, config_name=preset_name)
 
 
 def import_bundle(
@@ -587,8 +606,7 @@ def import_bundle(
                 p = projects.create_project(conn, title=title, slug=slug,
                                              note=f"imported from {title!r}")
                 v = versions.create_version(conn, project_id=p["id"], label=version_label)
-                if preset_name:
-                    v = versions.update_version(conn, v["id"], config_name=preset_name)
+                v = _restore_preset_name(conn, v["id"], preset_name, presets_base) or v
                 vdir = versions.version_dir(p["id"], p["slug"], v["label"])
                 train_dir = vdir / "train"
                 seen_folders: set[str] = set()
@@ -645,8 +663,6 @@ def import_bundle(
             p = projects.create_project(conn, title=title, slug=slug,
                                          note=f"imported from {title!r}")
             v = versions.create_version(conn, project_id=p["id"], label=version_label)
-            if preset_name:
-                v = versions.update_version(conn, v["id"], config_name=preset_name)
             vdir = versions.version_dir(p["id"], p["slug"], v["label"])
 
             # --- 写入 train ---
@@ -741,6 +757,10 @@ def import_bundle(
                                 n += 1
                         _presets_io.write_preset(target_name, config, presets_base)
                         preset_count += 1
+
+            # preset 解包完成后再回填 config_name：本机真的有这个预设
+            # （原本就有，或刚从 bundle 解出）才记，避免悬空引用。
+            v = _restore_preset_name(conn, v["id"], preset_name, presets_base) or v
 
             img_cnt, tag_cnt = _count_train(vdir / "train", seen_train) if train_entries else (0, 0)
 

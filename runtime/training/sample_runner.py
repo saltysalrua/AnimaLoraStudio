@@ -66,31 +66,40 @@ def run_sample(
     if callable(clear_fn):
         clear_fn()
 
-    with optimizer_eval_mode(ctx.optimizer):
-        ctx.model.eval()
-        if s_seed:
-            torch.manual_seed(s_seed + seed_offset)
-        img = sample_image(
-            ctx.model, ctx.vae, ctx.qwen_model, ctx.qwen_tok, ctx.t5_tok,
-            prompt, height=s_h, width=s_w, steps=s_steps, cfg_scale=s_cfg,
-            negative_prompt=(s_neg or None),
-            sampler_name=s_sampler,
-            scheduler=s_sched,
-            device=ctx.device, dtype=ctx.dtype,
-        )
-        img.save(sample_path)
-        ctx.emit(f"采样保存: {sample_path.name}")
-        if wandb_key and ctx.wandb_monitor.log_samples:
-            ctx.wandb_monitor.log_image(
-                wandb_key,
-                sample_path,
-                caption=wandb_caption or prompt,
-                step=wandb_step,
+    was_training = bool(getattr(ctx.model, "training", True))
+    try:
+        with optimizer_eval_mode(ctx.optimizer):
+            ctx.model.eval()
+            if s_seed:
+                torch.manual_seed(s_seed + seed_offset)
+            img = sample_image(
+                ctx.model, ctx.vae, ctx.qwen_model, ctx.qwen_tok, ctx.t5_tok,
+                prompt, height=s_h, width=s_w, steps=s_steps, cfg_scale=s_cfg,
+                negative_prompt=s_neg,
+                sampler_name=s_sampler,
+                scheduler=s_sched,
+                device=ctx.device, dtype=ctx.dtype,
+                seed=(s_seed + seed_offset) if s_seed else None,
             )
-        if ctx.monitor_server:
-            try:
-                from train_monitor import update_monitor
-                update_monitor(sample_path=sample_path)
-            except Exception:
-                pass
-        ctx.model.train()
+            img.save(sample_path)
+            ctx.emit(f"采样保存: {sample_path.name}")
+            if wandb_key and ctx.wandb_monitor.log_samples:
+                ctx.wandb_monitor.log_image(
+                    wandb_key,
+                    sample_path,
+                    caption=wandb_caption or prompt,
+                    step=wandb_step,
+                )
+            if ctx.monitor_server:
+                try:
+                    from train_monitor import update_monitor
+                    update_monitor(sample_path=sample_path)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("采样失败，已跳过本次预览，不中断训练: %s", exc, exc_info=True)
+    finally:
+        if was_training:
+            ctx.model.train()
+        else:
+            ctx.model.eval()

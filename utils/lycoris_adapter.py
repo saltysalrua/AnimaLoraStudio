@@ -51,7 +51,7 @@ class AnimaLycorisAdapter:
         weight_decompose: bool = False,
         rs_lora: bool = False,
         lora_reg_dims: Optional[dict[str, int]] = None,
-        tlora_min_rank: int = 1,
+        tlora_min_rank: int = 8,
         tlora_alpha_rank_scale: float = 1.0,
     ):
         self.algo = algo
@@ -129,8 +129,10 @@ class AnimaLycorisAdapter:
         if self.use_timestep_mask:
             self._install_tlora_masks()
 
-        # lycoris 默认在 CPU 创建模块；model 多半已在 CUDA — 必须显式同步 device/dtype，
-        # 否则首次 forward 报 "tensors on cuda:0 and cpu"。从模型首个 parameter 推断。
+        # lycoris 默认在 CPU 创建模块；model 多半已在 CUDA — 必须显式同步
+        # device/dtype，否则首次 forward 报 "tensors on cuda:0 and cpu"。从模型
+        # 首个 parameter 推断。推理 parity 路径会在 load_state_dict 前再把 network
+        # 转成 fp32，以贴近 ComfyUI LoRA patch 的中间精度。
         try:
             ref = next(model.parameters())
             self.network.to(device=ref.device, dtype=ref.dtype)

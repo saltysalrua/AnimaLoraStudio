@@ -81,13 +81,9 @@ export default function PreprocessDuplicatesPage() {
   const hasQualityCandidates = !!result && (
     result.blur_candidates.length > 0 || result.crop_relations.length > 0
   )
+  // 渲染期推导兜底：质量候选清空后自动落回 groups，不需要 effect 改 state
+  //（scan() 重置 reviewMode，质量计数只会在重扫时变化）。
   const activeReviewMode = reviewMode === 'quality' && hasQualityCandidates ? 'quality' : 'groups'
-
-  useEffect(() => {
-    if (!hasQualityCandidates && reviewMode === 'quality') {
-      setReviewMode('groups')
-    }
-  }, [hasQualityCandidates, reviewMode])
 
   const scan = async () => {
     if (busy) return
@@ -116,6 +112,7 @@ export default function PreprocessDuplicatesPage() {
       )
     } catch (e) {
       toast(String(e), 'error')
+      setLogs((prev) => [...prev, { ts: Date.now(), status: 'error', text: String(e) }])
     } finally {
       setBusy(false)
     }
@@ -168,6 +165,22 @@ export default function PreprocessDuplicatesPage() {
       idx={2}
       title={t('steps.preprocess.title')}
       subtitle={t('duplicates.subtitle')}
+      logSources={[
+        scanLogVisible && logs.length > 0 && {
+          key: 'dup_scan',
+          label: t('logDrawer.dupScan'),
+          // 扫描是同步 HTTP + SSE 进度，前端合成状态：跑着 = running，
+          // 否则按最后一条日志判 failed/done。不可取消。
+          status: busy
+            ? ('running' as const)
+            : logs[logs.length - 1]?.status === 'error'
+              ? ('failed' as const)
+              : ('done' as const),
+          lines: logs.map((l) => l.text),
+          startedAt: logs[0] ? logs[0].ts / 1000 : null,
+          finishedAt: busy ? null : logs[logs.length - 1] ? logs[logs.length - 1].ts / 1000 : null,
+        },
+      ]}
     >
       <div className="flex flex-col h-full gap-3 min-h-0">
         <div className="grid gap-3 flex-1 min-h-0" style={{ gridTemplateColumns: '1fr 260px' }}>
@@ -183,7 +196,6 @@ export default function PreprocessDuplicatesPage() {
               onScan={scan}
               onApply={apply}
             />
-            {scanLogVisible && <DuplicateLogStrip logs={logs} busy={busy} />}
             <div className="flex flex-col flex-1 min-h-0 gap-2">
               <div className="shrink-0 rounded-md border border-subtle bg-surface px-2 py-1.5 flex items-center gap-1.5">
                 <button
@@ -503,25 +515,6 @@ function NumberOption({
   )
 }
 
-function DuplicateLogStrip({ logs, busy }: { logs: DuplicateLog[]; busy: boolean }) {
-  const { t } = useTranslation()
-  const lastLine = logs[logs.length - 1]?.text ?? ''
-  return (
-    <details open={busy} className="group rounded-md border border-subtle bg-surface overflow-hidden shrink-0">
-      <summary className="cursor-pointer flex items-center gap-2 list-none px-2.5 py-1.5 text-sm select-none">
-        <span className="inline-block transition-transform group-open:rotate-90 text-fg-tertiary w-3">▸</span>
-        <span className={busy ? 'badge badge-warn' : 'badge badge-neutral'}>
-          {busy ? t('duplicates.scanning') : t('duplicates.logTitle')}
-        </span>
-        <span className="mono truncate flex-1 min-w-0 text-fg-secondary text-xs">{lastLine}</span>
-      </summary>
-      <pre className="px-3 py-2 text-xs font-mono text-fg-secondary bg-sunken max-h-[224px] overflow-auto whitespace-pre-wrap border-t border-subtle m-0">
-        {logs.length === 0 ? t('jobProgress.waitingLogs') : logs.map((line) => line.text).join('\n')}
-      </pre>
-    </details>
-  )
-}
-
 function QualityReviewPanel({
   projectId,
   versionId,
@@ -571,14 +564,9 @@ function QualityReviewPanel({
       ? t('duplicates.cropLargerSameArea')
       : t('duplicates.cropLarger', { name })
   )
-  useEffect(() => {
-    if (blurCandidates.length === 0 && cropRelations.length > 0) {
-      setActiveTab('crop')
-    } else if (blurCandidates.length > 0 && cropRelations.length === 0) {
-      setActiveTab('blur')
-    }
-  }, [blurCandidates.length, cropRelations.length])
   if (!result || (blurCandidates.length === 0 && cropRelations.length === 0)) return null
+  // 渲染期推导：某一侧为空时强制落到另一侧（tab 按钮对空侧也是 disabled），
+  // 不用 effect 写回 state。
   const activeQualityTab =
     blurCandidates.length === 0 && cropRelations.length > 0
       ? 'crop'
@@ -587,7 +575,7 @@ function QualityReviewPanel({
         : activeTab
   const showBlur = activeQualityTab === 'blur'
   return (
-    <section className="flex flex-col min-h-0 rounded-md border border-subtle bg-surface overflow-hidden">
+    <section className="flex flex-col flex-1 min-h-0 rounded-md border border-subtle bg-surface overflow-hidden">
       <div className="h-0.5 bg-accent" />
       <header className="flex flex-wrap items-center gap-2 px-2.5 py-1.5 border-b border-subtle text-sm">
         <h3 className="font-semibold">{t('duplicates.qualityTitle')}</h3>
@@ -663,7 +651,7 @@ function QualityReviewPanel({
           )}
         </div>
       </header>
-      <div className="grid grid-cols-1 gap-2 p-2 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2">
         {showBlur && (
           <QualitySection
             title={t('duplicates.blurTitle')}
@@ -749,7 +737,16 @@ function QualitySection({
       {items.length === 0 ? (
         <div className="px-2 py-3 text-xs text-fg-tertiary">{empty}</div>
       ) : (
-        <div className="max-h-[360px] overflow-y-auto p-2 flex flex-col gap-2">
+        // 卡片铺响应式多列：缩略图只有 256px，卡片不能拉满面板宽（会放大到糊）。
+        // 滚动交给面板内容区的 overflow-y-auto，这里不再嵌套 max-h 滚动窗口。
+        <div
+          className="p-2 grid gap-2"
+          style={{
+            gridTemplateColumns: `repeat(auto-fill, minmax(${
+              items.some((item) => item.images.length > 1) ? 340 : 200
+            }px, 1fr))`,
+          }}
+        >
           {items.map((item) => (
             <article key={item.key} className="rounded-sm border border-subtle bg-surface p-1.5">
               <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${item.images.length}, minmax(0, 1fr))` }}>
