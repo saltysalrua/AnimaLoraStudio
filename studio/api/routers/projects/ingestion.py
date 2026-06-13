@@ -41,6 +41,7 @@ from ...schemas.ingestion import (
     UploadFromPathBody,
 )
 from ._shared import _publish_job_state, _publish_project_state
+from ....infrastructure.event_bus import bus
 from .... import db, secrets
 from ....services.projects import jobs as project_jobs, projects, versions
 from ....paths import REPO_ROOT
@@ -142,6 +143,24 @@ def _apply_project_upload_result(pid: int, result: uploads_svc.UploadResult) -> 
     return result.as_dict()
 
 
+def _publish_upload_log(pid: int, line: str) -> None:
+    """推一行上传阶段日志给 SSE 订阅者（前端 TaskLogDrawer 显示）。
+
+    `accept_many` 的 on_log 回调每 25 张 / 5s / 慢图触发一次（节流，不刷屏）。
+    跟 logger.info 并存：前者给用户看，后者落 studio.log 给 debug 用。
+    """
+    bus.publish({"type": "project_upload_log", "project_id": pid, "line": line})
+
+
+def _publish_upload_state(pid: int, status: str) -> None:
+    """推 upload 状态转换（running / done / failed）给 SSE 订阅者。
+
+    LogSource.status 用这个驱动 TaskLogDrawer 的徽标 + 自动展开（live 进入
+    automatic open；终态保持展开但不再 auto-open）。
+    """
+    bus.publish({"type": "project_upload_state", "project_id": pid, "status": status})
+
+
 @router.post("/api/projects/{pid}/upload")
 async def upload_local_files(
     pid: int, files: list[UploadFile] = File(...),
@@ -185,13 +204,24 @@ async def upload_local_files(
         f.file.seek(0)
         pairs.append((f.filename or "", f.file))
     sec = secrets.load()
-    result = await run_in_threadpool(
-        uploads_svc.accept_many,
-        pairs, pdir,
-        convert_to_png=sec.gelbooru.convert_to_png,
-        remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
-        on_log=logger.info,
-    )
+
+    def _on_log(line: str) -> None:
+        logger.info(line)
+        _publish_upload_log(pid, line)
+
+    _publish_upload_state(pid, "running")
+    try:
+        result = await run_in_threadpool(
+            uploads_svc.accept_many,
+            pairs, pdir,
+            convert_to_png=sec.gelbooru.convert_to_png,
+            remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
+            on_log=_on_log,
+        )
+    except Exception:
+        _publish_upload_state(pid, "failed")
+        raise
+    _publish_upload_state(pid, "done")
     return _apply_project_upload_result(pid, result)
 
 
@@ -213,14 +243,25 @@ def upload_local_file_from_path(pid: int, body: UploadFromPathBody) -> dict[str,
         raise HTTPException(400, "请选择文件")
     pdir = projects.project_dir(p["id"], p["slug"]) / "download"
     sec = secrets.load()
-    with src.open("rb") as fh:
-        # 本路由是 sync def，FastAPI 自动跑在 threadpool worker（不会卡 event loop）
-        result = uploads_svc.accept_many(
-            [(src.name, fh)], pdir,
-            convert_to_png=sec.gelbooru.convert_to_png,
-            remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
-            on_log=logger.info,
-        )
+
+    def _on_log(line: str) -> None:
+        logger.info(line)
+        _publish_upload_log(pid, line)
+
+    _publish_upload_state(pid, "running")
+    try:
+        with src.open("rb") as fh:
+            # 本路由是 sync def，FastAPI 自动跑在 threadpool worker（不会卡 event loop）
+            result = uploads_svc.accept_many(
+                [(src.name, fh)], pdir,
+                convert_to_png=sec.gelbooru.convert_to_png,
+                remove_alpha_channel=sec.gelbooru.remove_alpha_channel,
+                on_log=_on_log,
+            )
+    except Exception:
+        _publish_upload_state(pid, "failed")
+        raise
+    _publish_upload_state(pid, "done")
     return _apply_project_upload_result(pid, result)
 
 

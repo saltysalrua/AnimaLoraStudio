@@ -380,6 +380,45 @@ def test_upload_runs_accept_many_off_event_loop(
     )
 
 
+def test_upload_publishes_state_and_log_events(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上传期间 server 端 emit SSE 事件给前端 TaskLogDrawer 显示：
+    - `project_upload_state` running → done（包 try/finally：异常→failed）
+    - `project_upload_log` 每条 on_log 一次（accept_many 至少推 starting / all done）
+    用 zip 触发 zip 路径（含 entries / 进度行）。
+    """
+    captured: list[dict] = []
+    from studio.infrastructure.event_bus import bus
+    original_publish = bus.publish
+
+    def capture(msg):
+        captured.append(msg)
+        original_publish(msg)
+
+    monkeypatch.setattr(bus, "publish", capture)
+
+    p = _make_project(client)
+    blob = _zip_bytes({"a.jpg": b"AA", "b.png": b"BB"})
+    r = client.post(
+        f"/api/projects/{p['id']}/upload",
+        files=[("files", ("pack.zip", blob, "application/zip"))],
+    )
+    assert r.status_code == 200, r.text
+
+    states = [
+        m for m in captured
+        if m.get("type") == "project_upload_state" and m.get("project_id") == p["id"]
+    ]
+    logs = [
+        m for m in captured
+        if m.get("type") == "project_upload_log" and m.get("project_id") == p["id"]
+    ]
+    assert [s["status"] for s in states] == ["running", "done"], states
+    assert any("starting" in (m.get("line") or "") for m in logs), [m["line"] for m in logs]
+    assert any("all done" in (m.get("line") or "") for m in logs), [m["line"] for m in logs]
+
+
 def test_upload_zip_extracts_images(client: TestClient) -> None:
     p = _make_project(client)
     blob = _zip_bytes({"a.jpg": b"AA", "sub/b.png": b"BB", "skip.txt": b"X"})
