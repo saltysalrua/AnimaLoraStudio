@@ -1071,7 +1071,7 @@ class Block(nn.Module):
         self.final_layer.init_weights()
         self.t_embedding_norm.reset_parameters()
 
-    def compile_blocks(self, backend="inductor", mode=None):
+    def compile_blocks(self, backend="inductor", mode=None, families=None):
         """Per-block torch.compile for static-shape training.
 
         Sets _compile_friendly=True on all sub-modules that have it, then
