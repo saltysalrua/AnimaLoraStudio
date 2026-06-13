@@ -739,6 +739,21 @@ class TrainingConfig(BaseModel):
         description="数据加载并行线程数；越大加载越快但内存占用上升。Windows 必须填 0",
         json_schema_extra=_meta("system", advanced=True),
     )
+    pin_memory: bool = Field(
+        True,
+        description="DataLoader pin_memory：将数据预分配到 CUDA pinned memory，加速 Host→Device 传输。关闭仅在系统 RAM 极度紧张时有意义",
+        json_schema_extra=_meta("system", advanced=True),
+    )
+    prefetch_factor: int = Field(
+        2, ge=1, le=8,
+        description="DataLoader 预取批次数（每 worker 预加载几个 batch）。num_workers=0 时无效。提高可掩盖 IO 延迟但增加 RAM 用量",
+        json_schema_extra=_meta("system", advanced=True, show_when="num_workers>0"),
+    )
+    fused_optimizer: bool = Field(
+        True,
+        description="启用 CUDA fused optimizer kernel（AdamW/AdamW8bit）。将多次 kernel launch 合并为一次，对 LoRA 多小参数场景提速明显。不支持 CPU 训练",
+        json_schema_extra=_meta("system", advanced=True),
+    )
 
     @field_validator("resolution", mode="before")
     @classmethod
