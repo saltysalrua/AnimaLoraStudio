@@ -828,26 +828,38 @@ class CachedLatentDataset(Dataset):
         latent_key = "latent_flipped" if use_flip else "latent"
         latent = torch.from_numpy(data[latent_key])
 
+        # 文本编码缓存命中：直接返回预计算的 embed tensors
+        if "qwen_emb" in data.files:
+            return {
+                "latent": latent,
+                "caption": "",
+                "qwen_emb": torch.from_numpy(data["qwen_emb"].copy()),
+                "qwen_attn": torch.from_numpy(data["qwen_attn"].copy()).long(),
+                "t5_ids": torch.from_numpy(data["t5_ids"].copy()).long(),
+                "t5_attn": torch.from_numpy(data["t5_attn"].copy()).long(),
+                "t5_w": torch.from_numpy(data["t5_w"].copy()).float(),
+            }
+
         # 获取 base_dataset 的引用（处理可能的嵌套）
         base = self.base_dataset
         while hasattr(base, "dataset"):
             base = base.dataset
-        
+
         # 处理 caption（正则集 caption_override 优先）
         caption = None
         if getattr(base, "caption_override", None) is not None:
             caption = base.caption_override
         elif sample.get("json_path") and hasattr(base, "_process_caption_json"):
             caption = base._process_caption_json(sample["json_path"])
-        
+
         if caption is None and sample.get("txt_path"):
             caption = sample["txt_path"].read_text(encoding="utf-8").strip()
             if hasattr(base, "_process_caption_txt"):
                 caption = base._process_caption_txt(caption)
-        
+
         if caption is None:
             caption = ""
-        
+
         return {"latent": latent, "caption": caption}
 
 
@@ -867,6 +879,38 @@ def collate_fn_cached(batch):
     latents = torch.stack([b["latent"] for b in batch])
     captions = [b["caption"] for b in batch]
     result = {"latents": latents, "captions": captions}
+
+    if "qwen_emb" in batch[0]:
+        import torch.nn.functional as _F
+        max_qwen = max(b["qwen_emb"].shape[0] for b in batch)
+        qwen_embs, qwen_attns = [], []
+        for b in batch:
+            emb, attn = b["qwen_emb"], b["qwen_attn"]
+            pad = max_qwen - emb.shape[0]
+            if pad > 0:
+                emb = _F.pad(emb, (0, 0, 0, pad))
+                attn = _F.pad(attn, (0, pad))
+            qwen_embs.append(emb)
+            qwen_attns.append(attn)
+        result["qwen_emb"] = torch.stack(qwen_embs)
+        result["qwen_attn"] = torch.stack(qwen_attns)
+
+        max_t5 = max(b["t5_ids"].shape[0] for b in batch)
+        t5_ids_l, t5_attn_l, t5_w_l = [], [], []
+        for b in batch:
+            ids, attn, w = b["t5_ids"], b["t5_attn"], b["t5_w"]
+            pad = max_t5 - ids.shape[0]
+            if pad > 0:
+                ids = _F.pad(ids, (0, pad))
+                attn = _F.pad(attn, (0, pad))
+                w = _F.pad(w, (0, pad))
+            t5_ids_l.append(ids)
+            t5_attn_l.append(attn)
+            t5_w_l.append(w)
+        result["t5_ids"] = torch.stack(t5_ids_l)
+        result["t5_attn"] = torch.stack(t5_attn_l)
+        result["t5_w"] = torch.stack(t5_w_l)
+
     if "loss_weight" in batch[0]:
         result["loss_weight"] = torch.tensor([b["loss_weight"] for b in batch], dtype=torch.float32)
         result["is_reg"] = torch.tensor([b["is_reg"] for b in batch], dtype=torch.bool)
