@@ -113,17 +113,31 @@ def run(ctx: TrainingContext) -> None:
             drop_last=False, shuffle=True,
             seed=getattr(args, "seed", 42),
         )
+        dl_kwargs: dict = dict(
+            num_workers=args.num_workers,
+            pin_memory=getattr(args, "pin_memory", True) and torch.cuda.is_available(),
+        )
+        if args.num_workers > 0:
+            dl_kwargs["prefetch_factor"] = getattr(args, "prefetch_factor", 2)
+            dl_kwargs["persistent_workers"] = True
         ctx.dataloader = DataLoader(
             ctx.dataset, batch_sampler=batch_sampler,
             collate_fn=collate_fn_cached,
-            num_workers=args.num_workers,
+            **dl_kwargs,
         )
     else:
+        dl_kwargs = dict(
+            num_workers=args.num_workers,
+            pin_memory=getattr(args, "pin_memory", True) and torch.cuda.is_available(),
+        )
+        if args.num_workers > 0:
+            dl_kwargs["prefetch_factor"] = getattr(args, "prefetch_factor", 2)
+            dl_kwargs["persistent_workers"] = True
         ctx.dataloader = DataLoader(
             ctx.dataset, batch_size=args.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            num_workers=args.num_workers,
+            **dl_kwargs,
         )
 
     # 训练前自检：VAE encode->decode 循环（快速排除 VAE/scale/shape 问题）
