@@ -609,7 +609,7 @@ class TrainingConfig(BaseModel):
     )
     leap_enabled: bool = Field(
         False,
-        description="【LeapAlign 自蒸馏】启用两步跳跃自蒸馏（去奖励模型版）：每步用真实 latent 当 x0，per-sample 采两个时刻 (k>j) 做两步跳跃，loss=MSE(两步预测的 x̂0, 真实 x0)。本质是 shortcut/consistency 式自蒸馏，每步 2 次前向（约 2× 标准训练算力）。与 InfoNoise/loss_weighting 互斥",
+        description="【LeapAlign 自蒸馏】启用两步跳跃自蒸馏（去奖励模型版）：每步用真实 latent 当 x0，per-sample 采两个时刻 (k>j) 做两步跳跃，loss=MSE(两步预测的 x̂0, 真实 x0)。本质是 shortcut/consistency 式自蒸馏。开销：leap_ratio=1.0 时每步 2 次前向 ≈ 2× 算力 + activation 显存接近 2×（两次前向都带 grad）。与 InfoNoise / loss_weighting / loss_type=huber 互斥",
         json_schema_extra=_meta("loss"),
     )
     leap_ratio: float = Field(
