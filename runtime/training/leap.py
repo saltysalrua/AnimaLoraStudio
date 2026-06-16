@@ -150,7 +150,12 @@ def _finalize_loss(
         traj_sim_min       — 相似度加权下限 τ（防近乎相同的对被过度放大）
 
     跳跃越贴近真实路径（残差越小）权重越高，抑制大跨度跳跃的离谱预测主导 loss。
-    sparse 无中间端点（x_hat_inter=None），退化为仅按终点残差 d_0 加权。
+    sparse 无中间端点（x_hat_inter=None），退化为仅按终点残差加权。
+
+    量纲注记：original/bridge/lagrange 的 w_sim = 1/(d_inter + d_0) ≈ 1/(2d)，
+    sparse 的 w_sim = 1/d_0 ≈ 1/d。同残差下 sparse 被放大约 2×。自适应优化器能吸收，
+    但对照实验（original vs sparse 都开 traj_sim）的有效 loss magnitude 不可比，对比
+    曲线时需注意。
     """
     loss_per_sample = (x_hat_0.float() - x0.float()).pow(2).mean(
         dim=tuple(range(1, x0.ndim))
@@ -183,28 +188,30 @@ def sample_activation_timesteps(
     """per-sample 采样 K 个降序时刻 t_1 > t_2 > ... > t_K，均 ∈ (0,1)。
 
     用于 FlowBP-Sparse 的激活集：从噪声端 t_1 出发，沿 K 个支撑点 Euler 重放到数据端。
-    保证相邻间隔 ≥ min_gap/(K-1)，使 K 点大致铺满 (0,1) 而非挤在一起。
+    参考论文（FlowBP §B）用 Dirichlet 划分保证支撑点沿 (0,1) 铺开、不塌缩；这里取等价
+    的"分层抖动（stratified jitter）"实现：把 (0,1) 等分 K 格，每格内采一个 uniform
+    点，天然保证（i）每点独立落在 (i/k, (i+1)/k)，覆盖整条轨迹；（ii）严格降序；
+    （iii）相邻间隔 ≥ ~0（实际下界 ≈ 0，远好于旧贪心下压的塌缩风险）。
+
+    min_gap 在 sparse 下语义为"总跨度提示"：若需保证最大跨度 t_1-t_K ≥ min_gap，
+    调用方可在传入前约束（这里不强制，因为分层抖动已天然铺满 (0,1)）。
 
     返回 shape (B, K) 的张量，每行降序。
     """
     if k < 2:
         raise ValueError(f"sample_activation_timesteps 需要 k>=2，收到 k={k}")
 
-    # 在 (0,1) 采 K 个点并按降序排列（每行独立排序）
-    pts = torch.rand(bs, k, device=device, dtype=dtype)
-    pts, _ = torch.sort(pts, dim=1, descending=True)
+    # 分层抖动：第 i 格 (i/k, (i+1)/k) 内采 uniform 点
+    # idx = 0..K-1 对应数据端→噪声端，采完再翻成降序（噪声端在前）
+    idx = torch.arange(k, device=device, dtype=dtype)
+    jitter = torch.rand(bs, k, device=device, dtype=dtype)
+    pts = (idx + jitter) / k  # 每格内 uniform，shape (B, K)，升序
+    pts, _ = torch.sort(pts, dim=1, descending=True)  # 降序：t_1 > ... > t_K
 
-    # 撑开相邻间隔到至少 step_gap：从最大点往下逐点压，保证单调降且间隔足够
-    step_gap = float(min_gap) / (k - 1)
+    # 边界裁剪到开区间 (0,1)：分层抖动天然落在 (0,1) 内，仅兜底数值边界
     eps = 1e-3
-    out = torch.empty_like(pts)
-    out[:, 0] = pts[:, 0].clamp(max=1.0 - eps)
-    for i in range(1, k):
-        # 第 i 点不得超过 (前一点 - step_gap)，且不低于 eps
-        upper = out[:, i - 1] - step_gap
-        out[:, i] = torch.minimum(pts[:, i], upper).clamp(min=eps)
-    # 顶点也要留出足够下探空间：若被压到低于 eps，整体已由 clamp 兜底
-    return out
+    pts = pts.clamp(min=eps, max=1.0 - eps)
+    return pts
 
 
 def sparse_training_step(
@@ -237,20 +244,22 @@ def sparse_training_step(
     view = (-1, *([1] * (x0.ndim - 1)))
 
     # 起点 x_{t_1}（解析、detach）
-    t1 = t_steps[:, 0].view(*view)
+    t1 = t_steps[:, 0].reshape(*view)
     x_hat_0 = (1.0 - t1) * x0 + t1 * noise
 
     # 逐支撑点：解析构造带噪点（detach），前向求速度（带梯度），按 Euler 步长累减
     for i in range(k):
         t_i = t_steps[:, i]
-        t_i_b = t_i.view(*view)
+        t_i_b = t_i.reshape(*view)
         x_i = (1.0 - t_i_b) * x0 + t_i_b * noise  # 解析点，对 θ 无梯度
         v_i = forward_with_optional_checkpoint(
-            model, x_i, t_i.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
+            model, x_i, t_i.reshape(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
         )
-        # 步长 h_i = t_i - t_{i+1}，末段 t_{K+1}:=0
-        t_next = t_steps[:, i + 1] if i + 1 < k else torch.zeros_like(t_i)
-        h_i = (t_i - t_next).view(*view)
+        # 步长 h_i = t_i - t_{i+1}，末段 t_{K+1}:=0（h_i = t_i）
+        if i + 1 < k:
+            h_i = (t_i - t_steps[:, i + 1]).reshape(*view)
+        else:
+            h_i = t_i_b
         x_hat_0 = x_hat_0 - h_i * v_i
 
     # sparse 无中间端点，traj-sim 仅按终点残差加权
@@ -328,16 +337,24 @@ def lagrange_training_step(
     traj_sim_min: float = 0.1,
     use_checkpoint: bool = False,
 ) -> torch.Tensor:
-    """FlowBP-Lagrange 自蒸馏：保留两段跳拓扑，每段用 Simpson 两点积分降积分误差。
+    """FlowBP-Lagrange 自蒸馏：保留两段跳拓扑，每段用三点 Lagrange 积分（论文 §A.2）。
 
-    original/bridge 每段是单点 Euler 跳（x̂_b = x_a - (a-b)·v_θ(x_a)，误差 O(Δt²)）；
-    lagrange 每段额外在中点 m=(a+b)/2 采一次速度，用 Simpson 规则积分：
+    三支撑点 Lagrange 插值积分，等距时退化为 Simpson 规则，权重 1/6·[1, 4, 1]：
+    论文 §A.2 称 "Simpson-like positive weights"。比 original/bridge 的单点 Euler
+    （误差 O(Δt²)）高两阶（Simpson 误差 O(Δt⁵)）。
 
-        ∫_b^a v dt ≈ (a-b)/6 · [v(x_a) + 4·v(x_m) + v(x_b_pred)]
+    每段积分形式（段 [b,a]，a>b，从 a 跳到 b，三点 a > m > b，m=(a+b)/2）：
 
-    这里取两点变体（端点 + 中点，权重非负）：x̂_b = x_a - (a-b)·[½v(x_a)+½v(x_m)]，
-    中点带噪点用解析真值 x_m_real=(1-m)x0+m·noise（自蒸馏免 rollout）。两段串联：
-    第一段 k→j，connector（straight-through，同 original）后第二段 j→0。
+        ∫_b^a v dt ≈ (a-b)/6 · [v(x_a) + 4·v(x_m) + v(x_b)]
+
+    三点都需速度：端点 x_a、中点 x_m、另端点 x_b。中点带噪点用解析真值
+    x_m_real=(1-m)x0+m·noise（自蒸馏免 rollout）；另端点 x_b 在积分时尚未知，取 Euler
+    预测 x̂_b_euler = x_a - (a-b)·v(x_a) 处的速度（论文 §A.2 同款处理，段终点速度依赖
+    自身 Euler 预测）。最终段输出仍以 Simpson 加权积分为准（非 Euler 预测值）。
+
+    代价：每段 3 次前向（端点 + 中点 + 另端点），两段共 6 次前向 ≈ 6× 算力 + 显存，
+    是四 variant 中最重者。两段串联：第一段 k→j，connector（straight-through，
+    同 original）+ α 折扣后第二段 j→0。
     """
     k = t_k.view(-1, *([1] * (x0.ndim - 1)))
     j = t_j.view(-1, *([1] * (x0.ndim - 1)))
@@ -348,14 +365,19 @@ def lagrange_training_step(
     x_j_real = (1.0 - j) * x0 + j * noise
     x_m1_real = (1.0 - m1) * x0 + m1 * noise  # 中点解析真值（detach）
 
-    # ── 第一段 Simpson 两点积分：端点 x_k + 中点 x_m1 ──
+    # ── 第一段三点 Lagrange / Simpson 积分：x_k, x_m1, x̂_j_euler ──
     v_k = forward_with_optional_checkpoint(
         model, x_k, t_k.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
     )
     v_m1 = forward_with_optional_checkpoint(
         model, x_m1_real, t_m1.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
     )
-    v_seg1 = 0.5 * v_k + 0.5 * v_m1
+    # 段终点（j）处速度：用 Euler 预测的 x̂_j 当输入（论文 §A.2 同款处理）
+    x_hat_j_euler = x_k - (k - j) * v_k
+    v_j_seg1 = forward_with_optional_checkpoint(
+        model, x_hat_j_euler, t_j.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
+    )
+    v_seg1 = (v_k + 4.0 * v_m1 + v_j_seg1) / 6.0  # Simpson 权重 1:4:1
     x_hat_j = x_k - (k - j) * v_seg1
 
     # connector（straight-through，同 original）+ α 折扣
@@ -367,7 +389,7 @@ def lagrange_training_step(
     else:
         x_j_in = nested_grad_coe * x_j + (1.0 - nested_grad_coe) * x_j.detach()
 
-    # ── 第二段 Simpson 两点积分：端点 x_j + 中点 x_m2 ──
+    # ── 第二段三点 Lagrange / Simpson 积分：x_j, x_m2, x̂_0_euler ──
     m2 = j * 0.5  # 第二段中点（j→0 的中点是 j/2）
     t_m2 = t_j * 0.5
     x_m2_real = (1.0 - m2) * x0 + m2 * noise
@@ -377,8 +399,14 @@ def lagrange_training_step(
     v_m2 = forward_with_optional_checkpoint(
         model, x_m2_real, t_m2.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
     )
-    v_seg2 = 0.5 * v_j + 0.5 * v_m2
-    x_hat_0 = x_j - j * v_seg2
+    # 段终点（0）处速度：用 Euler 预测的 x̂_0_euler 当输入
+    x_hat_0_euler = x_j_in - j * v_j
+    t_0 = torch.zeros_like(t_j)
+    v_0_seg2 = forward_with_optional_checkpoint(
+        model, x_hat_0_euler, t_0.view(-1, 1), cross, pad_mask, use_checkpoint=use_checkpoint,
+    )
+    v_seg2 = (v_j + 4.0 * v_m2 + v_0_seg2) / 6.0  # Simpson 权重 1:4:1
+    x_hat_0 = x_j_in - j * v_seg2
 
     return _finalize_loss(
         x_hat_0, x0,
