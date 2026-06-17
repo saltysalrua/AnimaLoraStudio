@@ -618,7 +618,7 @@ class TrainingConfig(BaseModel):
         ),
     )
     leap_ratio: float = Field(
-        1.0, ge=0.0, le=1.0,
+        0.6, ge=0.0, le=1.0,
         description="【LeapAlign 混合训练】每步按此概率走 leap 自蒸馏、其余走传统 rectified flow：1.0 纯 leap（管全局结构）；0.0 纯传统（管细节锐度）；0.6 大头吃 leap 全局对齐、留点传统精修兜住细节。两股梯度叠在同一组 LoRA 权重上各取所长",
         json_schema_extra=_meta("loss", show_when="leap_enabled==true", advanced=True),
     )
