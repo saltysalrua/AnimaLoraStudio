@@ -5,6 +5,16 @@
 #
 # 顺序：最新版本在 list 顶。
 
+- version: "0.13.3"
+  date: "2026-06-17"
+  summary: "修复 Python 3.10 下浏览器上传图片 zip 报错"
+  entries:
+    - kind: fixed
+      summary: "修复 Python 3.10 下浏览器上传图片 zip 报错、图片无法导入（#284）"
+      pr_refs: [284]
+      detail: |
+        - 在 Python 3.10 运行环境下，从训练集页面用浏览器上传图片 zip 包会报错失败、图片无法导入（单张图片上传不受影响）；本版修复。Python 3.11 及以上版本不受此问题影响。
+
 - version: "0.13.2"
   date: "2026-06-15"
   summary: "首次启动引导放大模型下载修复 + Flash Attention 装失败错误信息明确化"
