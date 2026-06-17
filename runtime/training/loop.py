@@ -141,12 +141,14 @@ def run(ctx: TrainingContext) -> None:
             leap_enabled = bool(getattr(args, "leap_enabled", False))
             # 方式 A 混合训练：每个 micro-batch 按 leap_ratio 概率掷骰子决定走哪条目标。
             # leap 管全局结构、传统管细节锐度，两股梯度叠在同一组 LoRA 权重上各取所长。
-            # ratio=1.0 纯 leap（默认，不破坏纯 leap 行为）；0.0 纯传统；0.6 大头 leap 留点细节。
+            # ratio=1.0 纯 leap；0.0 纯传统；0.6 大头 leap 留点细节（默认）。
             # 用 Python random（bootstrap 设过 random.seed）而非 torch.rand，避免每步消耗 torch
             # global RNG 状态——否则"同种子换 leap_ratio"的对照实验里，标准路径的 noise / timestep
             # 会随 leap_ratio 漂移。
+            # 注：缺省/None 才回落到 0.6；leap_ratio=0.0（纯传统）是合法值，不能被 `or` 吞成默认。
+            _leap_ratio = getattr(args, "leap_ratio", 0.6)
             use_leap_this_step = leap_enabled and (
-                random.random() < float(getattr(args, "leap_ratio", 1.0) or 1.0)
+                random.random() < (0.6 if _leap_ratio is None else float(_leap_ratio))
             )
 
             # 前向
