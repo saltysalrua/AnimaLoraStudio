@@ -26,9 +26,11 @@ HTTPException 不重新注册 — starlette 默认 handler 已经处理（仅返
 
 dual-write 渐进迁移路径（ADR-0009 §错误 envelope 渐进迁移）：
   Phase 1 (0.12.0): dual-write 同时填 detail + error —— 已发布
-  Phase 2 (0.15.0): raise HTTPException 加 deprecation log；前端迁 body.error.*
-  Phase 3 (0.16.0): handler 删 detail key
-  Phase 2/3 滑期，进度/阻塞见 docs/todo/error-envelope-detail-key-removal.md
+  Phase 2 (0.15.0): HTTPException backstop handler（本文件）让 body.error 全覆盖；
+    ~330 处 raise 迁 DomainError 带语义 code + details；前端按 code 查 errors.* i18n
+    —— 已实现
+  Phase 3 (待): handler 删 legacy detail key（前端已主读 error.*，仅余 fallback）
+  详见 docs/todo/error-envelope-detail-key-removal.md
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..domain.errors import DomainError
 from ..infrastructure.logging import get_trace_id
@@ -95,6 +98,36 @@ async def _request_validation_handler(
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
+async def _http_exception_handler(
+    req: Request, exc: StarletteHTTPException,
+) -> JSONResponse:
+    """ADR-0009 Phase 2：给裸 HTTPException 也补 error 信封，让 body.error 覆盖
+    所有错误响应（前端可一律读 body.error.code → i18n，detail 仅作 fallback）。
+
+    - detail 是 str → message=detail，code=`http.<status>`（无语义 code 的兜底；
+      已迁移到 DomainError 的端点带语义 code，不走这里；剩下的多是框架/未迁移）。
+    - detail 是 dict/list（旧结构化 detail）→ 原样保留 detail（前端结构化 callsite
+      依赖），旁边合成 error。
+    保留 exc.headers（如 401 WWW-Authenticate）。
+    """
+    detail = exc.detail
+    code = f"http.{exc.status_code}"
+    trace_id = _trace_id_from(req)
+    if isinstance(detail, str):
+        message = detail
+    elif isinstance(detail, dict):
+        message = str(detail.get("message") or detail.get("error") or "Request failed")
+    else:
+        message = "Request failed"
+    body: Dict[str, Any] = {
+        "detail": detail,
+        "error": {"code": code, "message": message, "trace_id": trace_id},
+    }
+    return JSONResponse(
+        status_code=exc.status_code, content=body, headers=getattr(exc, "headers", None),
+    )
+
+
 async def _fallback_handler(req: Request, exc: Exception) -> JSONResponse:
     # 未捕获异常 — 进 logger.exception 带完整 traceback + trace_id 给开发查；
     # response body 脱敏不含 traceback 防 leak。
@@ -114,9 +147,11 @@ async def _fallback_handler(req: Request, exc: Exception) -> JSONResponse:
 def register_exception_handlers(app: FastAPI) -> None:
     """app.py 启动时调一次。
 
-    顺序无关（FastAPI 按异常类型最具体匹配）。HTTPException **不**注册 — 让
-    starlette 默认 handler 跑（保现有 175 处 raise HTTPException 形状不变）。
+    顺序无关（FastAPI 按异常类型最具体匹配）。HTTPException 注册 backstop handler
+    （ADR-0009 Phase 2）：未迁移到 DomainError 的裸 HTTPException 也补上 error 信封，
+    detail 原样保留不破现有形状。
     """
     app.add_exception_handler(DomainError, _domain_error_handler)
     app.add_exception_handler(RequestValidationError, _request_validation_handler)
+    app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(Exception, _fallback_handler)
