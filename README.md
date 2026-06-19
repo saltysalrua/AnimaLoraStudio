@@ -1,6 +1,6 @@
 # AnimaLoraStudio
 
-[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-blue)](README.md) [![English](https://img.shields.io/badge/lang-English-lightgrey)](README.en.md) [![Version](https://img.shields.io/badge/version-0.13.3-blue)](CHANGELOG.md)
+[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-blue)](README.md) [![English](https://img.shields.io/badge/lang-English-lightgrey)](README.en.md) [![Version](https://img.shields.io/badge/version-0.14.0-blue)](CHANGELOG.md)
 
 **端到端流水线**：从 Booru 抓图 → 筛选 → 打标 → 正则集 → 训练 → 出图测试，全流程在一个浏览器面板里推进。专为 [Anima](https://huggingface.co/circlestone-labs/Anima)（Cosmos DiT 二次元特调）训练优化。
 
@@ -27,7 +27,8 @@
 - **Loss 函数**：MSE / Huber，可配置权重曲线（min_snr / cosmap / detail_inv_t 等）
 - **Timestep 采样**：uniform / logit_normal / mode / mixed_uniform 等，含可配置 schedule shift
 - **InfoNoise 自适应采样（可选）**：基于 I-MMSE 的反 CDF 时间步采样器
-- **优化器**：AdamW / Lion / Automagic / Prodigy / Prodigy+ScheduleFree（推荐起点 / 切换换算见 [`docs/user-guide/optimizers.md`](docs/user-guide/optimizers.md)）
+- **自蒸馏 / 表征对齐（可选，进阶）**：LeapAlign 两步跳跃自蒸馏（含 FlowBP 四变体）、SRA v2 中间表征对齐 VAE latent
+- **优化器**：AdamW / Lion / Automagic / Prodigy / Prodigy+ScheduleFree / SOAP / Schedule-Free SOAP（推荐起点 / 切换换算见 [`docs/user-guide/optimizers.md`](docs/user-guide/optimizers.md)）
 - **Adapter**：LoRA + LyCORIS LoKr（走 [lycoris-lora](https://github.com/KohakuBlueleaf/LyCORIS) 官方库，含 DoRA / rs-LoRA / dropout）
 - **分层 rank**：`lora_rank_rules` 按层名正则配不同 rank，便于按模块重要性差异化分配参数预算
 - **Attention backend**：xformers / flash_attn / PyTorch SDPA
@@ -166,7 +167,7 @@ AnimaLoraStudio/
 │   ├── anima_train.py             # 训练入口
 │   ├── training/                  # 训练栈子包：context / phases / loop / sample_runner
 │   │   ├── adapters/              # plugin: lokr / loha / lora
-│   │   ├── optimizers/            # plugin: adamw / lion / automagic / prodigy / prodigy_plus_schedulefree
+│   │   ├── optimizers/            # plugin: adamw / lion / automagic / prodigy / prodigy_plus_schedulefree / soap / soap_sf
 │   │   ├── schedulers/            # plugin: cosine / cosine_with_restart / cosine_with_warmup / none
 │   │   ├── inference_samplers/    # plugin: er_sde 等
 │   │   └── phases/                # bootstrap / models / dataset / optimizer / resume / finalize
@@ -256,7 +257,7 @@ AnimaLoraStudio/
 
 ## 版本
 
-当前版本 **0.13.3**。完整变更历史见 [CHANGELOG.md](CHANGELOG.md)。Studio 内 Settings → 系统 → 版本卡片可一键升级到最新版本。
+当前版本 **0.14.0**。完整变更历史见 [CHANGELOG.md](CHANGELOG.md)。Studio 内 Settings → 系统 → 版本卡片可一键升级到最新版本。
 
 ---
 

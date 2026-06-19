@@ -1,6 +1,6 @@
 # AnimaLoraStudio
 
-[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-lightgrey)](README.md) [![English](https://img.shields.io/badge/lang-English-blue)](README.en.md) [![Version](https://img.shields.io/badge/version-0.13.2-blue)](CHANGELOG.md)
+[![中文](https://img.shields.io/badge/lang-%E4%B8%AD%E6%96%87-lightgrey)](README.md) [![English](https://img.shields.io/badge/lang-English-blue)](README.en.md) [![Version](https://img.shields.io/badge/version-0.14.0-blue)](CHANGELOG.md)
 
 **End-to-end pipeline**: scrape from Booru → curate → tag → reg set → train → image testing, all driven from a single browser panel. Optimized for [Anima](https://huggingface.co/circlestone-labs/Anima) (Cosmos DiT, anime-tuned) training.
 
@@ -27,7 +27,8 @@
 - **Loss functions**: MSE / Huber, with configurable weighting curves (min_snr / cosmap / detail_inv_t, etc.)
 - **Timestep sampling**: uniform / logit_normal / mode / mixed_uniform, with configurable schedule shift
 - **InfoNoise adaptive sampling (optional)**: inverse-CDF timestep sampler based on I-MMSE
-- **Optimizers**: AdamW / Prodigy / Prodigy+ScheduleFree
+- **Self-distillation / representation alignment (optional, advanced)**: LeapAlign two-step leap self-distillation (incl. FlowBP 4 variants), SRA v2 intermediate-representation alignment to VAE latent
+- **Optimizers**: AdamW / Lion / Automagic / Prodigy / Prodigy+ScheduleFree / SOAP / Schedule-Free SOAP
 - **Adapter**: LoRA + LyCORIS LoKr (via the [lycoris-lora](https://github.com/KohakuBlueleaf/LyCORIS) library, including DoRA / rs-LoRA / dropout)
 - **Per-layer rank**: `lora_rank_rules` assigns different ranks per layer-name regex, useful for biasing parameter budget by module importance
 - **Attention backends**: xformers / flash_attn / PyTorch SDPA
@@ -176,7 +177,7 @@ AnimaLoraStudio/
 │   ├── anima_train.py             # Training entry
 │   ├── training/                  # Training stack subpackage: context / phases / loop / sample_runner
 │   │   ├── adapters/              # plugin: lokr / loha / lora
-│   │   ├── optimizers/            # plugin: adamw / prodigy / prodigy_plus_schedulefree
+│   │   ├── optimizers/            # plugin: adamw / lion / automagic / prodigy / prodigy_plus_schedulefree / soap / soap_sf
 │   │   ├── schedulers/            # plugin: cosine / cosine_with_restart / none
 │   │   ├── inference_samplers/    # plugin: er_sde, etc.
 │   │   └── phases/                # bootstrap / models / dataset / optimizer / resume / finalize
@@ -272,7 +273,7 @@ Documentation entry: [docs/README.md](docs/README.md). Three sections:
 
 ## Version
 
-Current version is **0.13.2**. See [CHANGELOG.md](CHANGELOG.md) for the full history. The Settings → System → version card inside Studio allows one-click upgrade to the latest version.
+Current version is **0.14.0**. See [CHANGELOG.md](CHANGELOG.md) for the full history. The Settings → System → version card inside Studio allows one-click upgrade to the latest version.
 
 ---
 
