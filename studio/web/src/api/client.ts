@@ -89,9 +89,6 @@ export type ConfigData = Record<string, unknown>
 export interface GelbooruConfig {
   user_id: string
   api_key: string
-  save_tags: boolean
-  convert_to_png: boolean
-  remove_alpha_channel: boolean
 }
 
 export interface DanbooruConfig {
@@ -108,6 +105,10 @@ export interface DownloadGlobalConfig {
   api_rate_per_sec: number
   /** PP9 — CDN host (img*.gelbooru.com / cdn.donmai.us) 限速。 */
   cdn_rate_per_sec: number
+  /** 图片入库处理（booru 下载 / reg / 本地上传共用）。 */
+  save_tags: boolean
+  convert_to_png: boolean
+  remove_alpha_channel: boolean
 }
 
 export interface RegConfig {
@@ -441,9 +442,10 @@ export interface Secrets {
   huggingface: HuggingFaceConfig
   wandb: WandBConfig
   modelscope: ModelScopeConfig
-  /** 模型下载源：'huggingface'（默认）或 'modelscope'。
-   *  选 modelscope 时，有映射的模型走魔搭 CLI 下载；无映射的自动回退 HF。 */
+  /** 旧的全局下载源（已退役为迁移种子，无 UI）。新模型按类型在 download_sources 里各自选。 */
   download_source: string
+  /** 按类型下载源：{training|wd14|upscaler: 'huggingface'|'modelscope'}。固定 HF 的类型不在内。 */
+  download_sources: Record<string, string>
   // JoyCaption 已合并为 llm_tagger 的 builtin preset
   llm_tagger: LLMTaggerConfig
   wd14: WD14Config
@@ -584,6 +586,8 @@ export interface ModelsCatalog {
   wd14: WD14Catalog
   cltagger: CLTaggerCatalog
   upscalers?: UpscalersCatalog
+  /** 按类型的下载源选项：current = 当前选中，available = 可选源（长度 1 = 固定单源）。 */
+  download_source_options: Record<string, { current: string; available: string[] }>
   downloads: Record<string, ModelDownloadStatus>
 }
 
