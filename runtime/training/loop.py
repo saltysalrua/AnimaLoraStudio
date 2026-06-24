@@ -359,9 +359,14 @@ def run(ctx: TrainingContext) -> None:
             # 且 epoch 末批不满也 step —— 修尾批丢弃 + 跨 epoch 梯度泄漏（见 _accumulation_step）。
             group_size, is_group_end = _accumulation_step(batch_idx, dl_len, args.grad_accum)
             loss = loss / group_size
-            loss.backward()
+            if ctx.scaler is not None:
+                ctx.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
             if is_group_end:
+                if ctx.scaler is not None:
+                    ctx.scaler.unscale_(ctx.optimizer)
                 # NaN 梯度检测：跳过本次 update，清零继续
                 has_nan_grad = any(
                     p.grad is not None and not torch.isfinite(p.grad).all()
@@ -370,11 +375,17 @@ def run(ctx: TrainingContext) -> None:
                 if has_nan_grad:
                     logger.warning(f"step {ctx.global_step}: 梯度含 NaN/Inf，跳过 optimizer.step()")
                     ctx.optimizer.zero_grad()
+                    if ctx.scaler is not None:
+                        ctx.scaler.update()
                     continue
 
                 if ctx.grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(ctx.trainable_params, max_norm=ctx.grad_clip)
-                ctx.optimizer.step()
+                if ctx.scaler is not None:
+                    ctx.scaler.step(ctx.optimizer)
+                    ctx.scaler.update()
+                else:
+                    ctx.optimizer.step()
                 if ctx.scheduler is not None and ctx.optimizer_type != "prodigy_plus_schedulefree":
                     ctx.scheduler.step()
                 ctx.optimizer.zero_grad()

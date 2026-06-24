@@ -98,6 +98,7 @@ class TrainingContext:
     # → supervisor 标 canceled 而非 paused（无可恢复进度）。
     last_auto_epoch_state_path: Optional[Path] = None
     last_auto_epoch_config_path: Optional[Path] = None
+    scaler: Any = None  # torch.cuda.amp.GradScaler，仅 fp16 时非 None
 
     # ─── 共用方法 ───
 
